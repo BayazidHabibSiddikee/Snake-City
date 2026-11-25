@@ -14,6 +14,89 @@ export interface WeatherAudioCueEvent {
   pan: number;
 }
 
+export interface PortalTemporalDroneParams {
+  proximity01: number;
+  carrierHz: number;
+  harmonicHz: number;
+  modulatorHz: number;
+  fmDepthHz: number;
+  lfoWobbleHz: number;
+  lfoPitchDepthHz: number;
+  filterCutoffHz: number;
+  filterQ: number;
+  shimmerHz: number;
+  shimmerGain: number;
+  droneGain: number;
+}
+
+/**
+ * Pure synthesizer curve for the procedural portal 'temporal distortion' drone effect.
+ * As the player approaches any portal center (`minDistance` decreases from `maxHearRadius`
+ * down to `coreRadius`), pitch (`carrierHz`, `harmonicHz`, `modulatorHz`, `shimmerHz`),
+ * FM phase-warp modulation depth, time-dilation LFO wobble frequency, filter resonance,
+ * and drone intensity increase monotonically.
+ */
+export function computePortalTemporalDroneParams(
+  minDistance: number,
+  variant: 'A' | 'B' = 'A',
+  maxHearRadius = 46,
+  coreRadius = 3.5,
+): PortalTemporalDroneParams {
+  if (!Number.isFinite(minDistance) || minDistance >= maxHearRadius) {
+    const baseRoot = variant === 'A' ? 58 : 54;
+    return {
+      proximity01: 0,
+      carrierHz: baseRoot,
+      harmonicHz: Number((baseRoot * 1.498).toFixed(2)),
+      modulatorHz: baseRoot * 2,
+      fmDepthHz: 3,
+      lfoWobbleHz: 0.75,
+      lfoPitchDepthHz: 2,
+      filterCutoffHz: 190,
+      filterQ: 2.0,
+      shimmerHz: baseRoot * 4,
+      shimmerGain: 0,
+      droneGain: 0,
+    };
+  }
+
+  const span = Math.max(0.1, maxHearRadius - coreRadius);
+  const linear01 = Math.max(0, Math.min(1, 1 - (minDistance - coreRadius) / span));
+  const proximity01 = Number(Math.pow(linear01, 1.38).toFixed(4));
+
+  const baseRoot = variant === 'A' ? 58 : 54;
+  // Pitch climbs over ~1.8 octaves as the player approaches the portal singularity
+  const carrierHz = Number((baseRoot + proximity01 * 144).toFixed(2));
+  // Slight fifth-to-tritone harmonic shift creates temporal binaural phase beating
+  const harmonicRatio = 1.498 - proximity01 * 0.084;
+  const harmonicHz = Number((carrierHz * harmonicRatio).toFixed(2));
+  // Non-integer FM modulator ratio produces metallic time-dilation sidebands near center
+  const modulatorHz = Number((carrierHz * (2.0 + proximity01 * 0.72)).toFixed(2));
+  const fmDepthHz = Number((3 + Math.pow(proximity01, 1.25) * 135).toFixed(2));
+  const lfoWobbleHz = Number((0.75 + Math.pow(proximity01, 1.15) * 8.25).toFixed(2));
+  const lfoPitchDepthHz = Number((2 + proximity01 * 44).toFixed(2));
+  const filterCutoffHz = Number((190 + Math.pow(proximity01, 1.2) * 2650).toFixed(1));
+  const filterQ = Number((2.0 + proximity01 * 7.2).toFixed(2));
+  const shimmerHz = Number((carrierHz * 4.0).toFixed(2));
+  const shimmerGain = Number((Math.pow(proximity01, 1.8) * 0.085).toFixed(4));
+  const droneGain = Number((proximity01 * 0.21).toFixed(4));
+
+  return {
+    proximity01,
+    carrierHz,
+    harmonicHz,
+    modulatorHz,
+    fmDepthHz,
+    lfoWobbleHz,
+    lfoPitchDepthHz,
+    filterCutoffHz,
+    filterQ,
+    shimmerHz,
+    shimmerGain,
+    droneGain,
+  };
+}
+
 type TierTriggerKind =
   | 'cicadaPulse'
   | 'bambooClack'
@@ -540,6 +623,20 @@ export class SoundEngine {
   private tierAmbientTimer = 0;
   private tierTransitionTimer = 0;
   private onWeatherAudioCue: ((cue: WeatherAudioCueEvent) => void) | null = null;
+
+  // Portal 'Temporal Distortion' Proximity Drone nodes
+  private portalCarrierOsc: OscillatorNode | null = null;
+  private portalHarmonicOsc: OscillatorNode | null = null;
+  private portalFmModOsc: OscillatorNode | null = null;
+  private portalFmDepthGain: GainNode | null = null;
+  private portalShimmerOsc: OscillatorNode | null = null;
+  private portalShimmerGain: GainNode | null = null;
+  private portalTimeLfo: OscillatorNode | null = null;
+  private portalTimeLfoFilterGain: GainNode | null = null;
+  private portalTimeLfoPitchGain: GainNode | null = null;
+  private portalDroneFilter: BiquadFilterNode | null = null;
+  private portalDronePanner: StereoPannerNode | null = null;
+  private portalDroneGain: GainNode | null = null;
 
   public setWeatherAudioCueListener(fn: ((cue: WeatherAudioCueEvent) => void) | null): void {
     this.onWeatherAudioCue = fn;
@@ -1225,10 +1322,153 @@ export class SoundEngine {
 
     this.tierTriggerBus = tierTriggerBus;
 
+    // 7. Procedural Portal 'Temporal Distortion' Proximity Drone Generator
+    // Overlays a time-warping FM + binaural harmonic drone that rises in pitch,
+    // LFO time-dilation wobble rate, filter resonance, and intensity as the player
+    // approaches any 3D portal center.
+    const portalDroneGain = ctx.createGain();
+    portalDroneGain.gain.value = 0.0001;
+
+    let portalDest: AudioNode = master;
+    if (typeof ctx.createStereoPanner === 'function') {
+      const panner = ctx.createStereoPanner();
+      panner.pan.value = 0;
+      panner.connect(master);
+      this.portalDronePanner = panner;
+      portalDest = panner;
+    }
+    portalDroneGain.connect(portalDest);
+
+    const portalDroneFilter = ctx.createBiquadFilter();
+    portalDroneFilter.type = 'lowpass';
+    portalDroneFilter.frequency.value = 190;
+    portalDroneFilter.Q.value = 2.0;
+    portalDroneFilter.connect(portalDroneGain);
+
+    const portalCarrierOsc = ctx.createOscillator();
+    portalCarrierOsc.type = 'sawtooth';
+    portalCarrierOsc.frequency.value = 58;
+
+    const portalHarmonicOsc = ctx.createOscillator();
+    portalHarmonicOsc.type = 'triangle';
+    portalHarmonicOsc.frequency.value = 86.88;
+    const portalHarmonicGain = ctx.createGain();
+    portalHarmonicGain.gain.value = 0.72;
+
+    // FM phase-warp modulator driving both carrier & harmonic frequencies
+    const portalFmModOsc = ctx.createOscillator();
+    portalFmModOsc.type = 'sine';
+    portalFmModOsc.frequency.value = 116;
+    const portalFmDepthGain = ctx.createGain();
+    portalFmDepthGain.gain.value = 3;
+    portalFmModOsc.connect(portalFmDepthGain);
+    portalFmDepthGain.connect(portalCarrierOsc.frequency);
+    portalFmDepthGain.connect(portalHarmonicOsc.frequency);
+
+    // High-octave crystalline event-horizon shimmer oscillator
+    const portalShimmerOsc = ctx.createOscillator();
+    portalShimmerOsc.type = 'sine';
+    portalShimmerOsc.frequency.value = 232;
+    const portalShimmerGain = ctx.createGain();
+    portalShimmerGain.gain.value = 0.0001;
+    portalShimmerOsc.connect(portalShimmerGain);
+    portalShimmerGain.connect(portalDroneFilter);
+
+    // Temporal dilation wobble LFO modulating filter cutoff and carrier pitch
+    const portalTimeLfo = ctx.createOscillator();
+    portalTimeLfo.type = 'sine';
+    portalTimeLfo.frequency.value = 0.75;
+    const portalTimeLfoFilterGain = ctx.createGain();
+    portalTimeLfoFilterGain.gain.value = 85;
+    const portalTimeLfoPitchGain = ctx.createGain();
+    portalTimeLfoPitchGain.gain.value = 2;
+    portalTimeLfo.connect(portalTimeLfoFilterGain);
+    portalTimeLfoFilterGain.connect(portalDroneFilter.frequency);
+    portalTimeLfo.connect(portalTimeLfoPitchGain);
+    portalTimeLfoPitchGain.connect(portalCarrierOsc.frequency);
+
+    portalCarrierOsc.connect(portalDroneFilter);
+    portalHarmonicOsc.connect(portalHarmonicGain);
+    portalHarmonicGain.connect(portalDroneFilter);
+
+    portalCarrierOsc.start(ctx.currentTime);
+    portalHarmonicOsc.start(ctx.currentTime);
+    portalFmModOsc.start(ctx.currentTime);
+    portalShimmerOsc.start(ctx.currentTime);
+    portalTimeLfo.start(ctx.currentTime);
+
+    this.portalCarrierOsc = portalCarrierOsc;
+    this.portalHarmonicOsc = portalHarmonicOsc;
+    this.portalFmModOsc = portalFmModOsc;
+    this.portalFmDepthGain = portalFmDepthGain;
+    this.portalShimmerOsc = portalShimmerOsc;
+    this.portalShimmerGain = portalShimmerGain;
+    this.portalTimeLfo = portalTimeLfo;
+    this.portalTimeLfoFilterGain = portalTimeLfoFilterGain;
+    this.portalTimeLfoPitchGain = portalTimeLfoPitchGain;
+    this.portalDroneFilter = portalDroneFilter;
+    this.portalDroneGain = portalDroneGain;
+
     this.applyEvolutionTierParams(ctx, false);
     this.applyBiomeParams(ctx, false);
     this.scheduleNextWildlifeEvent(1100);
     this.scheduleNextTierEvent(1900);
+  }
+
+  /**
+   * Updates the procedural portal 'temporal distortion' drone generator based on the
+   * player's live distance and stereo bearing to the nearest portal center.
+   */
+  public setPortalProximity(minDistance: number, variant: 'A' | 'B' = 'A', stereoPan = 0): void {
+    if (!this.ctx || !this.ambientStarted || !this.portalDroneGain) return;
+    const now = this.ctx.currentTime;
+    const tau = 0.085;
+    const params = computePortalTemporalDroneParams(minDistance, variant);
+
+    if (this.muted || this.tabHidden || params.proximity01 <= 0.001) {
+      this.portalDroneGain.gain.setTargetAtTime(0.0001, now, 0.14);
+      if (this.portalShimmerGain) {
+        this.portalShimmerGain.gain.setTargetAtTime(0.0001, now, 0.14);
+      }
+      return;
+    }
+
+    this.portalDroneGain.gain.setTargetAtTime(Math.max(0.0001, params.droneGain), now, tau);
+    if (this.portalCarrierOsc) {
+      this.portalCarrierOsc.frequency.setTargetAtTime(params.carrierHz, now, tau);
+    }
+    if (this.portalHarmonicOsc) {
+      this.portalHarmonicOsc.frequency.setTargetAtTime(params.harmonicHz, now, tau);
+    }
+    if (this.portalFmModOsc) {
+      this.portalFmModOsc.frequency.setTargetAtTime(params.modulatorHz, now, tau);
+    }
+    if (this.portalFmDepthGain) {
+      this.portalFmDepthGain.gain.setTargetAtTime(params.fmDepthHz, now, tau);
+    }
+    if (this.portalTimeLfo) {
+      this.portalTimeLfo.frequency.setTargetAtTime(params.lfoWobbleHz, now, tau);
+    }
+    if (this.portalTimeLfoPitchGain) {
+      this.portalTimeLfoPitchGain.gain.setTargetAtTime(params.lfoPitchDepthHz, now, tau);
+    }
+    if (this.portalTimeLfoFilterGain) {
+      this.portalTimeLfoFilterGain.gain.setTargetAtTime(65 + params.proximity01 * 520, now, tau);
+    }
+    if (this.portalDroneFilter) {
+      this.portalDroneFilter.frequency.setTargetAtTime(params.filterCutoffHz, now, tau);
+      this.portalDroneFilter.Q.setTargetAtTime(params.filterQ, now, tau);
+    }
+    if (this.portalShimmerOsc) {
+      this.portalShimmerOsc.frequency.setTargetAtTime(params.shimmerHz, now, tau);
+    }
+    if (this.portalShimmerGain) {
+      this.portalShimmerGain.gain.setTargetAtTime(Math.max(0.0001, params.shimmerGain), now, tau);
+    }
+    if (this.portalDronePanner) {
+      const clampedPan = Math.max(-0.85, Math.min(0.85, stereoPan * (1 - params.proximity01 * 0.65)));
+      this.portalDronePanner.pan.setTargetAtTime(clampedPan, now, tau);
+    }
   }
 
   private applyEvolutionTierParams(ctx: AudioContext, smooth: boolean): void {

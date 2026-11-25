@@ -1,4 +1,5 @@
 import { SoundEngine } from './audio';
+import { PortalChromiumManager, PortalVariant } from './browser';
 import {
   ComplimentEventKind,
   ComplimentNotice,
@@ -69,6 +70,7 @@ import {
   CollectibleOrb,
   EnemyFaction,
   FormationData,
+  FormationProp,
   GameMode,
   GroundFissure,
   HudSnapshot,
@@ -397,6 +399,11 @@ export class SnakeGameController {
   private onCompliment?: (notice: ComplimentNotice) => void;
   private onCombatTaunt?: (notice: FloatingTauntNotice) => void;
   private onTauntAnchorUpdate?: (pos: { x: number; y: number; visible: boolean }) => void;
+  private onPortalBrowserOpen?: (variant: PortalVariant, hasTwinWarp: boolean) => void;
+  public readonly portalBrowser = new PortalChromiumManager();
+  private pendingPortalWarp: { x: number; z: number; variant: PortalVariant } | null = null;
+  private portalTextureAnimAccum = 0;
+  private portalWarpSeq = 0;
   private climateMessageSeq: Partial<Record<WeatherMode, number>> = {};
   private readonly complimentOracle = new SerpentComplimentOracle();
   private readonly tauntOracle = new SerpentTauntOracle();
@@ -534,6 +541,7 @@ export class SnakeGameController {
     onCompliment?: (notice: ComplimentNotice) => void,
     onCombatTaunt?: (notice: FloatingTauntNotice) => void,
     onTauntAnchorUpdate?: (pos: { x: number; y: number; visible: boolean }) => void,
+    onPortalBrowserOpen?: (variant: PortalVariant, hasTwinWarp: boolean) => void,
   ) {
     this.onHudUpdate = onHudUpdate;
     this.onMinimapUpdate = onMinimapUpdate;
@@ -543,9 +551,13 @@ export class SnakeGameController {
     this.onCompliment = onCompliment;
     this.onCombatTaunt = onCombatTaunt;
     this.onTauntAnchorUpdate = onTauntAnchorUpdate;
+    this.onPortalBrowserOpen = onPortalBrowserOpen;
 
     this.sound = new SoundEngine();
     this.world = new WorldEngine(container);
+    this.portalBrowser.onChange(() => {
+      this.syncPortalTextures();
+    });
 
     this.savedFormations = loadSavedFormations();
     this.bestScore = loadBestScore();
@@ -1562,7 +1574,70 @@ export class SnakeGameController {
       this.sound.setBiome(this.formation.biome);
     }
     this.world.syncFormation(this.formation);
+    this.syncPortalTextures();
     this.rebuildObstacleCache();
+  }
+
+  public syncPortalTextures(): void {
+    this.world.refreshPortalBrowserTextures((ctx, variant, phase) => {
+      this.portalBrowser.drawPortalBrowserTexture(ctx, variant, phase);
+    });
+  }
+
+  public hasPendingPortalWarp(): boolean {
+    return this.pendingPortalWarp !== null;
+  }
+
+  private findNextPortalDestination(
+    fromX: number,
+    fromZ: number,
+    activeVariant: PortalVariant,
+  ): FormationProp | null {
+    const pairType: PropType = activeVariant === 'A' ? 'portalB' : 'portalA';
+    const twinCandidates = this.formation.props.filter(
+      (p) => p.type === pairType && Math.hypot(p.x - fromX, p.z - fromZ) > 6,
+    );
+    if (twinCandidates.length > 0) {
+      const chosen = twinCandidates[this.portalWarpSeq % twinCandidates.length];
+      this.portalWarpSeq++;
+      return chosen;
+    }
+    const anyPortal = this.formation.props.filter(
+      (p) => (p.type === 'portalA' || p.type === 'portalB') && Math.hypot(p.x - fromX, p.z - fromZ) > 6,
+    );
+    if (anyPortal.length > 0) {
+      const chosen = anyPortal[this.portalWarpSeq % anyPortal.length];
+      this.portalWarpSeq++;
+      return chosen;
+    }
+    return null;
+  }
+
+  public executePendingPortalWarp(): boolean {
+    const target = this.pendingPortalWarp;
+    const activeVariant = target ? target.variant : this.portalBrowser.getActivePortalVariant();
+    const dest =
+      target ||
+      this.findNextPortalDestination(this.headX, this.headZ, activeVariant);
+    this.pendingPortalWarp = null;
+    if (!dest) {
+      this.onToast('No twin destination portal placed on this mountain course.');
+      return false;
+    }
+    this.world.spawnBurst(this.headX, this.headY + 0.8, this.headZ, 0x2de3ff, 22);
+    this.headX = dest.x + Math.sin(this.heading) * 4.5;
+    this.headZ = dest.z + Math.cos(this.heading) * 4.5;
+    this.headY = terrainHeightAt(this.headX, this.headZ, this.formation.biome);
+    this.portalCooldown = 2.8;
+    this.invulnTimer = 1.1;
+    this.rebuildInitialPathHistory();
+    this.sound.playPortal();
+    this.world.spawnBurst(this.headX, this.headY + 0.8, this.headZ, 0xff6be0, 26);
+    this.onToast(
+      `Warped via Portal ${activeVariant} to Dimensional Gate (${Math.round(dest.x)}, ${Math.round(dest.z)})!`,
+    );
+    this.emitHud();
+    return true;
   }
 
   private cellKey(cx: number, cz: number): string {
@@ -2070,6 +2145,12 @@ export class SnakeGameController {
       this.sound.playLightningThunder(lightningStrike);
     }
 
+    this.portalTextureAnimAccum += dt;
+    if (this.portalTextureAnimAccum >= 0.11) {
+      this.portalTextureAnimAccum = 0;
+      this.syncPortalTextures();
+    }
+
     if (this.mode === 'playing') {
       this.onTauntAnchorUpdate?.(this.world.getSerpentBubbleScreenPosition(this.level));
       this.hudEmitAccum += dt;
@@ -2449,20 +2530,30 @@ export class SnakeGameController {
           this.sound.playBoost();
           this.world.spawnBurst(this.headX, this.headY + 0.6, this.headZ, 0xffe066, 16);
         }
-      } else if ((prop.type === 'portalA' || prop.type === 'portalB') && d < 2.1 && this.portalCooldown <= 0) {
-        const pairType: PropType = prop.type === 'portalA' ? 'portalB' : 'portalA';
-        const dest = this.formation.props.find((p) => p.type === pairType);
-        if (dest) {
-          this.world.spawnBurst(this.headX, this.headY + 0.8, this.headZ, 0x2de3ff, 22);
-          this.headX = dest.x + Math.sin(this.heading) * 2.6;
-          this.headZ = dest.z + Math.cos(this.heading) * 2.6;
+      } else if ((prop.type === 'portalA' || prop.type === 'portalB') && d < 4.2 && this.portalCooldown <= 0) {
+        const variant: PortalVariant = prop.type === 'portalA' ? 'A' : 'B';
+        const dest = this.findNextPortalDestination(prop.x, prop.z, variant);
+        this.portalCooldown = 3.4;
+        this.invulnTimer = 1.2;
+        this.sound.playPortal();
+        this.world.spawnBurst(
+          this.headX,
+          this.headY + 1.1,
+          this.headZ,
+          variant === 'A' ? 0x2de3ff : 0xff6be0,
+          28,
+        );
+        this.portalBrowser.setActivePortalVariant(variant);
+        if (this.onPortalBrowserOpen) {
+          this.pendingPortalWarp = dest ? { x: dest.x, z: dest.z, variant } : null;
+          // Nudge serpent past the colossal portal ring so closing the browser doesn't immediately re-trigger
+          this.headX += Math.sin(this.heading) * 4.4;
+          this.headZ += Math.cos(this.heading) * 4.4;
           this.headY = terrainHeightAt(this.headX, this.headZ, this.formation.biome);
-          this.portalCooldown = 2.0;
-          this.invulnTimer = 0.8;
-          this.rebuildInitialPathHistory();
-          this.sound.playPortal();
-          this.world.spawnBurst(this.headX, this.headY + 0.8, this.headZ, 0xff6be0, 24);
-          this.onToast('Warped across the continent!');
+          this.onPortalBrowserOpen(variant, Boolean(dest));
+        } else if (dest) {
+          this.pendingPortalWarp = { x: dest.x, z: dest.z, variant };
+          this.executePendingPortalWarp();
         }
       }
     }

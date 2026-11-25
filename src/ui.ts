@@ -13,6 +13,12 @@ import {
   computeBossBarSegments,
   getMagicTierForLevel,
 } from './evolution';
+import {
+  CHROMIUM_ENGINE_META,
+  PORTAL_BOOKMARKS,
+  PortalVariant,
+  computeRollingTabOrbitLayout,
+} from './browser';
 import { ComplimentNotice, FloatingTauntNotice } from './compliments';
 import { PRESET_FORMATIONS } from './formations';
 import { ClimateLogNotice, SnakeGameController } from './game';
@@ -119,6 +125,55 @@ export class GameUI {
   private tauntTextEl!: HTMLElement;
   private tauntTimer = 0;
   private tauntBubbleActive = false;
+
+  // Portal Chromium Browser & 3D Rolling Tab Otherworld nodes
+  private portalBrowserModal!: HTMLElement;
+  private chromiumTabListEl!: HTMLElement;
+  private chromiumOmniboxForm!: HTMLFormElement;
+  private chromiumOmniboxInput!: HTMLInputElement;
+  private chromiumBackBtn!: HTMLButtonElement;
+  private chromiumFwdBtn!: HTMLButtonElement;
+  private chromiumProxyBtn!: HTMLButtonElement;
+  private chromiumWarpBtn!: HTMLButtonElement;
+  private chromiumPipBtn!: HTMLButtonElement;
+  private chromiumOrbitToggleBtn!: HTMLButtonElement;
+  private chromiumPortalABtn!: HTMLButtonElement;
+  private chromiumPortalBBtn!: HTMLButtonElement;
+  private chromiumBookmarksBarEl!: HTMLElement;
+  private chromiumOtherworldEl!: HTMLElement;
+  private chromiumOrbitStageEl!: HTMLElement;
+  private chromiumViewportFrame!: HTMLIFrameElement;
+  private chromiumStatusTextEl!: HTMLElement;
+  private lastLoadedIframeKey = '';
+  private portalBrowserPip = false;
+  private portalWorldOrbitMode = true;
+  private portalOrbitAngle = 0;
+  private portalOrbitVel = 0.34;
+  private portalOrbitRafId = 0;
+  private portalOrbitHoverPaused = false;
+  private portalOrbitLastPerf = 0;
+
+  // Mobile Landscape, Virtual Moving Cursor & Arcade Fighting Skill nodes
+  private mobileLeftClusterEl!: HTMLElement;
+  private mobileActionRowEl!: HTMLElement;
+  private mobileVirtualCursorEl!: HTMLElement;
+  private mobileCursorPadEl!: HTMLElement;
+  private mobileCursorPuckEl!: HTMLElement;
+  private mobileSkill1Btn!: HTMLButtonElement;
+  private mobileSkill1LabelEl!: HTMLElement;
+  private mobileSkill1CdEl!: HTMLElement;
+  private mobileSkill2Btn!: HTMLButtonElement;
+  private mobileSkill2LabelEl!: HTMLElement;
+  private mobileSkill2CdEl!: HTMLElement;
+  private mobileSkill3Btn!: HTMLButtonElement;
+  private mobileSkill3LabelEl!: HTMLElement;
+  private mobileSkill3CdEl!: HTMLElement;
+  private mobileSkill4Btn!: HTMLButtonElement;
+  private mobileSkill4LabelEl!: HTMLElement;
+  private mobileSkill4CdEl!: HTMLElement;
+  private virtualCursorX = typeof window !== 'undefined' ? window.innerWidth * 0.5 : 640;
+  private virtualCursorY = typeof window !== 'undefined' ? window.innerHeight * 0.42 : 320;
+  private virtualCursorEnabled = false;
 
   // Title progress nodes
   private startPlayBtn!: HTMLButtonElement;
@@ -775,6 +830,7 @@ export class GameUI {
           <p class="modal-sub">Catch your breath above the valley, inspect your Humanity Path stats, or review your expedition.</p>
           <div class="modal-actions">
             <button type="button" class="primary-cta" id="resumeBtn">Resume</button>
+            <button type="button" class="secondary-cta" id="pausePortalBrowserBtn">🌐 Portal Chromium Browser (G)</button>
             <button type="button" class="secondary-cta" id="pauseSettingsBtn">Settings</button>
             <button type="button" class="secondary-cta" id="pauseBestiaryBtn">Bestiary Catalog</button>
             <button type="button" class="secondary-cta" id="pauseSummaryBtn">Humanity Path Summary</button>
@@ -884,8 +940,112 @@ export class GameUI {
               <button type="button" class="speed-btn active" data-quality="high">High</button>
             </div>
           </div>
+          <div class="settings-section">
+            <span class="settings-label">Mobile Touch Controls &amp; Virtual Cursor</span>
+            <div class="settings-row">
+              <button type="button" class="secondary-cta compact" id="toggleMobileControlsBtn">Toggle Touch Pad &amp; Cursor</button>
+              <button type="button" class="secondary-cta compact" id="lockLandscapeSettingsBtn">⟳ Lock Landscape</button>
+            </div>
+          </div>
           <div class="modal-actions">
             <button type="button" class="primary-cta" id="closeSettingsBtn">Close</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- PORTAL CHROMIUM MULTI-TAB BROWSER MODAL (OPENS WHEN ENTERING 3D PORTALS OR PRESSING [G]) -->
+      <div class="chromium-portal-backdrop hidden" id="portalBrowserModal" role="dialog" aria-modal="true" aria-label="Portal Chromium Browser">
+        <div class="chromium-window">
+          <!-- CHROMIUM TOP TAB STRIP -->
+          <div class="chromium-tabstrip-row">
+            <div class="chromium-window-controls" aria-hidden="true">
+              <span class="c-dot close"></span>
+              <span class="c-dot min"></span>
+              <span class="c-dot max"></span>
+            </div>
+            <div class="chromium-portal-channel-group" role="group" aria-label="Portal Channel">
+              <button type="button" class="chromium-channel-btn active-a" id="chromiumPortalABtn" title="View Portal A Dimension">● Portal A</button>
+              <button type="button" class="chromium-channel-btn" id="chromiumPortalBBtn" title="View Portal B Dimension">● Portal B</button>
+            </div>
+            <button type="button" class="chromium-orbit-mode-btn is-active" id="chromiumOrbitToggleBtn" title="Return to the 3D Rolling Tab Cosmos">🌌 Rolling Tab World</button>
+            <div class="chromium-tabs-scroll" id="chromiumTabList" role="tablist"></div>
+            <button type="button" class="chromium-newtab-btn" id="chromiumNewTabBtn" title="Spawn New Rolling Tab World" aria-label="New Tab">+</button>
+            <div class="chromium-window-actions">
+              <button type="button" class="chromium-win-btn" id="chromiumPipBtn" title="Dock Picture-in-Picture while playing">⧉ PiP Dock</button>
+              <button type="button" class="chromium-win-btn close" id="chromiumCloseBtn" title="Close Portal Browser (Esc)">✕</button>
+            </div>
+          </div>
+
+          <!-- CHROMIUM NAVIGATION & OMNIBOX BAR -->
+          <div class="chromium-toolbar-row">
+            <div class="chromium-nav-btns">
+              <button type="button" class="chromium-nav-btn" id="chromiumBackBtn" title="Back" aria-label="Back">←</button>
+              <button type="button" class="chromium-nav-btn" id="chromiumFwdBtn" title="Forward" aria-label="Forward">→</button>
+              <button type="button" class="chromium-nav-btn" id="chromiumReloadBtn" title="Reload Tab" aria-label="Reload">↻</button>
+              <button type="button" class="chromium-nav-btn" id="chromiumHomeBtn" title="Open 3D Rolling Tab Cosmos" aria-label="Home">🌌</button>
+            </div>
+            <form class="chromium-omnibox-form" id="chromiumOmniboxForm">
+              <span class="chromium-omnibox-lock" aria-hidden="true">🔒</span>
+              <input
+                type="text"
+                class="chromium-omnibox-input"
+                id="chromiumOmniboxInput"
+                placeholder="Search DuckDuckGo or enter URL to launch a rolling tab world..."
+                autocomplete="off"
+                spellcheck="false"
+              />
+              <button type="submit" class="chromium-omnibox-go">Enter World</button>
+            </form>
+            <div class="chromium-toolbar-right">
+              <button type="button" class="chromium-proxy-btn is-on" id="chromiumProxyBtn" title="Toggle Server-Side Chromium Proxy vs Direct Iframe">Proxy: ON</button>
+              <button type="button" class="chromium-warp-btn" id="chromiumWarpBtn" title="Physically teleport your serpent to the next Dimensional Portal across the mountain">⚡ Warp Next Portal ➔</button>
+            </div>
+          </div>
+
+          <!-- CHROMIUM BOOKMARKS BAR -->
+          <div class="chromium-bookmarks-bar" id="chromiumBookmarksBar"></div>
+
+          <!-- CHROMIUM POCKET DIMENSION VIEWPORT: 3D ROLLING TAB COSMOS + LIVE WEB IFRAME -->
+          <div class="chromium-viewport-wrap">
+            <!-- OTHERWORLD 3D ROLLING TAB ORBIT ("ANOTHER WORLD INSIDE THE PORTAL") -->
+            <div class="chromium-otherworld-cosmos" id="chromiumOtherworldCosmos">
+              <div class="otherworld-nebula-bg" aria-hidden="true">
+                <div class="otherworld-astrolabe-ring ring-outer"></div>
+                <div class="otherworld-astrolabe-ring ring-mid"></div>
+                <div class="otherworld-astrolabe-ring ring-inner"></div>
+                <div class="otherworld-horizon-grid"></div>
+              </div>
+
+              <div class="otherworld-header-hud">
+                <span class="otherworld-kicker">🌌 DIMENSIONAL PORTAL POCKET WORLD · CHROMIUM 131 MULTIVERSE</span>
+                <h3 class="otherworld-title">Every Tab is Rolling Around in Orbit — Select Any Tab World to Enter</h3>
+                <p class="otherworld-subtitle">Click or tap any orbiting tab portal below to dive into its live web world, drag/scroll to spin the orbit, or spawn a new tab.</p>
+              </div>
+
+              <!-- 3D PERSPECTIVE ORBIT STAGE WHERE EVERY TAB ROLLS AROUND -->
+              <div class="otherworld-orbit-stage" id="chromiumOrbitStage" role="region" aria-label="3D Rolling Tabs Orbit"></div>
+
+              <!-- ORBIT CONTROLS FOOTER -->
+              <div class="otherworld-orbit-controls">
+                <button type="button" class="otherworld-ctrl-btn" id="orbitSpinLeftBtn">⟲ Spin Left</button>
+                <button type="button" class="otherworld-ctrl-btn primary" id="orbitEnterFrontBtn">⚡ Enter Front Tab World</button>
+                <button type="button" class="otherworld-ctrl-btn" id="orbitSpawnTabBtn">+ New Rolling Tab</button>
+                <button type="button" class="otherworld-ctrl-btn" id="orbitSpinRightBtn">⟳ Spin Right</button>
+              </div>
+            </div>
+
+            <iframe
+              id="chromiumViewportFrame"
+              class="chromium-viewport-frame"
+              title="Portal Chromium Active Tab"
+              sandbox="allow-same-origin allow-scripts allow-forms allow-popups"
+            ></iframe>
+          </div>
+
+          <!-- CHROMIUM FOOTER STATUS BAR -->
+          <div class="chromium-statusbar">
+            <span class="chromium-status-left" id="chromiumStatusText">Chromium 131.0.6778.86 · Blink Portal Wormhole Compositor</span>
+            <span class="chromium-status-right">Synced to 8 Colossal 3D Mountain Portals · Press [G] or [Esc] to return</span>
           </div>
         </div>
       </div>
@@ -895,24 +1055,74 @@ export class GameUI {
         <div class="tutorial-card">
           <h2 class="tutorial-title">How to Play</h2>
           <ul class="tutorial-list">
-            <li><span class="keycap">A / D</span> or drag to steer the serpent</li>
-            <li><span class="keycap">W / Space</span> to boost uphill (drains Stamina)</li>
-            <li><span class="keycap">S</span> to brake</li>
-            <li><span class="keycap">F / 1</span> Qi Bolt &nbsp;·&nbsp; <span class="keycap">Q / 2</span> Shockwave</li>
-            <li><span class="keycap">E / 3</span> Dash &nbsp;·&nbsp; <span class="keycap">R / 4</span> Flame Lotus</li>
+            <li><span class="keycap">A / D</span> or left thumbpad to steer &amp; move virtual cursor</li>
+            <li><span class="keycap">W / Space</span> to boost uphill (drains Stamina) · <span class="keycap">S</span> to brake</li>
+            <li><span class="keycap">F / 1</span> Attack / Gun · <span class="keycap">Q / 2</span> Shockwave · <span class="keycap">E / 3</span> Dash · <span class="keycap">R / 4</span> Flame Lotus</li>
+            <li>🌐 Slither into glowing 3D <strong>Portals</strong> (or press <span class="keycap">G</span>) to browse multi-tab <strong>Portal Chromium</strong> websites or warp across the peaks!</li>
             <li>Conquer all 12 Trial Peak Shrines to evolve into an Ascended Human</li>
             <li>⚠️ Severe climates shift automatically on every run &amp; mid-climb — seek Shrine Shelter to recover HP &amp; Qi</li>
-            <li>⚔️ Enemy health &amp; damage scale upward from 200 HP with every Cultivation Stage (up to 8× HP &amp; 4.5× DMG at Dou Di)</li>
           </ul>
           <button type="button" class="primary-cta" id="closeTutorialBtn">▶ Start Playing</button>
           <p style="margin:12px 0 0;font-size:12px;opacity:0.5;text-align:center">Press Enter or Escape to skip</p>
         </div>
       </div>
 
-      <!-- MOBILE BOOST / BRAKE TOUCH BUTTONS (shown only on touch devices) -->
+      <!-- MOBILE PORTRAIT-TO-LANDSCAPE ROTATION HELPER BANNER -->
+      <div class="mobile-orientation-banner" id="mobileOrientationBanner">
+        <span>📱 Rotate phone to <strong>Landscape</strong> for best 3D view, virtual cursor &amp; fighting skills</span>
+        <div class="mobile-orientation-actions">
+          <button type="button" class="mobile-orient-btn" id="mobileBannerLockLandscapeBtn">⟳ Lock Landscape</button>
+          <button type="button" class="mobile-orient-close" id="mobileBannerDismissBtn" aria-label="Dismiss">✕</button>
+        </div>
+      </div>
+
+      <!-- MOBILE ON-SCREEN MOVING VIRTUAL CURSOR -->
+      <div class="mobile-virtual-cursor hidden" id="mobileVirtualCursor" aria-hidden="true">
+        <div class="virtual-cursor-ring"></div>
+        <div class="virtual-cursor-dot"></div>
+      </div>
+
+      <!-- MOBILE LEFT-THUMB MOVING CURSOR TRACKPAD & QUICK UTILITY BAR -->
+      <div class="mobile-left-cluster hidden" id="mobileLeftCluster" aria-hidden="true">
+        <div class="mobile-utility-pills">
+          <button type="button" class="mobile-util-pill" id="mobileLandscapeBtn" title="Fullscreen & Lock Landscape">⟳ Landscape</button>
+          <button type="button" class="mobile-util-pill portal" id="mobilePortalBtn" title="Open Portal Chromium Browser">🌐 Portal Tabs</button>
+          <button type="button" class="mobile-util-pill click" id="mobileCursorClickBtn" title="Click or Fire at Virtual Cursor">🎯 Click</button>
+        </div>
+        <div class="mobile-cursor-pad" id="mobileCursorPad" aria-label="Virtual Cursor and Steering Trackpad">
+          <span class="mobile-pad-label">CURSOR &amp; STEER</span>
+          <div class="mobile-cursor-puck" id="mobileCursorPuck"></div>
+        </div>
+      </div>
+
+      <!-- MOBILE RIGHT-THUMB ARCADE FIGHTING SKILLS + BOOST/BRAKE CLUSTER -->
       <div class="mobile-action-row hidden" id="mobileActionRow" aria-hidden="true">
-        <button type="button" class="mobile-action-btn" id="mobileBrakeBtn" aria-label="Brake">▼ Brake</button>
-        <button type="button" class="mobile-action-btn accent" id="mobileBoostBtn" aria-label="Boost">▲ Boost</button>
+        <div class="mobile-skills-grid">
+          <button type="button" class="mobile-skill-btn s1" id="mobileSkill1Btn" aria-label="Primary Skill 1">
+            <span class="mskill-cd" id="mobileSkill1Cd"></span>
+            <span class="mskill-key">1</span>
+            <span class="mskill-name" id="mobileSkill1Label">Fang Bolt</span>
+          </button>
+          <button type="button" class="mobile-skill-btn s2" id="mobileSkill2Btn" aria-label="Shockwave Skill 2">
+            <span class="mskill-cd" id="mobileSkill2Cd"></span>
+            <span class="mskill-key">2</span>
+            <span class="mskill-name" id="mobileSkill2Label">Shockwave</span>
+          </button>
+          <button type="button" class="mobile-skill-btn s3" id="mobileSkill3Btn" aria-label="Dash Skill 3">
+            <span class="mskill-cd" id="mobileSkill3Cd"></span>
+            <span class="mskill-key">3</span>
+            <span class="mskill-name" id="mobileSkill3Label">Coil Dash</span>
+          </button>
+          <button type="button" class="mobile-skill-btn s4" id="mobileSkill4Btn" aria-label="Ultimate Skill 4">
+            <span class="mskill-cd" id="mobileSkill4Cd"></span>
+            <span class="mskill-key">4</span>
+            <span class="mskill-name" id="mobileSkill4Label">Flame Lotus</span>
+          </button>
+        </div>
+        <div class="mobile-drive-col">
+          <button type="button" class="mobile-action-btn accent" id="mobileBoostBtn" aria-label="Boost">▲ Boost</button>
+          <button type="button" class="mobile-action-btn" id="mobileBrakeBtn" aria-label="Brake">▼ Brake</button>
+        </div>
       </div>
     `;
 
@@ -939,11 +1149,47 @@ export class GameUI {
     this.settingsModal = uiLayer.querySelector('#settingsModal')!;
     this.tutorialOverlay = uiLayer.querySelector('#tutorialOverlay')!;
 
-    // Show mobile boost/brake on touch devices
-    if (window.matchMedia('(pointer: coarse)').matches) {
-      const mobileRow = uiLayer.querySelector<HTMLElement>('#mobileActionRow')!;
-      mobileRow.classList.remove('hidden');
-      mobileRow.setAttribute('aria-hidden', 'false');
+    this.portalBrowserModal = uiLayer.querySelector('#portalBrowserModal')!;
+    this.chromiumTabListEl = uiLayer.querySelector('#chromiumTabList')!;
+    this.chromiumOmniboxForm = uiLayer.querySelector('#chromiumOmniboxForm')!;
+    this.chromiumOmniboxInput = uiLayer.querySelector('#chromiumOmniboxInput')!;
+    this.chromiumBackBtn = uiLayer.querySelector('#chromiumBackBtn')!;
+    this.chromiumFwdBtn = uiLayer.querySelector('#chromiumFwdBtn')!;
+    this.chromiumProxyBtn = uiLayer.querySelector('#chromiumProxyBtn')!;
+    this.chromiumWarpBtn = uiLayer.querySelector('#chromiumWarpBtn')!;
+    this.chromiumPipBtn = uiLayer.querySelector('#chromiumPipBtn')!;
+    this.chromiumOrbitToggleBtn = uiLayer.querySelector('#chromiumOrbitToggleBtn')!;
+    this.chromiumPortalABtn = uiLayer.querySelector('#chromiumPortalABtn')!;
+    this.chromiumPortalBBtn = uiLayer.querySelector('#chromiumPortalBBtn')!;
+    this.chromiumBookmarksBarEl = uiLayer.querySelector('#chromiumBookmarksBar')!;
+    this.chromiumOtherworldEl = uiLayer.querySelector('#chromiumOtherworldCosmos')!;
+    this.chromiumOrbitStageEl = uiLayer.querySelector('#chromiumOrbitStage')!;
+    this.chromiumViewportFrame = uiLayer.querySelector('#chromiumViewportFrame')!;
+    this.chromiumStatusTextEl = uiLayer.querySelector('#chromiumStatusText')!;
+
+    this.mobileLeftClusterEl = uiLayer.querySelector('#mobileLeftCluster')!;
+    this.mobileActionRowEl = uiLayer.querySelector('#mobileActionRow')!;
+    this.mobileVirtualCursorEl = uiLayer.querySelector('#mobileVirtualCursor')!;
+    this.mobileCursorPadEl = uiLayer.querySelector('#mobileCursorPad')!;
+    this.mobileCursorPuckEl = uiLayer.querySelector('#mobileCursorPuck')!;
+    this.mobileSkill1Btn = uiLayer.querySelector('#mobileSkill1Btn')!;
+    this.mobileSkill1LabelEl = uiLayer.querySelector('#mobileSkill1Label')!;
+    this.mobileSkill1CdEl = uiLayer.querySelector('#mobileSkill1Cd')!;
+    this.mobileSkill2Btn = uiLayer.querySelector('#mobileSkill2Btn')!;
+    this.mobileSkill2LabelEl = uiLayer.querySelector('#mobileSkill2Label')!;
+    this.mobileSkill2CdEl = uiLayer.querySelector('#mobileSkill2Cd')!;
+    this.mobileSkill3Btn = uiLayer.querySelector('#mobileSkill3Btn')!;
+    this.mobileSkill3LabelEl = uiLayer.querySelector('#mobileSkill3Label')!;
+    this.mobileSkill3CdEl = uiLayer.querySelector('#mobileSkill3Cd')!;
+    this.mobileSkill4Btn = uiLayer.querySelector('#mobileSkill4Btn')!;
+    this.mobileSkill4LabelEl = uiLayer.querySelector('#mobileSkill4Label')!;
+    this.mobileSkill4CdEl = uiLayer.querySelector('#mobileSkill4Cd')!;
+
+    // Show mobile touch controls, fighting skill buttons & virtual cursor on touch devices or mobile viewports
+    const isTouchOrMobile =
+      window.matchMedia('(pointer: coarse)').matches || window.innerWidth <= 920;
+    if (isTouchOrMobile) {
+      this.setMobileControlsEnabled(true);
     }
 
     this.startPlayBtn = uiLayer.querySelector('#startPlayBtn')!;
@@ -1296,6 +1542,10 @@ export class GameUI {
 
     // Pause modal
     this.root.querySelector('#resumeBtn')!.addEventListener('click', () => this.game.togglePause());
+    this.root.querySelector('#pausePortalBrowserBtn')!.addEventListener('click', () => {
+      this.pauseModal.classList.add('hidden');
+      this.openPortalBrowserModal();
+    });
     this.root.querySelector('#pauseBestiaryBtn')!.addEventListener('click', () => this.openBestiaryModal());
     this.root.querySelector('#pauseSummaryBtn')!.addEventListener('click', () => this.openCurrentSummaryForReview());
     this.root.querySelector('#pauseJourneyBtn')!.addEventListener('click', () => this.openJourneyModal());
@@ -1375,19 +1625,46 @@ export class GameUI {
       }
     });
 
-    // --- Mobile Boost / Brake ---
+    // --- Mobile Boost / Brake, Fighting Skills, Landscape Lock, Virtual Cursor & Portal Chromium Browser ---
     const mobileBoostBtn = this.root.querySelector<HTMLButtonElement>('#mobileBoostBtn');
     const mobileBrakeBtn = this.root.querySelector<HTMLButtonElement>('#mobileBrakeBtn');
     if (mobileBoostBtn) {
-      mobileBoostBtn.addEventListener('pointerdown', () => this.game.setBoostHeld(true));
+      mobileBoostBtn.addEventListener('pointerdown', (e) => {
+        e.stopPropagation();
+        this.game.setBoostHeld(true);
+      });
       mobileBoostBtn.addEventListener('pointerup', () => this.game.setBoostHeld(false));
       mobileBoostBtn.addEventListener('pointercancel', () => this.game.setBoostHeld(false));
     }
     if (mobileBrakeBtn) {
-      mobileBrakeBtn.addEventListener('pointerdown', () => this.game.setBrakeHeld(true));
+      mobileBrakeBtn.addEventListener('pointerdown', (e) => {
+        e.stopPropagation();
+        this.game.setBrakeHeld(true);
+      });
       mobileBrakeBtn.addEventListener('pointerup', () => this.game.setBrakeHeld(false));
       mobileBrakeBtn.addEventListener('pointercancel', () => this.game.setBrakeHeld(false));
     }
+
+    this.mobileSkill1Btn.addEventListener('pointerdown', (e) => {
+      e.stopPropagation();
+      this.game.castPrimaryMagic();
+    });
+    this.mobileSkill2Btn.addEventListener('pointerdown', (e) => {
+      e.stopPropagation();
+      this.game.castShockwave();
+    });
+    this.mobileSkill3Btn.addEventListener('pointerdown', (e) => {
+      e.stopPropagation();
+      this.game.castDashStrike();
+    });
+    this.mobileSkill4Btn.addEventListener('pointerdown', (e) => {
+      e.stopPropagation();
+      this.game.castUltimateLotus();
+    });
+
+    this.bindMobileCursorAndLandscapeEvents();
+    this.bindPortalChromiumEvents();
+
     this.root.querySelector('#copyCodeBtn')!.addEventListener('click', async () => {
       try {
         await navigator.clipboard.writeText(this.shareCodeInput.value);
@@ -1692,7 +1969,10 @@ export class GameUI {
   }
 
   private syncModalFreeze(): void {
+    const portalBlocking =
+      !this.portalBrowserModal.classList.contains('hidden') && !this.portalBrowserPip;
     const anyBlockingModal =
+      portalBlocking ||
       !this.bestiaryModal.classList.contains('hidden') ||
       !this.journeyModal.classList.contains('hidden') ||
       !this.evolutionSummaryModal.classList.contains('hidden');
@@ -1701,11 +1981,16 @@ export class GameUI {
 
   public isModalOpen(): boolean {
     return (
+      (!this.portalBrowserModal.classList.contains('hidden') && !this.portalBrowserPip) ||
       !this.shareModal.classList.contains('hidden') ||
       !this.journeyModal.classList.contains('hidden') ||
       !this.evolutionSummaryModal.classList.contains('hidden') ||
       !this.bestiaryModal.classList.contains('hidden')
     );
+  }
+
+  public isPortalBrowserOpen(): boolean {
+    return !this.portalBrowserModal.classList.contains('hidden');
   }
 
   public isEvolutionSummaryOpen(): boolean {
@@ -1720,6 +2005,7 @@ export class GameUI {
     if (!this.evolutionSummaryModal.classList.contains('hidden')) {
       this.handleEvolutionSummaryPrimary();
     }
+    this.portalBrowserModal.classList.add('hidden');
     this.shareModal.classList.add('hidden');
     this.journeyModal.classList.add('hidden');
     this.bestiaryModal.classList.add('hidden');
@@ -2503,6 +2789,25 @@ export class GameUI {
     this.ultimateSkillBtn.classList.toggle('is-ready', snap.ultimateCooldownFrac <= 0.01 && ultHasQi);
     this.ultimateSkillBtn.classList.toggle('no-qi', !ultHasQi);
 
+    // Sync Mobile Arcade Fighting Skill Buttons
+    this.mobileSkill1LabelEl.textContent = snap.primarySpellName;
+    this.mobileSkill1CdEl.style.height = `${(snap.primaryCooldownFrac * 100).toFixed(1)}%`;
+    this.mobileSkill1Btn.classList.toggle('is-ready', snap.primaryCooldownFrac <= 0.01);
+
+    this.mobileSkill2LabelEl.textContent = snap.shockwaveName;
+    this.mobileSkill2CdEl.style.height = `${(snap.shockwaveCooldownFrac * 100).toFixed(1)}%`;
+    this.mobileSkill2Btn.classList.toggle('is-ready', snap.shockwaveCooldownFrac <= 0.01);
+
+    this.mobileSkill3LabelEl.textContent = `${snap.dashSkillName} (${snap.dashQiCost})`;
+    this.mobileSkill3CdEl.style.height = `${(snap.dashCooldownFrac * 100).toFixed(1)}%`;
+    this.mobileSkill3Btn.classList.toggle('is-ready', snap.dashCooldownFrac <= 0.01 && dashHasQi);
+    this.mobileSkill3Btn.classList.toggle('no-qi', !dashHasQi);
+
+    this.mobileSkill4LabelEl.textContent = `${snap.ultimateSkillName} (${snap.ultimateQiCost})`;
+    this.mobileSkill4CdEl.style.height = `${(snap.ultimateCooldownFrac * 100).toFixed(1)}%`;
+    this.mobileSkill4Btn.classList.toggle('is-ready', snap.ultimateCooldownFrac <= 0.01 && ultHasQi);
+    this.mobileSkill4Btn.classList.toggle('no-qi', !ultHasQi);
+
     const deg = (snap.nextShrineBearing * 180) / Math.PI;
     this.compassArrowEl.style.transform = `rotate(${deg.toFixed(1)}deg)`;
     this.compassNameEl.textContent = snap.nextShrineName;
@@ -2846,5 +3151,579 @@ export class GameUI {
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText('N', nx, ny + 0.5);
+  }
+
+  // ==================== MOBILE LANDSCAPE, MOVING CURSOR & ARCADE CONTROLS ====================
+
+  public setMobileControlsEnabled(enabled: boolean): void {
+    this.virtualCursorEnabled = enabled;
+    this.mobileLeftClusterEl.classList.toggle('hidden', !enabled);
+    this.mobileLeftClusterEl.setAttribute('aria-hidden', enabled ? 'false' : 'true');
+    this.mobileActionRowEl.classList.toggle('hidden', !enabled);
+    this.mobileActionRowEl.setAttribute('aria-hidden', enabled ? 'false' : 'true');
+    this.mobileVirtualCursorEl.classList.toggle('hidden', !enabled);
+    this.mobileVirtualCursorEl.setAttribute('aria-hidden', enabled ? 'false' : 'true');
+    if (enabled) {
+      this.virtualCursorX = Math.max(40, Math.min(window.innerWidth - 40, this.virtualCursorX));
+      this.virtualCursorY = Math.max(40, Math.min(window.innerHeight - 40, this.virtualCursorY));
+      this.updateVirtualCursorPosition();
+    }
+  }
+
+  private updateVirtualCursorPosition(): void {
+    this.mobileVirtualCursorEl.style.transform = `translate3d(${this.virtualCursorX.toFixed(1)}px, ${this.virtualCursorY.toFixed(1)}px, 0) translate(-50%, -50%)`;
+  }
+
+  public async requestLandscapeMode(): Promise<void> {
+    try {
+      if (!document.fullscreenElement && document.documentElement.requestFullscreen) {
+        await document.documentElement.requestFullscreen().catch(() => {});
+      }
+      const orient = (screen as Screen & { orientation?: { lock?: (mode: string) => Promise<void> } })
+        .orientation;
+      if (orient && typeof orient.lock === 'function') {
+        await orient.lock('landscape');
+      }
+      this.root.querySelector('#mobileOrientationBanner')?.classList.add('hidden');
+      this.setMobileControlsEnabled(true);
+      this.showToast('Landscape Arcade Mode & Virtual Cursor active!');
+    } catch {
+      this.root.querySelector('#mobileOrientationBanner')?.classList.add('hidden');
+      this.setMobileControlsEnabled(true);
+      this.showToast('Rotate your phone horizontally for full Landscape view!');
+    }
+  }
+
+  private triggerVirtualCursorAction(): void {
+    this.mobileVirtualCursorEl.classList.add('is-clicking');
+    window.setTimeout(() => this.mobileVirtualCursorEl.classList.remove('is-clicking'), 180);
+
+    // Temporarily hide cursor overlay to hit-test the element underneath
+    const prevDisplay = this.mobileVirtualCursorEl.style.display;
+    this.mobileVirtualCursorEl.style.display = 'none';
+    const hitEl = document.elementFromPoint(this.virtualCursorX, this.virtualCursorY) as HTMLElement | null;
+    this.mobileVirtualCursorEl.style.display = prevDisplay;
+
+    if (
+      hitEl &&
+      (hitEl.tagName === 'BUTTON' ||
+        hitEl.tagName === 'A' ||
+        hitEl.tagName === 'INPUT' ||
+        hitEl.tagName === 'SELECT' ||
+        hitEl.closest('button, a, .bestiary-row, .chromium-tab'))
+    ) {
+      const clickable =
+        (hitEl.closest('button, a, .bestiary-row, .chromium-tab') as HTMLElement | null) || hitEl;
+      clickable.click();
+      if (clickable instanceof HTMLInputElement) {
+        clickable.focus();
+      }
+      return;
+    }
+
+    // If over the 3D game world while playing, fire primary fighting skill / hand cannon!
+    if (this.game.getMode() === 'playing') {
+      this.game.castPrimaryMagic();
+    }
+  }
+
+  private bindMobileCursorAndLandscapeEvents(): void {
+    const toggleBtn = this.root.querySelector<HTMLButtonElement>('#toggleMobileControlsBtn');
+    toggleBtn?.addEventListener('click', () => {
+      this.setMobileControlsEnabled(!this.virtualCursorEnabled);
+      this.showToast(
+        this.virtualCursorEnabled
+          ? 'Mobile Virtual Cursor & Fighting Skill Buttons enabled!'
+          : 'Mobile Virtual Cursor hidden.',
+      );
+    });
+
+    const lockBtns = [
+      this.root.querySelector<HTMLButtonElement>('#mobileLandscapeBtn'),
+      this.root.querySelector<HTMLButtonElement>('#lockLandscapeSettingsBtn'),
+      this.root.querySelector<HTMLButtonElement>('#mobileBannerLockLandscapeBtn'),
+    ];
+    for (const btn of lockBtns) {
+      btn?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        void this.requestLandscapeMode();
+      });
+    }
+
+    this.root.querySelector('#mobileBannerDismissBtn')?.addEventListener('click', () => {
+      this.root.querySelector('#mobileOrientationBanner')?.classList.add('hidden');
+    });
+
+    this.root.querySelector('#mobilePortalBtn')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.togglePortalBrowserModal();
+    });
+
+    this.root.querySelector('#mobileCursorClickBtn')?.addEventListener('pointerdown', (e) => {
+      e.stopPropagation();
+      this.triggerVirtualCursorAction();
+    });
+
+    // Virtual Cursor & Steer Trackpad
+    let padActive = false;
+    let padPointerId = -1;
+    let padStartX = 0;
+    let padStartY = 0;
+    let padMovedDist = 0;
+
+    const updatePadFromPointer = (clientX: number, clientY: number) => {
+      const rect = this.mobileCursorPadEl.getBoundingClientRect();
+      const cx = rect.left + rect.width / 2;
+      const cy = rect.top + rect.height / 2;
+      const maxR = Math.max(24, rect.width * 0.38);
+      const dx = clientX - cx;
+      const dy = clientY - cy;
+      const dist = Math.hypot(dx, dy);
+      const clampedR = Math.min(maxR, dist);
+      const ang = Math.atan2(dy, dx);
+      const px = Math.cos(ang) * clampedR;
+      const py = Math.sin(ang) * clampedR;
+
+      this.mobileCursorPuckEl.style.transform = `translate3d(${px.toFixed(1)}px, ${py.toFixed(1)}px, 0)`;
+
+      const normX = px / maxR; // -1..+1
+      const normY = py / maxR; // -1..+1
+
+      // Steer serpent in 3D when playing
+      this.game.setTouchSteerAxis(-normX);
+
+      // Glide on-screen virtual cursor smoothly across viewport
+      this.virtualCursorX = Math.max(
+        18,
+        Math.min(window.innerWidth - 18, this.virtualCursorX + normX * 13.5),
+      );
+      this.virtualCursorY = Math.max(
+        18,
+        Math.min(window.innerHeight - 18, this.virtualCursorY + normY * 13.5),
+      );
+      this.updateVirtualCursorPosition();
+    };
+
+    this.mobileCursorPadEl.addEventListener('pointerdown', (e) => {
+      e.stopPropagation();
+      padActive = true;
+      padPointerId = e.pointerId;
+      padStartX = e.clientX;
+      padStartY = e.clientY;
+      padMovedDist = 0;
+      this.mobileCursorPadEl.setPointerCapture(e.pointerId);
+      updatePadFromPointer(e.clientX, e.clientY);
+    });
+
+    this.mobileCursorPadEl.addEventListener('pointermove', (e) => {
+      if (!padActive || e.pointerId !== padPointerId) return;
+      e.stopPropagation();
+      padMovedDist += Math.hypot(e.clientX - padStartX, e.clientY - padStartY);
+      padStartX = e.clientX;
+      padStartY = e.clientY;
+      updatePadFromPointer(e.clientX, e.clientY);
+    });
+
+    const endPad = (e: PointerEvent) => {
+      if (!padActive || e.pointerId !== padPointerId) return;
+      padActive = false;
+      padPointerId = -1;
+      this.mobileCursorPuckEl.style.transform = 'translate3d(0px, 0px, 0)';
+      this.game.setTouchSteerAxis(0);
+      if (padMovedDist < 10) {
+        this.triggerVirtualCursorAction();
+      }
+    };
+    this.mobileCursorPadEl.addEventListener('pointerup', endPad);
+    this.mobileCursorPadEl.addEventListener('pointercancel', endPad);
+  }
+
+  // ==================== PORTAL CHROMIUM MULTI-TAB BROWSER & 3D ROLLING TAB OTHERWORLD ====================
+
+  private bindPortalChromiumEvents(): void {
+    // Render bookmarks bar once
+    this.chromiumBookmarksBarEl.innerHTML = PORTAL_BOOKMARKS.map(
+      (b) => `
+        <button type="button" class="chromium-bookmark-chip" data-burl="${b.url}">
+          <span class="cbm-badge" style="color:${b.accentHex}">${b.badge}</span>
+          <span>${b.title}</span>
+        </button>
+      `,
+    ).join('');
+
+    this.chromiumBookmarksBarEl.addEventListener('click', (e) => {
+      const btn = (e.target as HTMLElement).closest<HTMLButtonElement>('.chromium-bookmark-chip');
+      if (!btn || !btn.dataset.burl) return;
+      this.game.sound.playClick();
+      this.game.portalBrowser.navigateActiveTab(btn.dataset.burl);
+      this.portalWorldOrbitMode = false;
+      this.renderPortalChromiumBrowser(true);
+    });
+
+    this.chromiumOrbitToggleBtn.addEventListener('click', () => {
+      this.game.sound.playClick();
+      this.portalWorldOrbitMode = !this.portalWorldOrbitMode;
+      this.renderPortalChromiumBrowser(false);
+    });
+
+    this.chromiumTabListEl.addEventListener('click', (e) => {
+      const closeBtn = (e.target as HTMLElement).closest<HTMLButtonElement>('.chromium-tab-close');
+      if (closeBtn && closeBtn.dataset.closeid) {
+        e.stopPropagation();
+        this.game.sound.playClick();
+        this.game.portalBrowser.closeTab(closeBtn.dataset.closeid);
+        this.renderPortalChromiumBrowser(true);
+        return;
+      }
+      const tabBtn = (e.target as HTMLElement).closest<HTMLElement>('.chromium-tab');
+      if (tabBtn && tabBtn.dataset.tabid) {
+        this.game.sound.playClick();
+        const prevId = this.game.portalBrowser.getActiveTab().id;
+        this.game.portalBrowser.activateTab(tabBtn.dataset.tabid);
+        this.portalWorldOrbitMode = false;
+        this.renderPortalChromiumBrowser(prevId !== tabBtn.dataset.tabid);
+      }
+    });
+
+    // Clicking any 3D rolling tab card in the Otherworld Orbit enters that tab's world!
+    this.chromiumOrbitStageEl.addEventListener('click', (e) => {
+      const closeBtn = (e.target as HTMLElement).closest<HTMLButtonElement>('.orbit-tab-close');
+      if (closeBtn && closeBtn.dataset.closeid) {
+        e.stopPropagation();
+        this.game.sound.playClick();
+        this.game.portalBrowser.closeTab(closeBtn.dataset.closeid);
+        this.renderPortalChromiumBrowser(true);
+        return;
+      }
+      const card = (e.target as HTMLElement).closest<HTMLElement>('.orbit-tab-card');
+      if (card && card.dataset.tabid) {
+        this.game.sound.playPortal();
+        this.game.portalBrowser.activateTab(card.dataset.tabid);
+        this.portalWorldOrbitMode = false;
+        this.renderPortalChromiumBrowser(true);
+      }
+    });
+
+    this.chromiumOrbitStageEl.addEventListener('pointerenter', () => {
+      this.portalOrbitHoverPaused = true;
+    });
+    this.chromiumOrbitStageEl.addEventListener('pointerleave', () => {
+      this.portalOrbitHoverPaused = false;
+    });
+    this.chromiumOrbitStageEl.addEventListener(
+      'wheel',
+      (e) => {
+        e.preventDefault();
+        this.portalOrbitAngle += (e.deltaY || e.deltaX) * 0.0032;
+        this.updateRollingTabOrbitPositions();
+      },
+      { passive: false },
+    );
+
+    this.root.querySelector('#orbitSpinLeftBtn')?.addEventListener('click', () => {
+      this.game.sound.playClick();
+      const count = Math.max(1, this.game.portalBrowser.getTabs().length);
+      this.portalOrbitAngle -= (Math.PI * 2) / count;
+      this.updateRollingTabOrbitPositions();
+    });
+
+    this.root.querySelector('#orbitSpinRightBtn')?.addEventListener('click', () => {
+      this.game.sound.playClick();
+      const count = Math.max(1, this.game.portalBrowser.getTabs().length);
+      this.portalOrbitAngle += (Math.PI * 2) / count;
+      this.updateRollingTabOrbitPositions();
+    });
+
+    this.root.querySelector('#orbitEnterFrontBtn')?.addEventListener('click', () => {
+      this.game.sound.playPortal();
+      const tabs = this.game.portalBrowser.getTabs();
+      const layout = computeRollingTabOrbitLayout(tabs.length, this.portalOrbitAngle);
+      const frontNode = layout.find((n) => n.isFront) || layout[0];
+      if (frontNode && tabs[frontNode.index]) {
+        this.game.portalBrowser.activateTab(tabs[frontNode.index].id);
+      }
+      this.portalWorldOrbitMode = false;
+      this.renderPortalChromiumBrowser(true);
+    });
+
+    this.root.querySelector('#orbitSpawnTabBtn')?.addEventListener('click', () => {
+      this.game.sound.playClick();
+      this.game.portalBrowser.createTab('chrome://newtab');
+      this.renderPortalChromiumBrowser(false);
+    });
+
+    this.root.querySelector('#chromiumNewTabBtn')!.addEventListener('click', () => {
+      this.game.sound.playClick();
+      this.game.portalBrowser.createTab('chrome://newtab');
+      this.renderPortalChromiumBrowser(true);
+      this.chromiumOmniboxInput.focus();
+      this.chromiumOmniboxInput.select();
+    });
+
+    this.chromiumPortalABtn.addEventListener('click', () => {
+      this.game.sound.playClick();
+      this.game.portalBrowser.setActivePortalVariant('A');
+      this.renderPortalChromiumBrowser(true);
+    });
+
+    this.chromiumPortalBBtn.addEventListener('click', () => {
+      this.game.sound.playClick();
+      this.game.portalBrowser.setActivePortalVariant('B');
+      this.renderPortalChromiumBrowser(true);
+    });
+
+    this.chromiumBackBtn.addEventListener('click', () => {
+      if (!this.game.portalBrowser.canGoBack()) return;
+      this.game.sound.playClick();
+      this.game.portalBrowser.goBack();
+      this.portalWorldOrbitMode = false;
+      this.renderPortalChromiumBrowser(true);
+    });
+
+    this.chromiumFwdBtn.addEventListener('click', () => {
+      if (!this.game.portalBrowser.canGoForward()) return;
+      this.game.sound.playClick();
+      this.game.portalBrowser.goForward();
+      this.portalWorldOrbitMode = false;
+      this.renderPortalChromiumBrowser(true);
+    });
+
+    this.root.querySelector('#chromiumReloadBtn')!.addEventListener('click', () => {
+      this.game.sound.playClick();
+      this.lastLoadedIframeKey = '';
+      this.portalWorldOrbitMode = false;
+      this.renderPortalChromiumBrowser(true);
+    });
+
+    this.root.querySelector('#chromiumHomeBtn')!.addEventListener('click', () => {
+      this.game.sound.playClick();
+      this.portalWorldOrbitMode = true;
+      this.renderPortalChromiumBrowser(false);
+    });
+
+    this.chromiumOmniboxForm.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const val = this.chromiumOmniboxInput.value.trim();
+      if (!val) return;
+      this.game.sound.playClick();
+      this.game.portalBrowser.navigateActiveTab(val);
+      this.portalWorldOrbitMode = false;
+      this.renderPortalChromiumBrowser(true);
+      this.chromiumOmniboxInput.blur();
+    });
+
+    this.chromiumProxyBtn.addEventListener('click', () => {
+      this.game.sound.playClick();
+      const tab = this.game.portalBrowser.toggleProxyMode();
+      this.showToast(
+        tab.proxyMode
+          ? 'Chromium Server Proxy enabled (bypasses X-Frame-Options).'
+          : 'Direct Iframe Embed mode active.',
+      );
+      this.lastLoadedIframeKey = '';
+      this.renderPortalChromiumBrowser(true);
+    });
+
+    this.chromiumWarpBtn.addEventListener('click', () => {
+      this.closePortalBrowserModal();
+      this.game.executePendingPortalWarp();
+    });
+
+    this.chromiumPipBtn.addEventListener('click', () => {
+      this.game.sound.playClick();
+      this.portalBrowserPip = !this.portalBrowserPip;
+      if (this.portalBrowserPip) {
+        this.portalWorldOrbitMode = false;
+      }
+      this.portalBrowserModal.classList.toggle('is-pip', this.portalBrowserPip);
+      this.chromiumPipBtn.textContent = this.portalBrowserPip ? '⤢ Expand' : '⧉ PiP Dock';
+      this.renderPortalChromiumBrowser(false);
+      this.syncModalFreeze();
+    });
+
+    this.root.querySelector('#chromiumCloseBtn')!.addEventListener('click', () => {
+      this.closePortalBrowserModal();
+    });
+
+    // Listen for navigation & title postMessages from proxied pages and chrome://newtab
+    window.addEventListener('message', (e) => {
+      const data = e.data as { type?: string; url?: string; title?: string } | null;
+      if (!data || typeof data !== 'object') return;
+      if (data.type === 'SERPENT_PORTAL_NAVIGATE' && typeof data.url === 'string') {
+        this.game.portalBrowser.navigateActiveTab(data.url);
+        this.portalWorldOrbitMode = false;
+        this.renderPortalChromiumBrowser(true);
+      } else if (data.type === 'SERPENT_PORTAL_TAB_LOADED') {
+        this.game.portalBrowser.updateActiveTabMetadata(data.url, data.title);
+        this.renderPortalChromiumBrowser(false);
+      }
+    });
+  }
+
+  private startPortalOrbitAnimation(): void {
+    if (this.portalOrbitRafId) return;
+    this.portalOrbitLastPerf = performance.now();
+    const step = (now: number) => {
+      if (this.portalBrowserModal.classList.contains('hidden')) {
+        this.portalOrbitRafId = 0;
+        return;
+      }
+      const dt = Math.min(0.08, Math.max(0.001, (now - this.portalOrbitLastPerf) / 1000));
+      this.portalOrbitLastPerf = now;
+      if (this.portalWorldOrbitMode && !this.portalOrbitHoverPaused) {
+        this.portalOrbitAngle += this.portalOrbitVel * dt;
+        this.updateRollingTabOrbitPositions();
+      }
+      this.portalOrbitRafId = window.requestAnimationFrame(step);
+    };
+    this.portalOrbitRafId = window.requestAnimationFrame(step);
+  }
+
+  private updateRollingTabOrbitPositions(): void {
+    const cards = Array.from(
+      this.chromiumOrbitStageEl.querySelectorAll<HTMLElement>('.orbit-tab-card'),
+    );
+    if (cards.length === 0) return;
+    const layout = computeRollingTabOrbitLayout(cards.length, this.portalOrbitAngle);
+    const radiusX = Math.min(340, Math.max(175, this.chromiumOrbitStageEl.clientWidth * 0.34));
+    const radiusY = Math.min(92, Math.max(48, this.chromiumOrbitStageEl.clientHeight * 0.22));
+
+    for (let i = 0; i < cards.length; i++) {
+      const card = cards[i];
+      const node = layout[i];
+      if (!node) continue;
+      const tx = (node.xNorm * radiusX).toFixed(1);
+      const ty = (node.yNorm * radiusY).toFixed(1);
+      const tz = (node.zDepth * 145).toFixed(1);
+      card.style.transform = `translate3d(-50%, -50%, 0) translate3d(${tx}px, ${ty}px, ${tz}px) rotateY(${node.rotateYDeg}deg) scale(${node.scale})`;
+      card.style.opacity = String(node.opacity);
+      card.style.zIndex = String(node.zIndex);
+      card.classList.toggle('is-front', node.isFront);
+    }
+  }
+
+  public openPortalBrowserModal(variant?: PortalVariant): void {
+    if (variant) {
+      this.game.portalBrowser.setActivePortalVariant(variant);
+    }
+    // Always open into the 3D Rolling Tab Otherworld so every tab is visibly rolling around!
+    this.portalWorldOrbitMode = true;
+    this.portalBrowserModal.classList.remove('hidden');
+    this.renderPortalChromiumBrowser(false);
+    this.startPortalOrbitAnimation();
+    this.syncModalFreeze();
+  }
+
+  public closePortalBrowserModal(): void {
+    if (this.portalBrowserModal.classList.contains('hidden')) return;
+    this.portalBrowserModal.classList.add('hidden');
+    if (this.portalOrbitRafId) {
+      window.cancelAnimationFrame(this.portalOrbitRafId);
+      this.portalOrbitRafId = 0;
+    }
+    this.portalBrowserPip = false;
+    this.portalBrowserModal.classList.remove('is-pip');
+    this.chromiumPipBtn.textContent = '⧉ PiP Dock';
+    this.syncModalFreeze();
+    this.game.sound.playClick();
+  }
+
+  public togglePortalBrowserModal(): void {
+    if (this.portalBrowserModal.classList.contains('hidden')) {
+      this.openPortalBrowserModal();
+    } else {
+      this.closePortalBrowserModal();
+    }
+  }
+
+  private renderPortalChromiumBrowser(forceReloadIframe = false): void {
+    const mgr = this.game.portalBrowser;
+    const allTabs = mgr.getTabs();
+    const activeTab = mgr.getActiveTab();
+    const activeVariant = mgr.getActivePortalVariant();
+
+    this.chromiumPortalABtn.classList.toggle('active-a', activeVariant === 'A');
+    this.chromiumPortalBBtn.classList.toggle('active-b', activeVariant === 'B');
+    this.chromiumOrbitToggleBtn.classList.toggle('is-active', this.portalWorldOrbitMode);
+    this.chromiumOrbitToggleBtn.textContent = this.portalWorldOrbitMode
+      ? `🌌 Orbiting (${allTabs.length} Tabs)`
+      : `🌌 Rolling Tab World (${allTabs.length})`;
+
+    this.chromiumOtherworldEl.classList.toggle('hidden', !this.portalWorldOrbitMode);
+
+    this.chromiumTabListEl.innerHTML = allTabs
+      .map((t) => {
+        const isAct = t.id === activeTab.id && !this.portalWorldOrbitMode;
+        const vClass = t.portalVariant === 'A' ? 'variant-a' : 'variant-b';
+        const safeTitle = t.title.replace(/[<>&"]/g, '');
+        return `
+          <div class="chromium-tab ${isAct ? 'active' : ''} ${vClass}" data-tabid="${t.id}" role="tab" aria-selected="${isAct}">
+            <span class="ctab-portal-dot" title="Portal ${t.portalVariant}">${t.portalVariant}</span>
+            <span class="ctab-title">${safeTitle}</span>
+            <button type="button" class="chromium-tab-close" data-closeid="${t.id}" aria-label="Close tab">×</button>
+          </div>
+        `;
+      })
+      .join('');
+
+    // Render 3D Rolling Tab Cards inside the Otherworld Orbit Stage
+    this.chromiumOrbitStageEl.innerHTML = `
+      <div class="otherworld-wormhole-core" aria-hidden="true">
+        <div class="wormhole-core-ring"></div>
+        <span class="wormhole-core-label">PORTAL ${activeVariant} SINGULARITY</span>
+      </div>
+      ${allTabs
+        .map((t, idx) => {
+          const isAct = t.id === activeTab.id;
+          const vClass = t.portalVariant === 'A' ? 'variant-a' : 'variant-b';
+          const safeTitle = t.title.replace(/[<>&"]/g, '');
+          const cleanHost = t.displayUrl.replace(/^https?:\/\//, '').slice(0, 34);
+          return `
+            <div class="orbit-tab-card ${vClass} ${isAct ? 'is-active-tab' : ''}" data-tabid="${t.id}" data-orbitidx="${idx}">
+              <div class="orbit-card-top">
+                <span class="orbit-portal-pill">● PORTAL ${t.portalVariant} · TAB #${idx + 1}</span>
+                <button type="button" class="orbit-tab-close" data-closeid="${t.id}" title="Close Tab World" aria-label="Close Tab">×</button>
+              </div>
+              <div class="orbit-card-body">
+                <div class="orbit-card-emblem">${t.url.startsWith('chrome://') ? '⛰' : '🌐'}</div>
+                <div class="orbit-card-title">${safeTitle}</div>
+                <div class="orbit-card-url">${cleanHost}</div>
+              </div>
+              <div class="orbit-card-footer">
+                <span class="orbit-enter-cta">⚡ SELECT TO ENTER WORLD ➔</span>
+              </div>
+            </div>
+          `;
+        })
+        .join('')}
+    `;
+    this.updateRollingTabOrbitPositions();
+
+    if (document.activeElement !== this.chromiumOmniboxInput) {
+      this.chromiumOmniboxInput.value = activeTab.displayUrl;
+    }
+
+    this.chromiumBackBtn.disabled = !mgr.canGoBack();
+    this.chromiumFwdBtn.disabled = !mgr.canGoForward();
+
+    this.chromiumProxyBtn.textContent = activeTab.proxyMode ? 'Proxy: ON' : 'Direct Embed';
+    this.chromiumProxyBtn.classList.toggle('is-on', activeTab.proxyMode);
+
+    this.chromiumStatusTextEl.textContent = this.portalWorldOrbitMode
+      ? `🌌 Portal ${activeVariant} Pocket Dimension · ${allTabs.length} Tab Worlds Rolling in 3D Orbit — Click Any Tab to Enter`
+      : `${CHROMIUM_ENGINE_META.engineVersion} · Active World: ${activeTab.title}`;
+
+    const frameTarget = mgr.getIframeSrcForTab(activeTab);
+    const frameKey = `${activeTab.id}|${activeTab.url}|${activeTab.proxyMode ? 'proxy' : 'direct'}`;
+    if (forceReloadIframe || this.lastLoadedIframeKey !== frameKey) {
+      this.lastLoadedIframeKey = frameKey;
+      if (frameTarget.srcdoc !== undefined) {
+        this.chromiumViewportFrame.removeAttribute('src');
+        this.chromiumViewportFrame.srcdoc = frameTarget.srcdoc;
+      } else if (frameTarget.src) {
+        this.chromiumViewportFrame.removeAttribute('srcdoc');
+        this.chromiumViewportFrame.src = frameTarget.src;
+      }
+    }
   }
 }

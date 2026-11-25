@@ -37,6 +37,9 @@ document.addEventListener('DOMContentLoaded', () => {
     (anchorPos) => {
       ui?.updateTauntBubblePosition(anchorPos);
     },
+    (portalVariant) => {
+      ui?.openPortalBrowserModal(portalVariant);
+    },
   );
 
   ui = new GameUI(root, game);
@@ -70,6 +73,12 @@ document.addEventListener('DOMContentLoaded', () => {
         e.preventDefault();
         ui.closeOpenInfoModals();
       }
+      return;
+    }
+
+    if (e.code === 'KeyG' && !e.repeat) {
+      e.preventDefault();
+      ui?.togglePortalBrowserModal();
       return;
     }
 

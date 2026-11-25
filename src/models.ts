@@ -343,68 +343,199 @@ export function createTotemBlock(res: ModelResources): THREE.Group {
 }
 
 /**
- * Composite 6-part Twin Warp Portal Archway.
+ * Composite 12-part Colossal Dimensional Portal Archway with 3D Rolling Tab Satellites & Skyward Beacon.
  */
 export function createPortalBlock(res: ModelResources, variant: 'A' | 'B'): THREE.Group {
   const group = new THREE.Group();
   const accentHex = variant === 'A' ? 0x2de3ff : 0xff6be0;
+  const secondaryHex = variant === 'A' ? 0x38bdf8 : 0xc084fc;
   const emissiveHex = variant === 'A' ? 0x0ea5e9 : 0xd946ef;
 
   const stoneMat = new THREE.MeshStandardMaterial({
-    color: 0x3e4756,
-    roughness: 0.78,
-    metalness: 0.15,
+    color: 0x2c3545,
+    roughness: 0.74,
+    metalness: 0.22,
   });
   const metalMat = new THREE.MeshStandardMaterial({
-    color: 0xd8c79e,
-    roughness: 0.25,
-    metalness: 0.85,
+    color: 0xebd494,
+    roughness: 0.22,
+    metalness: 0.9,
   });
   const ringMat = new THREE.MeshStandardMaterial({
     color: accentHex,
     emissive: emissiveHex,
-    emissiveIntensity: 1.4,
-    roughness: 0.18,
-    metalness: 0.2,
+    emissiveIntensity: 1.85,
+    roughness: 0.16,
+    metalness: 0.25,
+  });
+  const innerRingMat = new THREE.MeshStandardMaterial({
+    color: secondaryHex,
+    emissive: secondaryHex,
+    emissiveIntensity: 1.45,
+    roughness: 0.2,
+    metalness: 0.35,
   });
 
-  // 1. Octagonal portal dais (flush on tile, snake passes right through!)
-  const dais = new THREE.Mesh(new THREE.CylinderGeometry(0.45, 0.49, 0.1, 8), stoneMat);
-  dais.position.y = 0.05;
+  // 1. Grand octagonal ceremonial portal dais (flush on terrain, serpent glides right through)
+  const dais = new THREE.Mesh(new THREE.CylinderGeometry(0.95, 1.08, 0.14, 8), stoneMat);
+  dais.position.y = 0.07;
   group.add(dais);
 
-  // 2. Metallic outer inlay ring
-  const baseRing = new THREE.Mesh(new THREE.TorusGeometry(0.42, 0.035, 8, 24), metalMat);
+  // 2. Metallic outer threshold rune ring
+  const baseRing = new THREE.Mesh(new THREE.TorusGeometry(0.92, 0.055, 10, 32), metalMat);
   baseRing.rotation.x = Math.PI / 2;
-  baseRing.position.y = 0.11;
+  baseRing.position.y = 0.14;
   group.add(baseRing);
 
-  // 3. Glowing horizontal vortex pad
-  const pad = new THREE.Mesh(new THREE.CircleGeometry(0.36, 20), ringMat);
+  // 3. Glowing horizontal ground vortex pad
+  const pad = new THREE.Mesh(new THREE.CircleGeometry(0.84, 28), ringMat);
   pad.rotation.x = -Math.PI / 2;
-  pad.position.y = 0.115;
+  pad.position.y = 0.148;
   group.add(pad);
 
-  // 4. Vertical spinning energy halo
-  const halo = new THREE.Mesh(new THREE.TorusGeometry(0.38, 0.045, 10, 24), ringMat);
-  halo.position.y = 0.62;
+  // 3b. Twin flanking stone & gold rune monolith pillars framing the giant gateway
+  for (const side of [-1, 1]) {
+    const pillar = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.15, 1.85, 6), stoneMat);
+    pillar.position.set(side * 0.96, 0.98, 0);
+    group.add(pillar);
+
+    const collarBottom = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.17, 0.12, 6), metalMat);
+    collarBottom.position.set(side * 0.96, 0.35, 0);
+    group.add(collarBottom);
+
+    const collarTop = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.15, 0.12, 6), metalMat);
+    collarTop.position.set(side * 0.96, 1.65, 0);
+    group.add(collarTop);
+  }
+
+  // 4. Giant Vertical Spinning Outer Energy Halo
+  const halo = new THREE.Mesh(new THREE.TorusGeometry(0.88, 0.068, 12, 36), ringMat);
+  halo.position.y = 1.18;
   halo.name = 'portalHalo';
   group.add(halo);
 
+  // 4b. Counter-rotating inner celestial astrolabe wheel ("Another World" dimensional rim)
+  const innerWheel = new THREE.Mesh(new THREE.TorusGeometry(0.74, 0.032, 10, 32), innerRingMat);
+  innerWheel.position.y = 1.18;
+  innerWheel.name = 'portalInnerWheel';
+  group.add(innerWheel);
+
+  // 4c. Deep Pocket-Dimension Cosmic Void Disc behind the holographic screen
+  const voidMat = new THREE.MeshBasicMaterial({
+    color: variant === 'A' ? 0x051322 : 0x160724,
+    transparent: true,
+    opacity: 0.88,
+    side: THREE.DoubleSide,
+  });
+  const voidDisc = new THREE.Mesh(new THREE.CircleGeometry(0.82, 32), voidMat);
+  voidDisc.position.set(0, 1.18, -0.03);
+  group.add(voidDisc);
+
+  // 4d. Inner 3D Holographic Chromium Pocket-World Screen inside the Portal Ring
+  const screenMat = new THREE.MeshBasicMaterial({
+    color: 0xffffff,
+    transparent: true,
+    opacity: 0.96,
+    side: THREE.DoubleSide,
+  });
+  const screenMesh = new THREE.Mesh(new THREE.PlaneGeometry(1.18, 0.98), screenMat);
+  screenMesh.position.set(0, 1.18, 0);
+  screenMesh.name = variant === 'A' ? 'portalBrowserScreenA' : 'portalBrowserScreenB';
+  group.add(screenMesh);
+
+  // 4e. 3D Orbiting / Rolling Tab Cards spinning around the portal's pocket dimension!
+  const orbitGroup = new THREE.Group();
+  orbitGroup.position.set(0, 1.18, 0);
+  orbitGroup.name = 'portalOrbitGroup';
+  const satCardGeo = new THREE.BoxGeometry(0.28, 0.18, 0.022);
+  const satFrameGeo = new THREE.BoxGeometry(0.3, 0.038, 0.028);
+  const satCardMat = new THREE.MeshBasicMaterial({
+    color: variant === 'A' ? 0x0b2538 : 0x280d38,
+    transparent: true,
+    opacity: 0.92,
+  });
+  for (let k = 0; k < 4; k++) {
+    const satHolder = new THREE.Group();
+    const ang = (k * Math.PI) / 2;
+    satHolder.position.set(Math.cos(ang) * 0.78, Math.sin(ang) * 0.78, (k % 2 === 0 ? 1 : -1) * 0.14);
+    const card = new THREE.Mesh(satCardGeo, satCardMat);
+    const bar = new THREE.Mesh(satFrameGeo, k % 2 === 0 ? ringMat : innerRingMat);
+    bar.position.y = 0.075;
+    satHolder.add(card, bar);
+    orbitGroup.add(satHolder);
+  }
+  group.add(orbitGroup);
+
+  // Holographic top Chromium tab-bar glow crest above the portal screen
+  const tabCrest = new THREE.Mesh(new THREE.BoxGeometry(1.12, 0.08, 0.045), ringMat);
+  tabCrest.position.set(0, 1.74, 0);
+  tabCrest.name = 'portalTabCrest';
+  group.add(tabCrest);
+
   // 5 & 6. Twin floating rune crystal shards flanking the vortex
-  const shardGeo = new THREE.OctahedronGeometry(0.085, 0);
+  const shardGeo = new THREE.OctahedronGeometry(0.14, 0);
   const s1 = new THREE.Mesh(shardGeo, metalMat);
-  s1.position.set(-0.42, 0.56, 0);
+  s1.position.set(-1.02, 1.98, 0);
   s1.name = 'portalShard1';
   group.add(s1);
 
   const s2 = new THREE.Mesh(shardGeo, metalMat);
-  s2.position.set(0.42, 0.56, 0);
+  s2.position.set(1.02, 1.98, 0);
   s2.name = 'portalShard2';
   group.add(s2);
 
+  // 7. Towering Skyward Dimensional Beacon Pillar so portals are visible from across the continent!
+  const skyBeamHeight = 14.5;
+  const skyBeamMat = new THREE.MeshBasicMaterial({
+    color: accentHex,
+    transparent: true,
+    opacity: 0.28,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    side: THREE.DoubleSide,
+  });
+  const skyBeam = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.18, 0.62, skyBeamHeight, 12, 1, true),
+    skyBeamMat,
+  );
+  skyBeam.position.y = skyBeamHeight * 0.5 + 1.2;
+  skyBeam.name = 'portalSkyBeam';
+  group.add(skyBeam);
+
+  // 8. Dynamic Climate-Reactive Three.js PointLight at the exact center of the portal archway
+  // Pulses with a color matched to the active climate (golden for Clear, cyan for Blizzard, orange for Ashstorm, etc.)
+  const climateLight = new THREE.PointLight(0xffcf48, 20, 36, 1.5);
+  climateLight.position.set(0, 1.18, 0);
+  climateLight.castShadow = false;
+  climateLight.name = 'portalClimateLight';
+  group.add(climateLight);
+
+  // 8b. Central climate-reactive luminous aura ring framing the portal center
+  const climateCoreMat = new THREE.MeshBasicMaterial({
+    color: 0xffcf48,
+    transparent: true,
+    opacity: 0.42,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    side: THREE.DoubleSide,
+  });
+  const climateCore = new THREE.Mesh(
+    new THREE.RingGeometry(0.76, 0.96, 32),
+    climateCoreMat,
+  );
+  climateCore.position.set(0, 1.18, 0.02);
+  climateCore.name = 'portalClimateCore';
+  group.add(climateCore);
+
   enableShadows(group, res.castShadows);
   pad.castShadow = false;
+  voidDisc.castShadow = false;
+  screenMesh.castShadow = false;
+  screenMesh.receiveShadow = false;
+  skyBeam.castShadow = false;
+  skyBeam.receiveShadow = false;
+  climateCore.castShadow = false;
+  climateCore.receiveShadow = false;
   return group;
 }
 
@@ -704,6 +835,9 @@ export interface AscensionAvatarRig {
   auraMat: THREE.MeshStandardMaterial;
   gunGroup: THREE.Group;
   gunSlide: THREE.Group;
+  gunHammerPivot: THREE.Group;
+  gunTrigger: THREE.Mesh;
+  gunBarrelGroup: THREE.Group;
   gunMuzzleFlash: THREE.Group;
   gunMuzzleAnchor: THREE.Object3D;
   gunEjectAnchor: THREE.Object3D;
@@ -959,10 +1093,19 @@ export function createAscensionAvatar(res: ModelResources): AscensionAvatarRig {
   triggerGuardFront.position.set(0, -0.018, 0.13);
   gunGroup.add(triggerGuardFront);
 
-  const trigger = new THREE.Mesh(new THREE.BoxGeometry(0.018, 0.048, 0.018), goldMat);
-  trigger.position.set(0, -0.015, 0.072);
-  trigger.rotation.x = 0.28;
-  gunGroup.add(trigger);
+  const gunTrigger = new THREE.Mesh(new THREE.BoxGeometry(0.018, 0.048, 0.018), goldMat);
+  gunTrigger.position.set(0, -0.015, 0.072);
+  gunTrigger.rotation.x = 0.28;
+  gunGroup.add(gunTrigger);
+
+  // 2b) Articulated external skeletonized hammer at rear of receiver (cocks & strikes on recoil)
+  const gunHammerPivot = new THREE.Group();
+  gunHammerPivot.position.set(0, 0.085, -0.038);
+  const hammerSpur = new THREE.Mesh(new THREE.BoxGeometry(0.024, 0.052, 0.032), goldMat);
+  hammerSpur.position.set(0, 0.022, -0.014);
+  hammerSpur.rotation.x = -0.35;
+  gunHammerPivot.add(hammerSpur);
+  gunGroup.add(gunHammerPivot);
 
   // 3) Blued forged-steel lower receiver & under-barrel tactical rail
   const lowerFrame = new THREE.Mesh(new THREE.BoxGeometry(0.092, 0.072, 0.44), gunFrameMat);
@@ -981,6 +1124,12 @@ export function createAscensionAvatar(res: ModelResources): AscensionAvatarRig {
   const coreStrip = new THREE.Mesh(new THREE.BoxGeometry(0.101, 0.022, 0.19), gunCoreMat);
   coreStrip.position.set(0, 0.056, 0.19);
   gunGroup.add(coreStrip);
+
+  // Glowing inner breach chamber exposed when the blowback slide kicks rearward
+  const chamberBreach = new THREE.Mesh(new THREE.CylinderGeometry(0.027, 0.027, 0.11, 8), gunCoreMat);
+  chamberBreach.rotation.x = Math.PI / 2;
+  chamberBreach.position.set(0, 0.11, 0.165);
+  gunGroup.add(chamberBreach);
 
   // 5) Animated reciprocating blowback slide (snaps back along -Z on each shot!)
   const gunSlide = new THREE.Group();
@@ -1012,21 +1161,23 @@ export function createAscensionAvatar(res: ModelResources): AscensionAvatarRig {
   gunSlide.add(frontSight);
   gunGroup.add(gunSlide);
 
-  // 6) Heavy rifled barrel, hexagonal muzzle brake compensator & dark hollow bore
+  // 6) Short-recoil articulated rifled barrel, hexagonal muzzle brake compensator & dark hollow bore
+  const gunBarrelGroup = new THREE.Group();
   const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.031, 0.034, 0.24, 10), gunFrameMat);
   barrel.rotation.x = Math.PI / 2;
   barrel.position.set(0, 0.098, 0.42);
-  gunGroup.add(barrel);
+  gunBarrelGroup.add(barrel);
 
   const compensator = new THREE.Mesh(new THREE.CylinderGeometry(0.046, 0.044, 0.11, 6), goldMat);
   compensator.rotation.x = Math.PI / 2;
   compensator.position.set(0, 0.098, 0.51);
-  gunGroup.add(compensator);
+  gunBarrelGroup.add(compensator);
 
   const boreHole = new THREE.Mesh(new THREE.CylinderGeometry(0.023, 0.023, 0.025, 10), gunBoreMat);
   boreHole.rotation.x = Math.PI / 2;
   boreHole.position.set(0, 0.098, 0.562);
-  gunGroup.add(boreHole);
+  gunBarrelGroup.add(boreHole);
+  gunGroup.add(gunBarrelGroup);
 
   // 7) Additive star-fin volumetric muzzle flash & dynamic local point light
   const gunMuzzleFlash = new THREE.Group();
@@ -1190,6 +1341,9 @@ export function createAscensionAvatar(res: ModelResources): AscensionAvatarRig {
     auraMat,
     gunGroup,
     gunSlide,
+    gunHammerPivot,
+    gunTrigger,
+    gunBarrelGroup,
     gunMuzzleFlash,
     gunMuzzleAnchor,
     gunEjectAnchor,

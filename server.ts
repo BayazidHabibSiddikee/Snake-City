@@ -286,6 +286,162 @@ async function startServer(): Promise<void> {
     }
   });
 
+  app.get('/api/browser/proxy', async (req: Request, res: Response) => {
+    const rawUrl = typeof req.query.url === 'string' ? req.query.url.trim() : '';
+    if (!rawUrl) {
+      res.status(400).send('Missing url query parameter.');
+      return;
+    }
+
+    let parsed: URL;
+    try {
+      parsed = new URL(rawUrl);
+    } catch {
+      res.status(400).send('Invalid URL format.');
+      return;
+    }
+
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      res.status(400).send('Only HTTP and HTTPS protocols are supported by Portal Chromium.');
+      return;
+    }
+
+    const host = parsed.hostname.toLowerCase();
+    const isBlockedHost =
+      host === 'localhost' ||
+      host.endsWith('.localhost') ||
+      host.endsWith('.local') ||
+      host.endsWith('.internal') ||
+      host === '0.0.0.0' ||
+      host === '[::1]' ||
+      host === '::1' ||
+      /^127\./.test(host) ||
+      /^10\./.test(host) ||
+      /^192\.168\./.test(host) ||
+      /^169\.254\./.test(host) ||
+      /^172\.(1[6-9]|2\d|3[0-1])\./.test(host);
+
+    if (isBlockedHost) {
+      res.status(403).send('Access to private or local network addresses is restricted.');
+      return;
+    }
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 9000);
+
+    try {
+      const upstream = await fetch(parsed.toString(), {
+        method: 'GET',
+        redirect: 'follow',
+        signal: controller.signal,
+        headers: {
+          'User-Agent':
+            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 SerpentPeaksPortal/2.4',
+          Accept:
+            'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.9',
+        },
+      });
+
+      const finalUrl = upstream.url || parsed.toString();
+      const contentType = upstream.headers.get('content-type') || 'text/html; charset=utf-8';
+      const rawText = await upstream.text();
+
+      res.removeHeader('X-Frame-Options');
+      res.setHeader('X-Portal-Final-Url', finalUrl);
+
+      if (!contentType.toLowerCase().includes('text/html')) {
+        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+        res.status(upstream.status).send(rawText.slice(0, 350000));
+        return;
+      }
+
+      const safeBaseHref = finalUrl.replace(/"/g, '&quot;');
+      const bridgeScript = `
+<base href="${safeBaseHref}" target="_self" />
+<script>
+(function(){
+  try {
+    window.parent.postMessage({
+      type: 'SERPENT_PORTAL_TAB_LOADED',
+      url: ${JSON.stringify(finalUrl)},
+      title: document.title || ${JSON.stringify(parsed.hostname)}
+    }, '*');
+    document.addEventListener('DOMContentLoaded', function() {
+      window.parent.postMessage({
+        type: 'SERPENT_PORTAL_TAB_LOADED',
+        url: ${JSON.stringify(finalUrl)},
+        title: document.title || ${JSON.stringify(parsed.hostname)}
+      }, '*');
+    });
+    document.addEventListener('click', function(e) {
+      var a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
+      if (!a) return;
+      var href = a.getAttribute('href');
+      if (!href || href.startsWith('#') || href.startsWith('javascript:')) return;
+      try {
+        var resolved = new URL(href, ${JSON.stringify(finalUrl)}).toString();
+        if (resolved.startsWith('http://') || resolved.startsWith('https://')) {
+          e.preventDefault();
+          window.parent.postMessage({
+            type: 'SERPENT_PORTAL_NAVIGATE',
+            url: resolved
+          }, '*');
+        }
+      } catch (_) {}
+    }, true);
+  } catch (_) {}
+})();
+</script>`;
+
+      // Strip meta CSP tags that block framing or inline bridge
+      let rewrittenHtml = rawText
+        .slice(0, 750000)
+        .replace(/<meta[^>]+http-equiv=["']?Content-Security-Policy["']?[^>]*>/gi, '');
+
+      if (/<head[^>]*>/i.test(rewrittenHtml)) {
+        rewrittenHtml = rewrittenHtml.replace(/<head[^>]*>/i, (match) => `${match}${bridgeScript}`);
+      } else {
+        rewrittenHtml = `${bridgeScript}${rewrittenHtml}`;
+      }
+
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.status(upstream.status).send(rewrittenHtml);
+    } catch (err: unknown) {
+      const msg =
+        err instanceof Error && err.message ? err.message : 'ERR_CONNECTION_TIMED_OUT';
+      const escapedUrl = parsed.toString().replace(/[<>&"]/g, '');
+      const escapedMsg = msg.replace(/[<>&"]/g, '');
+      res
+        .status(502)
+        .setHeader('Content-Type', 'text/html; charset=utf-8')
+        .send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Portal Chromium — Connection Error</title>
+<style>
+  body { background:#0b1318; color:#d8ece4; font-family:system-ui,-apple-system,sans-serif; padding:36px 28px; margin:0; }
+  .card { max-width:560px; margin:24px auto; background:#111f26; border:1px solid rgba(56,189,248,0.3); border-radius:14px; padding:24px 28px; }
+  h1 { font-size:18px; margin:0 0 8px; color:#38bdf8; }
+  code { display:block; margin:12px 0; padding:10px 12px; background:#070d10; border-radius:8px; color:#f87171; font-size:12px; word-break:break-all; }
+  p { font-size:13.5px; line-height:1.5; color:#9ec5b8; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>This site can’t be reached via Portal Chromium Proxy</h1>
+    <p>Target URL: <strong>${escapedUrl}</strong></p>
+    <code>ERR_PORTAL_UPSTREAM_UNREACHABLE (${escapedMsg})</code>
+    <p>Try toggling <strong>Direct Embed</strong> in the Chromium toolbar or searching via DuckDuckGo / Wikipedia from the Omnibox.</p>
+  </div>
+</body>
+</html>`);
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  });
+
   if (!IS_PROD) {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({

@@ -780,6 +780,326 @@ describe('Enemy-Type Combat Taunt Profiles & Floating Speech Bubble Formatter', 
   });
 });
 
+// ---------------------------------------------------------------------------
+// 17. Portal Chromium Browser Omnibox Resolver & Tab Management
+// ---------------------------------------------------------------------------
+describe('Portal Chromium Browser Omnibox Resolver & Tab Management', () => {
+  function resolveOmniboxInput(rawInput) {
+    const trimmed = String(rawInput ?? '').trim();
+    if (!trimmed) {
+      return {
+        url: 'chrome://newtab',
+        displayUrl: 'chrome://newtab',
+        title: 'New Tab · Serpent Chromium',
+        isInternal: true,
+      };
+    }
 
+    const lower = trimmed.toLowerCase();
+    if (
+      lower === 'chrome://newtab' ||
+      lower === 'serpent://newtab' ||
+      lower === 'about:blank'
+    ) {
+      return {
+        url: 'chrome://newtab',
+        displayUrl: 'chrome://newtab',
+        title: 'New Tab · Serpent Chromium',
+        isInternal: true,
+      };
+    }
+
+    if (lower === 'chrome://version' || lower === 'serpent://version') {
+      return {
+        url: 'chrome://version',
+        displayUrl: 'chrome://version',
+        title: 'About Chromium · Serpent Portal Engine',
+        isInternal: true,
+      };
+    }
+
+    if (lower === 'chrome://peaks-atlas' || lower === 'serpent://peaks-atlas') {
+      return {
+        url: 'chrome://peaks-atlas',
+        displayUrl: 'chrome://peaks-atlas',
+        title: 'Serpent Peaks Trial Atlas',
+        isInternal: true,
+      };
+    }
+
+    if (/^https?:\/\//i.test(trimmed)) {
+      try {
+        const parsed = new URL(trimmed);
+        return {
+          url: parsed.toString(),
+          displayUrl: parsed.toString(),
+          title: parsed.hostname.replace(/^www\./, ''),
+          isInternal: false,
+        };
+      } catch {
+        // Fall through to search
+      }
+    }
+
+    if (!/\s/.test(trimmed) && /^[a-z0-9-]+(\.[a-z0-9-]+)+(\/.*)?$/i.test(trimmed)) {
+      try {
+        const parsed = new URL(`https://${trimmed}`);
+        return {
+          url: parsed.toString(),
+          displayUrl: parsed.toString(),
+          title: parsed.hostname.replace(/^www\./, ''),
+          isInternal: false,
+        };
+      } catch {
+        // Fall through to search
+      }
+    }
+
+    const encodedQuery = encodeURIComponent(trimmed);
+    const searchUrl = `https://html.duckduckgo.com/html/?q=${encodedQuery}`;
+    return {
+      url: searchUrl,
+      displayUrl: searchUrl,
+      title: `${trimmed} - Chromium Search`,
+      isInternal: false,
+    };
+  }
+
+  it('resolves internal chrome:// and serpent:// protocol URLs cleanly', () => {
+    const newTab = resolveOmniboxInput('chrome://newtab');
+    assert.equal(newTab.isInternal, true);
+    assert.equal(newTab.url, 'chrome://newtab');
+
+    const version = resolveOmniboxInput('chrome://version');
+    assert.equal(version.isInternal, true);
+    assert.equal(version.url, 'chrome://version');
+
+    const atlas = resolveOmniboxInput('serpent://peaks-atlas');
+    assert.equal(atlas.isInternal, true);
+    assert.equal(atlas.url, 'chrome://peaks-atlas');
+  });
+
+  it('promotes bare domain names to HTTPS and preserves explicit HTTPS URLs', () => {
+    const bare = resolveOmniboxInput('en.m.wikipedia.org/wiki/Wuxia');
+    assert.equal(bare.isInternal, false);
+    assert.equal(bare.url, 'https://en.m.wikipedia.org/wiki/Wuxia');
+    assert.equal(bare.title, 'en.m.wikipedia.org');
+
+    const explicit = resolveOmniboxInput('https://news.ycombinator.com/');
+    assert.equal(explicit.isInternal, false);
+    assert.equal(explicit.url, 'https://news.ycombinator.com/');
+    assert.equal(explicit.title, 'news.ycombinator.com');
+  });
+
+  it('routes natural-language queries to DuckDuckGo HTML search for Chromium tab browsing', () => {
+    const search = resolveOmniboxInput('threejs webgl shaders');
+    assert.equal(search.isInternal, false);
+    assert.ok(search.url.startsWith('https://html.duckduckgo.com/html/?q='));
+    assert.ok(search.url.includes('threejs%20webgl%20shaders'));
+    assert.equal(search.title, 'threejs webgl shaders - Chromium Search');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 18. 3D Rolling Tab Otherworld Orbit Layout & Screen-Space Gun Recoil Shake
+// ---------------------------------------------------------------------------
+describe('3D Rolling Tab Otherworld Orbit Layout & Screen-Space Gun Recoil Shake', () => {
+  function computeRollingTabOrbitLayout(tabCount, orbitAngleRad) {
+    const count = Math.max(1, Math.floor(tabCount));
+    const nodes = [];
+    let bestFrontIdx = 0;
+    let bestZ = -Infinity;
+
+    for (let i = 0; i < count; i++) {
+      const theta = orbitAngleRad + (i * Math.PI * 2) / count;
+      const sinT = Math.sin(theta);
+      const cosT = Math.cos(theta);
+      if (cosT > bestZ) {
+        bestZ = cosT;
+        bestFrontIdx = i;
+      }
+      const depth01 = (cosT + 1) * 0.5;
+      nodes.push({
+        index: i,
+        thetaRad: theta,
+        xNorm: Number(sinT.toFixed(4)),
+        yNorm: Number((-cosT * 0.34 + Math.sin(theta * 2) * 0.06).toFixed(4)),
+        zDepth: Number(cosT.toFixed(4)),
+        rotateYDeg: Number((-sinT * 34).toFixed(2)),
+        scale: Number((0.62 + depth01 * 0.46).toFixed(3)),
+        opacity: Number((0.42 + depth01 * 0.58).toFixed(3)),
+        zIndex: Math.round(20 + depth01 * 80),
+        isFront: false,
+      });
+    }
+    nodes[bestFrontIdx].isFront = true;
+    return nodes;
+  }
+
+  function stepGunRecoilAndScreenShake(strength = 1.0, dt = 0.016) {
+    const clamped = Math.max(0.35, Math.min(1.6, strength));
+    let gunRecoilVel = 15.5 * clamped;
+    let gunBlowbackVel = 2.4 * clamped;
+    let gunSlideVel = 3.8 * clamped;
+    let screenShakeVelY = 0.068 * clamped;
+    let gunRecoil = 0.32 * clamped;
+    let gunBlowback = 0.145 * clamped;
+    let gunSlideKick = 0.175 * clamped;
+    let screenShakeY = 0.019 * clamped;
+
+    gunRecoil += gunRecoilVel * dt;
+    gunRecoilVel -= gunRecoil * 92 * dt;
+    gunRecoilVel *= Math.exp(-12.5 * dt);
+
+    gunBlowback += gunBlowbackVel * dt;
+    gunBlowbackVel -= gunBlowback * 115 * dt;
+
+    gunSlideKick += gunSlideVel * dt;
+    gunSlideVel -= gunSlideKick * 210 * dt;
+
+    screenShakeY += screenShakeVelY * dt;
+    screenShakeVelY -= screenShakeY * 260 * dt;
+
+    return { gunRecoil, gunBlowback, gunSlideKick, screenShakeY };
+  }
+
+  it('distributes rolling portal tabs around a 3D circular orbit and marks the closest front tab', () => {
+    const layout = computeRollingTabOrbitLayout(6, 0);
+    assert.equal(layout.length, 6);
+    const frontNodes = layout.filter((n) => n.isFront);
+    assert.equal(frontNodes.length, 1);
+    assert.equal(frontNodes[0].index, 0);
+    assert.ok(frontNodes[0].scale > layout[3].scale);
+    assert.ok(frontNodes[0].opacity > layout[3].opacity);
+    assert.ok(frontNodes[0].zIndex > layout[3].zIndex);
+  });
+
+  it('shifts the front tab smoothly as the 3D orbital carousel rotates', () => {
+    const rotated = computeRollingTabOrbitLayout(6, -Math.PI / 3);
+    const front = rotated.find((n) => n.isFront);
+    assert.ok(front);
+    assert.equal(front.index, 1);
+  });
+
+  it('produces coupled screen-space NDC camera projection shake and multi-DOF weapon slide/blowback recoil impulses', () => {
+    const mild = stepGunRecoilAndScreenShake(0.8, 0.016);
+    const heavy = stepGunRecoilAndScreenShake(1.3, 0.016);
+    assert.ok(heavy.gunRecoil > mild.gunRecoil);
+    assert.ok(heavy.gunBlowback > mild.gunBlowback);
+    assert.ok(heavy.gunSlideKick > mild.gunSlideKick);
+    assert.ok(heavy.screenShakeY > mild.screenShakeY);
+    assert.ok(mild.screenShakeY > 0.01);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 19. Dynamic Portal Center Climate-Reactive PointLight Pulsing
+// ---------------------------------------------------------------------------
+describe('Dynamic Portal Center Climate-Reactive PointLight Pulsing', () => {
+  const PORTAL_CLIMATE_LIGHT_PROFILES = {
+    clear: {
+      colorHex: 0xffcf48,
+      pulseTintHex: 0xffe999,
+      baseIntensity: 19.0,
+      pulseAmp: 6.5,
+      pulseFreq: 2.2,
+      baseDistance: 34,
+    },
+    mist: {
+      colorHex: 0x5eead4,
+      pulseTintHex: 0xa7f3d0,
+      baseIntensity: 17.5,
+      pulseAmp: 5.8,
+      pulseFreq: 1.85,
+      baseDistance: 32,
+    },
+    fog: {
+      colorHex: 0x93c5fd,
+      pulseTintHex: 0xe0f2fe,
+      baseIntensity: 18.5,
+      pulseAmp: 6.2,
+      pulseFreq: 1.65,
+      baseDistance: 34,
+    },
+    rain: {
+      colorHex: 0x3b82f6,
+      pulseTintHex: 0x7dd3fc,
+      baseIntensity: 20.5,
+      pulseAmp: 7.4,
+      pulseFreq: 2.85,
+      baseDistance: 35,
+    },
+    storm: {
+      colorHex: 0xa855f7,
+      pulseTintHex: 0xf0abfc,
+      baseIntensity: 23.0,
+      pulseAmp: 9.8,
+      pulseFreq: 3.9,
+      baseDistance: 38,
+    },
+    blizzard: {
+      colorHex: 0x22d3ee,
+      pulseTintHex: 0xcffafe,
+      baseIntensity: 24.5,
+      pulseAmp: 9.2,
+      pulseFreq: 3.25,
+      baseDistance: 38,
+    },
+    ashstorm: {
+      colorHex: 0xff6b1a,
+      pulseTintHex: 0xfbbf24,
+      baseIntensity: 25.0,
+      pulseAmp: 9.6,
+      pulseFreq: 3.45,
+      baseDistance: 38,
+    },
+  };
+
+  function computePortalClimateLightState(weather, elapsedSec, portalIndex = 0, lightningFlash = 0) {
+    const profile = PORTAL_CLIMATE_LIGHT_PROFILES[weather] ?? PORTAL_CLIMATE_LIGHT_PROFILES.clear;
+    const phase = elapsedSec * profile.pulseFreq + portalIndex * 1.15;
+    const primaryWave = Math.sin(phase);
+    const harmonicWave = Math.sin(phase * 2.15 + 0.6) * 0.32;
+    const wave01 = Math.max(0, Math.min(1, 0.5 + (primaryWave + harmonicWave) * 0.38));
+    const lightningBoost = weather === 'storm' ? Math.max(0, lightningFlash) * 14.0 : 0;
+    const intensity = Number(
+      (profile.baseIntensity + (wave01 - 0.5) * 2 * profile.pulseAmp + lightningBoost).toFixed(3),
+    );
+    const distance = Number((profile.baseDistance + wave01 * 6.5).toFixed(2));
+    return {
+      weather,
+      colorHex: profile.colorHex,
+      pulseTintHex: profile.pulseTintHex,
+      wave01: Number(wave01.toFixed(4)),
+      intensity,
+      distance,
+    };
+  }
+
+  it('matches portal point light colors to each climate (golden for Clear, cyan for Blizzard, orange for Ashstorm)', () => {
+    const clear = computePortalClimateLightState('clear', 0, 0);
+    const blizzard = computePortalClimateLightState('blizzard', 0, 0);
+    const ashstorm = computePortalClimateLightState('ashstorm', 0, 0);
+
+    assert.equal(clear.colorHex, 0xffcf48);
+    assert.equal(blizzard.colorHex, 0x22d3ee);
+    assert.equal(ashstorm.colorHex, 0xff6b1a);
+
+    const allWeathers = ['clear', 'mist', 'fog', 'rain', 'storm', 'blizzard', 'ashstorm'];
+    const distinctColors = new Set(allWeathers.map((w) => computePortalClimateLightState(w, 0).colorHex));
+    assert.equal(distinctColors.size, 7);
+  });
+
+  it('pulses point light intensity and range smoothly over time and surges during storm lightning', () => {
+    const t0 = computePortalClimateLightState('blizzard', 0.1, 0);
+    const tPeak = computePortalClimateLightState('blizzard', 0.5, 0);
+    assert.notEqual(t0.intensity, tPeak.intensity);
+    assert.notEqual(t0.distance, tPeak.distance);
+
+    const calmStorm = computePortalClimateLightState('storm', 1.0, 0, 0);
+    const flashStorm = computePortalClimateLightState('storm', 1.0, 0, 0.85);
+    assert.ok(flashStorm.intensity > calmStorm.intensity + 10);
+  });
+});
 
 

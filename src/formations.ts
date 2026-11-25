@@ -53,9 +53,15 @@ export const PRESET_FORMATIONS: FormationData[] = [
       [-124, -62, 'wall'],
       [12, 128, 'wall'],
       [-12, 128, 'wall'],
-      // Continental twin warp portals linking South Obsidian Saddle <-> North Glacier Skybridge
-      [14, 146, 'portalA'],
-      [14, -138, 'portalB'],
+      // Dimensional Pocket-World Portals (Portal A & Portal B) placed across 8 key mountain vantage points!
+      [-7, -14, 'portalA'],
+      [11, -28, 'portalB'],
+      [-18, -56, 'portalA'],
+      [44, -24, 'portalB'],
+      [-46, -32, 'portalA'],
+      [14, -96, 'portalB'],
+      [-12, -146, 'portalA'],
+      [22, 42, 'portalB'],
       // Regional sprint boost runes
       [48, -20, 'boost'],
       [98, -48, 'boost'],
@@ -89,7 +95,11 @@ export const PRESET_FORMATIONS: FormationData[] = [
       [-46, -16, 'totem'],
       [-86, -42, 'wall'],
       [-120, -68, 'totem'],
-      // Far continent shortcut portals
+      // Multi-point Dimensional Portals across the Gauntlet
+      [-7, -15, 'portalA'],
+      [12, -46, 'portalB'],
+      [-38, -26, 'portalA'],
+      [38, -26, 'portalB'],
       [-132, 82, 'portalA'],
       [126, -62, 'portalB'],
       [-44, 48, 'boost'],
@@ -121,7 +131,11 @@ export const PRESET_FORMATIONS: FormationData[] = [
       [-58, -24, 'boost'],
       [104, 62, 'boost'],
       [-106, 66, 'boost'],
-      // Jungle sanctuary warp portals
+      // Jungle sanctuary multi-point dimensional portals
+      [-7, -15, 'portalA'],
+      [12, -44, 'portalB'],
+      [-42, -30, 'portalA'],
+      [42, -30, 'portalB'],
       [-136, -78, 'portalA'],
       [134, 72, 'portalB'],
     ]),
@@ -133,6 +147,8 @@ export const PRESET_FORMATIONS: FormationData[] = [
     props: buildProps([
       [0, -30, 'boost'],
       [0, -148, 'boost'],
+      [-7, -15, 'portalA'],
+      [12, -52, 'portalB'],
       [14, -126, 'portalA'],
       [-98, 96, 'portalB'],
     ]),

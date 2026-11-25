@@ -136,6 +136,114 @@ export function computeBlizzardFrostParams(
   return { effectiveIntensity, opacity, blurRadiusPx, edgeReach };
 }
 
+export interface PortalClimateLightProfile {
+  colorHex: number;
+  pulseTintHex: number;
+  baseIntensity: number;
+  pulseAmp: number;
+  pulseFreq: number;
+  baseDistance: number;
+}
+
+export const PORTAL_CLIMATE_LIGHT_PROFILES: Record<WeatherMode, PortalClimateLightProfile> = {
+  clear: {
+    colorHex: 0xffcf48, // Warm Golden Alpine Sun
+    pulseTintHex: 0xffe999,
+    baseIntensity: 19.0,
+    pulseAmp: 6.5,
+    pulseFreq: 2.2,
+    baseDistance: 34,
+  },
+  mist: {
+    colorHex: 0x5eead4, // Highland Jade-Teal Vapor
+    pulseTintHex: 0xa7f3d0,
+    baseIntensity: 17.5,
+    pulseAmp: 5.8,
+    pulseFreq: 1.85,
+    baseDistance: 32,
+  },
+  fog: {
+    colorHex: 0x93c5fd, // Ethereal Silver-Slate Mist
+    pulseTintHex: 0xe0f2fe,
+    baseIntensity: 18.5,
+    pulseAmp: 6.2,
+    pulseFreq: 1.65,
+    baseDistance: 34,
+  },
+  rain: {
+    colorHex: 0x3b82f6, // Cobalt Downpour Azure
+    pulseTintHex: 0x7dd3fc,
+    baseIntensity: 20.5,
+    pulseAmp: 7.4,
+    pulseFreq: 2.85,
+    baseDistance: 35,
+  },
+  storm: {
+    colorHex: 0xa855f7, // Tempest Lightning Violet
+    pulseTintHex: 0xf0abfc,
+    baseIntensity: 23.0,
+    pulseAmp: 9.8,
+    pulseFreq: 3.9,
+    baseDistance: 38,
+  },
+  blizzard: {
+    colorHex: 0x22d3ee, // Glacial Frost Cyan
+    pulseTintHex: 0xcffafe,
+    baseIntensity: 24.5,
+    pulseAmp: 9.2,
+    pulseFreq: 3.25,
+    baseDistance: 38,
+  },
+  ashstorm: {
+    colorHex: 0xff6b1a, // Volcanic Magma Orange
+    pulseTintHex: 0xfbbf24,
+    baseIntensity: 25.0,
+    pulseAmp: 9.6,
+    pulseFreq: 3.45,
+    baseDistance: 38,
+  },
+};
+
+export interface PortalClimateLightState {
+  weather: WeatherMode;
+  colorHex: number;
+  pulseTintHex: number;
+  wave01: number;
+  intensity: number;
+  distance: number;
+}
+
+/**
+ * Computes the dynamic pulsing PointLight state for a 3D portal center matched
+ * to the active climate (e.g. golden for Clear, cyan for Blizzard, orange for Ashstorm).
+ */
+export function computePortalClimateLightState(
+  weather: WeatherMode,
+  elapsedSec: number,
+  portalIndex = 0,
+  lightningFlash = 0,
+): PortalClimateLightState {
+  const profile = PORTAL_CLIMATE_LIGHT_PROFILES[weather] ?? PORTAL_CLIMATE_LIGHT_PROFILES.clear;
+  const phase = elapsedSec * profile.pulseFreq + portalIndex * 1.15;
+  const primaryWave = Math.sin(phase);
+  const harmonicWave = Math.sin(phase * 2.15 + 0.6) * 0.32;
+  const wave01 = Math.max(0, Math.min(1, 0.5 + (primaryWave + harmonicWave) * 0.38));
+  const lightningBoost = weather === 'storm' ? Math.max(0, lightningFlash) * 14.0 : 0;
+  const intensity = Number(
+    (profile.baseIntensity + (wave01 - 0.5) * 2 * profile.pulseAmp + lightningBoost).toFixed(3),
+  );
+  const distance = Number((profile.baseDistance + wave01 * 6.5).toFixed(2));
+
+  return {
+    weather,
+    colorHex: profile.colorHex,
+    pulseTintHex: profile.pulseTintHex,
+    wave01: Number(wave01.toFixed(4)),
+    intensity,
+    distance,
+  };
+}
+
 export interface SnakePose3D {
   x: number;
   y: number;
@@ -801,10 +909,21 @@ export class WorldEngine {
   private animatedTotems: Array<{ core: THREE.Object3D; ring: THREE.Object3D; baseY: number }> = [];
   private animatedPortals: Array<{
     halo: THREE.Object3D;
+    innerWheel?: THREE.Object3D | null;
+    orbitGroup?: THREE.Object3D | null;
+    skyBeam?: THREE.Object3D | null;
+    climateLight?: THREE.PointLight | null;
+    climateCore?: THREE.Mesh | null;
     s1: THREE.Object3D;
     s2: THREE.Object3D;
+    screen?: THREE.Object3D | null;
+    crest?: THREE.Object3D | null;
   }> = [];
   private animatedBoosts: Array<{ core: THREE.Object3D; ring: THREE.Object3D }> = [];
+  private portalCanvasA: HTMLCanvasElement | null = null;
+  private portalCanvasB: HTMLCanvasElement | null = null;
+  private portalTexA: THREE.CanvasTexture | null = null;
+  private portalTexB: THREE.CanvasTexture | null = null;
 
   // Builder hover ghost & raycaster
   private hoverGhost!: THREE.Group;
@@ -847,12 +966,27 @@ export class WorldEngine {
   private builderFocus = new THREE.Vector3(0, 8, -12);
   private shakeIntensity = 0;
 
-  // Half-human hand cannon recoil & muzzle flash state
+  // Half-human hand cannon procedural weapon recoil & 2D screen-space camera shake state
   private gunRecoil = 0;
   private gunRecoilVel = 0;
+  private gunTwist = 0;
+  private gunTwistVel = 0;
+  private gunBlowback = 0;
+  private gunBlowbackVel = 0;
   private gunSlideKick = 0;
+  private gunHammerKick = 0;
+  private gunTriggerPull = 0;
   private gunFlashTimer = 0;
   private gunCamKick = 0;
+  private gunScreenShakeX = 0;
+  private gunScreenShakeY = 0;
+  private gunScreenShakeVelX = 0;
+  private gunScreenShakeVelY = 0;
+  private gunScreenRoll = 0;
+  private gunScreenRollVel = 0;
+  private gunScreenFovKick = 0;
+  private gunScreenPulse = 0;
+  private gunShotParity = 1;
 
   // Loop & XR state
   private running = false;
@@ -1992,28 +2126,50 @@ export class WorldEngine {
   }
 
   /**
-   * Fires mechanical blowback recoil, upper-body fallback kick, volumetric muzzle flash,
-   * cordite smoke sparks, ejected brass shell glint, and camera kick on the half-human gun.
+   * Fires multi-DOF procedural weapon recoil (muzzle climb pitch, rifling torque twist,
+   * axial blowback, short-recoil barrel tilt, reciprocating slide, skeletonized hammer snap,
+   * and trigger squeeze) paired with 2D screen-space camera projection shake, roll punch,
+   * FOV kick, and ballistic shockwave shader pulse.
    */
   public triggerGunRecoil(strength = 1.0): void {
     const s = Math.max(0.4, Math.min(1.8, strength));
-    this.gunRecoil = Math.min(1.5, this.gunRecoil + 0.78 * s);
-    this.gunRecoilVel = Math.min(16, this.gunRecoilVel + 6.8 * s);
+    this.gunShotParity = -this.gunShotParity;
+    const parity = this.gunShotParity;
+
+    // 1. Multi-DOF Procedural Weapon Model Spring-Damper Impulses
+    this.gunRecoil = Math.min(1.65, this.gunRecoil + 0.85 * s);
+    this.gunRecoilVel = Math.min(18, this.gunRecoilVel + 7.6 * s);
+    this.gunTwist = Math.max(-1.2, Math.min(1.2, this.gunTwist + parity * 0.62 * s));
+    this.gunTwistVel = Math.max(-14, Math.min(14, this.gunTwistVel + parity * 5.8 * s));
+    this.gunBlowback = Math.min(1.4, this.gunBlowback + 0.92 * s);
+    this.gunBlowbackVel = Math.min(16, this.gunBlowbackVel + 6.4 * s);
     this.gunSlideKick = 1.0;
-    this.gunFlashTimer = 0.072;
-    this.gunCamKick = Math.min(0.68, this.gunCamKick + 0.34 * s);
-    this.triggerShake(0.24 * s);
+    this.gunHammerKick = 1.0;
+    this.gunTriggerPull = 1.0;
+    this.gunFlashTimer = 0.078;
+
+    // 2. 2D Screen-Space Camera Projection Shake, Roll, FOV Punch & Shader Concussion Pulse
+    this.gunCamKick = Math.min(0.75, this.gunCamKick + 0.38 * s);
+    this.gunScreenShakeY = Math.min(0.055, this.gunScreenShakeY + 0.022 * s);
+    this.gunScreenShakeVelY = Math.min(0.85, this.gunScreenShakeVelY + 0.36 * s);
+    this.gunScreenShakeX = Math.max(-0.04, Math.min(0.04, this.gunScreenShakeX + parity * 0.014 * s));
+    this.gunScreenShakeVelX = Math.max(-0.65, Math.min(0.65, this.gunScreenShakeVelX + parity * 0.24 * s));
+    this.gunScreenRoll = Math.max(-0.045, Math.min(0.045, this.gunScreenRoll + parity * 0.018 * s));
+    this.gunScreenRollVel = Math.max(-0.7, Math.min(0.7, this.gunScreenRollVel + parity * 0.28 * s));
+    this.gunScreenFovKick = Math.min(2.8, this.gunScreenFovKick + 1.55 * s);
+    this.gunScreenPulse = Math.min(1.0, this.gunScreenPulse + 0.85 * s);
+    this.triggerShake(0.32 * s);
 
     const rig = this.ascensionRig;
     rig.gunMuzzleFlash.rotation.z = Math.random() * Math.PI * 2;
     if (rig.group.visible && rig.gunGroup.visible) {
       rig.group.updateMatrixWorld(true);
       rig.gunMuzzleAnchor.getWorldPosition(_vec3A);
-      this.spawnBurst(_vec3A.x, _vec3A.y, _vec3A.z, 0xffd166, 12);
-      this.spawnBurst(_vec3A.x, _vec3A.y, _vec3A.z, 0xcbd5e1, 5);
+      this.spawnBurst(_vec3A.x, _vec3A.y, _vec3A.z, 0xffd166, 14);
+      this.spawnBurst(_vec3A.x, _vec3A.y, _vec3A.z, 0xcbd5e1, 6);
 
       rig.gunEjectAnchor.getWorldPosition(_vec3B);
-      this.spawnBurst(_vec3B.x, _vec3B.y, _vec3B.z, 0xfbbf24, 4);
+      this.spawnBurst(_vec3B.x, _vec3B.y, _vec3B.z, 0xfbbf24, 5);
     }
   }
 
@@ -2294,6 +2450,7 @@ export class WorldEngine {
         uCondensation: { value: 0 },
         uAshCinderPulse: { value: 0 },
         uAshBiasX: { value: 0 },
+        uGunRecoilPulse: { value: 0 },
       },
       vertexShader: `
         varying vec2 vUv;
@@ -2325,6 +2482,7 @@ export class WorldEngine {
         uniform float uCondensation;
         uniform float uAshCinderPulse;
         uniform float uAshBiasX;
+        uniform float uGunRecoilPulse;
 
         varying vec2 vUv;
 
@@ -2514,6 +2672,17 @@ export class WorldEngine {
             float soulAlpha = ringStrength * 0.82 + vigStrength * 0.78 + (chromaOuter + chromaInner) * power * 0.22;
             col += soulCol;
             alpha += soulAlpha;
+          }
+
+          // 8. Half-Human Hand Cannon Screen-Space Ballistic Concussion Ring & Muzzle Perimeter Flash
+          if (uGunRecoilPulse > 0.004) {
+            float shockRad = mix(0.18, 0.92, 1.0 - uGunRecoilPulse);
+            float shockBand = exp(-pow((rad - shockRad) * 16.0, 2.0)) * uGunRecoilPulse;
+            float muzzleRim = outerEdge * uGunRecoilPulse * 0.34;
+            vec3 brassFlash = vec3(1.0, 0.76, 0.32);
+            vec3 hotCore = vec3(1.0, 0.94, 0.78);
+            col += brassFlash * muzzleRim + hotCore * shockBand * 0.52;
+            alpha += muzzleRim * 0.75 + shockBand * 0.38;
           }
 
           alpha = clamp(alpha, 0.0, 0.76);
@@ -3168,6 +3337,9 @@ export class WorldEngine {
     oUniforms.uSoulPulse.value = this.soulSkillPulse;
     oUniforms.uSoulPhase.value = this.soulSkillPhase;
     oUniforms.uSoulPower.value = this.soulSkillPower;
+    this.gunScreenPulse = THREE.MathUtils.damp(this.gunScreenPulse, 0, 18, dt);
+    if (this.gunScreenPulse < 0.002) this.gunScreenPulse = 0;
+    oUniforms.uGunRecoilPulse.value = this.gunScreenPulse;
 
     // 6b. Update Intensity-Scaled & Audio-Synced Screen-Space Weather VFX (droplets, frost, condensation, cinders)
     const vfx = computeWeatherVfxIntensity(
@@ -3710,13 +3882,41 @@ export class WorldEngine {
           this.animatedTotems.push({ core, ring, baseY: 2.75 });
         }
       } else if (prop.type === 'portalA' || prop.type === 'portalB') {
-        block = createPortalBlock(res, prop.type === 'portalA' ? 'A' : 'B');
-        block.scale.setScalar(2.4);
+        const variant = prop.type === 'portalA' ? 'A' : 'B';
+        block = createPortalBlock(res, variant);
+        block.scale.setScalar(3.4);
         const halo = block.getObjectByName('portalHalo');
+        const innerWheel = block.getObjectByName('portalInnerWheel');
+        const orbitGroup = block.getObjectByName('portalOrbitGroup');
+        const skyBeam = block.getObjectByName('portalSkyBeam');
+        const climateLight = block.getObjectByName('portalClimateLight') as THREE.PointLight | undefined;
+        const climateCore = block.getObjectByName('portalClimateCore') as THREE.Mesh | undefined;
         const s1 = block.getObjectByName('portalShard1');
         const s2 = block.getObjectByName('portalShard2');
+        const screen = block.getObjectByName(
+          variant === 'A' ? 'portalBrowserScreenA' : 'portalBrowserScreenB',
+        ) as THREE.Mesh | undefined;
+        const crest = block.getObjectByName('portalTabCrest');
+        if (screen) {
+          const tex = this.ensurePortalBrowserTexture(variant);
+          if (tex && screen.material instanceof THREE.MeshBasicMaterial) {
+            screen.material.map = tex;
+            screen.material.needsUpdate = true;
+          }
+        }
         if (halo && s1 && s2) {
-          this.animatedPortals.push({ halo, s1, s2 });
+          this.animatedPortals.push({
+            halo,
+            innerWheel,
+            orbitGroup,
+            skyBeam,
+            climateLight,
+            climateCore,
+            s1,
+            s2,
+            screen,
+            crest,
+          });
         }
       } else if (prop.type === 'boost') {
         block = createBoostBlock(res);
@@ -4026,56 +4226,91 @@ export class WorldEngine {
         rig.upperBody.position.y = 0.22 + stage.nagaTorsoBlend * 0.16;
       }
 
-      // Spring-damped hand cannon recoil, mechanical blowback slide & muzzle flash simulation
-      const recoilAccel = -165 * this.gunRecoil - 19 * this.gunRecoilVel;
+      // Multi-DOF spring-damped hand cannon recoil, blowback slide, tilting barrel, hammer & trigger kinematics
+      const recoilAccel = -175 * this.gunRecoil - 19 * this.gunRecoilVel;
       this.gunRecoilVel += recoilAccel * dt;
       this.gunRecoil = Math.max(-0.18, this.gunRecoil + this.gunRecoilVel * dt);
       if (Math.abs(this.gunRecoil) < 0.002 && Math.abs(this.gunRecoilVel) < 0.01) {
         this.gunRecoil = 0;
         this.gunRecoilVel = 0;
       }
+
+      const twistAccel = -210 * this.gunTwist - 22 * this.gunTwistVel;
+      this.gunTwistVel += twistAccel * dt;
+      this.gunTwist += this.gunTwistVel * dt;
+      if (Math.abs(this.gunTwist) < 0.002 && Math.abs(this.gunTwistVel) < 0.01) {
+        this.gunTwist = 0;
+        this.gunTwistVel = 0;
+      }
+
+      const blowbackAccel = -230 * this.gunBlowback - 24 * this.gunBlowbackVel;
+      this.gunBlowbackVel += blowbackAccel * dt;
+      this.gunBlowback = Math.max(-0.08, this.gunBlowback + this.gunBlowbackVel * dt);
+      if (Math.abs(this.gunBlowback) < 0.002 && Math.abs(this.gunBlowbackVel) < 0.01) {
+        this.gunBlowback = 0;
+        this.gunBlowbackVel = 0;
+      }
+
       this.gunSlideKick = THREE.MathUtils.damp(this.gunSlideKick, 0, 26, dt);
+      this.gunHammerKick = THREE.MathUtils.damp(this.gunHammerKick, 0, 22, dt);
+      this.gunTriggerPull = THREE.MathUtils.damp(this.gunTriggerPull, 0, 30, dt);
       this.gunFlashTimer = Math.max(0, this.gunFlashTimer - dt);
 
       // Forelimbs / Arms + Half-Human Mounted Hand Cannon (Lv 8+)
       const armScale = Math.max(0.01, stage.nagaTorsoBlend);
       rig.leftArmPivot.scale.setScalar(armScale);
       rig.rightArmPivot.scale.setScalar(armScale);
-      rig.leftArmPivot.rotation.x = -stride * 0.58;
-      rig.leftArmPivot.rotation.z = 0.14 + Math.sin(t * 2.5) * 0.04;
+      rig.leftArmPivot.rotation.x = -stride * 0.58 - Math.max(0, this.gunRecoil) * 0.18;
+      rig.leftArmPivot.rotation.z = 0.14 + Math.sin(t * 2.5) * 0.04 + Math.max(0, this.gunRecoil) * 0.14;
 
       const showGun = evolutionLevel >= 8;
       rig.gunGroup.visible = showGun;
       if (showGun) {
-        // Right arm locks into forward firing stance with vertical recoil flip & wrist kickback
+        // Right arm locks into forward firing stance with vertical recoil flip, rifling twist & axial blowback
         const kick = Math.max(0, this.gunRecoil);
-        rig.rightArmPivot.rotation.x = -Math.PI * 0.46 + stride * 0.07 - kick * 0.56;
-        rig.rightArmPivot.rotation.z = -0.07 - kick * 0.09;
-        rig.rightArmPivot.rotation.y = -0.05;
+        const blowback = Math.max(0, this.gunBlowback);
+        rig.rightArmPivot.rotation.x = -Math.PI * 0.46 + stride * 0.07 - kick * 0.62;
+        rig.rightArmPivot.rotation.z = -0.07 - kick * 0.11 + this.gunTwist * 0.09;
+        rig.rightArmPivot.rotation.y = -0.05 + this.gunTwist * 0.07;
 
-        rig.gunGroup.position.set(0, -0.68 + kick * 0.095, 0.11);
-        rig.gunGroup.rotation.x = Math.PI * 0.46 - kick * 0.28;
-        rig.gunSlide.position.z = -this.gunSlideKick * 0.145;
+        rig.gunGroup.position.set(
+          this.gunTwist * 0.016,
+          -0.68 + kick * 0.115 - blowback * 0.045,
+          0.11 - blowback * 0.088,
+        );
+        rig.gunGroup.rotation.x = Math.PI * 0.46 - kick * 0.34;
+        rig.gunGroup.rotation.y = this.gunTwist * 0.12;
+        rig.gunGroup.rotation.z = this.gunTwist * 0.25;
+
+        // Reciprocating blowback slide, short-recoil tilting barrel, skeletonized hammer & trigger squeeze
+        rig.gunSlide.position.z = -this.gunSlideKick * 0.165;
+        rig.gunBarrelGroup.position.z = -this.gunSlideKick * 0.042;
+        rig.gunBarrelGroup.rotation.x = -this.gunSlideKick * 0.068;
+        rig.gunHammerPivot.rotation.x = -this.gunHammerKick * 0.92;
+        rig.gunTrigger.rotation.x = 0.28 + this.gunTriggerPull * 0.42;
+        rig.gunTrigger.position.z = 0.072 - this.gunTriggerPull * 0.014;
 
         // Full upper-body fallback recoil rock on firing + forward headwind lean in blizzard/ashstorm
-        rig.upperBody.rotation.x = traversalStrain * 0.16 - kick * 0.24;
+        rig.upperBody.rotation.x = traversalStrain * 0.16 - kick * 0.26;
+        rig.upperBody.rotation.y = this.gunTwist * 0.08;
         rig.upperBody.rotation.z = -steerNorm * traversalStrain * 0.2;
-        rig.upperBody.position.z = -kick * 0.19;
+        rig.upperBody.position.z = -kick * 0.21;
 
-        const flashFrac = this.gunFlashTimer / 0.072;
+        const flashFrac = this.gunFlashTimer / 0.078;
         rig.gunMuzzleFlash.visible = flashFrac > 0;
         if (flashFrac > 0) {
-          rig.gunMuzzleFlash.scale.setScalar(0.72 + flashFrac * 0.68);
-          rig.gunMuzzleLight.intensity = 7.5 * flashFrac;
+          rig.gunMuzzleFlash.scale.setScalar(0.76 + flashFrac * 0.74);
+          rig.gunMuzzleLight.intensity = 8.2 * flashFrac;
         } else {
           rig.gunMuzzleLight.intensity = 0;
         }
-        rig.gunCoreMat.emissiveIntensity = 1.25 + kick * 2.8;
+        rig.gunCoreMat.emissiveIntensity = 1.25 + kick * 3.1;
       } else {
         rig.rightArmPivot.rotation.x = stride * 0.58;
         rig.rightArmPivot.rotation.z = -0.14 - Math.sin(t * 2.5) * 0.04;
         rig.rightArmPivot.rotation.y = 0;
         rig.upperBody.rotation.x = traversalStrain * 0.16;
+        rig.upperBody.rotation.y = 0;
         rig.upperBody.rotation.z = -steerNorm * traversalStrain * 0.2;
         rig.upperBody.position.z = 0;
         rig.gunMuzzleFlash.visible = false;
@@ -4447,11 +4682,58 @@ export class WorldEngine {
       tm.core.position.y = tm.baseY + Math.sin(t * 2.8 + i) * 0.1;
       tm.ring.rotation.z = -t * 1.5;
     }
+    const portalLightLerp = 1 - Math.exp(-5.5 * dt);
     for (let i = 0; i < this.animatedPortals.length; i++) {
       const pt = this.animatedPortals[i];
-      pt.halo.rotation.y = t * 1.6 + i;
-      pt.s1.position.y = 0.56 + Math.sin(t * 3.2 + i) * 0.08;
-      pt.s2.position.y = 0.56 + Math.cos(t * 3.2 + i) * 0.08;
+      const sway = Math.sin(t * 0.9 + i) * 0.24;
+      const lightState = computePortalClimateLightState(this.weather, t, i, this.lightningFlash);
+      _color.setHex(lightState.colorHex).lerp(_levelTintColor.setHex(lightState.pulseTintHex), lightState.wave01 * 0.45);
+
+      if (pt.climateLight) {
+        pt.climateLight.color.lerp(_color, portalLightLerp);
+        pt.climateLight.intensity = lightState.intensity;
+        pt.climateLight.distance = lightState.distance;
+        pt.climateLight.position.y = 1.18 + Math.sin(t * 2.2 + i) * 0.04;
+      }
+      if (pt.climateCore && pt.climateCore.material instanceof THREE.MeshBasicMaterial) {
+        pt.climateCore.material.color.lerp(_color, portalLightLerp);
+        pt.climateCore.material.opacity = 0.26 + lightState.wave01 * 0.34;
+        pt.climateCore.rotation.y = sway * 0.85;
+        pt.climateCore.scale.setScalar(0.94 + lightState.wave01 * 0.14);
+      }
+
+      pt.halo.rotation.y = sway;
+      pt.halo.rotation.z = t * 0.65 + i;
+      if (pt.innerWheel) {
+        pt.innerWheel.rotation.y = sway;
+        pt.innerWheel.rotation.z = -t * 1.45 - i;
+      }
+      if (pt.orbitGroup) {
+        pt.orbitGroup.rotation.y = sway;
+        const spin = t * 1.25 + i * 0.8;
+        pt.orbitGroup.rotation.z = spin;
+        for (let c = 0; c < pt.orbitGroup.children.length; c++) {
+          pt.orbitGroup.children[c].rotation.z = -spin;
+        }
+      }
+      if (pt.skyBeam) {
+        const beamPulse = 0.88 + Math.sin(t * 2.8 + i) * 0.18;
+        pt.skyBeam.scale.set(beamPulse, 1, beamPulse);
+        if (pt.skyBeam instanceof THREE.Mesh && pt.skyBeam.material instanceof THREE.MeshBasicMaterial) {
+          pt.skyBeam.material.color.lerp(_color, portalLightLerp * 0.65);
+          pt.skyBeam.material.opacity = 0.22 + lightState.wave01 * 0.14;
+        }
+      }
+      pt.s1.position.y = 1.98 + Math.sin(t * 3.2 + i) * 0.14;
+      pt.s2.position.y = 1.98 + Math.cos(t * 3.2 + i) * 0.14;
+      if (pt.screen) {
+        pt.screen.rotation.y = sway * 0.85;
+        pt.screen.position.y = 1.18 + Math.sin(t * 2.2 + i) * 0.035;
+      }
+      if (pt.crest) {
+        pt.crest.rotation.y = sway * 0.85;
+        pt.crest.position.y = 1.74 + Math.sin(t * 2.2 + i) * 0.035;
+      }
     }
     for (let i = 0; i < this.animatedBoosts.length; i++) {
       const bs = this.animatedBoosts[i];
@@ -4649,9 +4931,43 @@ export class WorldEngine {
       }
     }
 
-    if (Math.abs(this.camera.fov - targetFov) > 0.05) {
-      this.camera.fov = THREE.MathUtils.damp(this.camera.fov, targetFov, 4.5, dt);
+    // Step 2D screen-space camera projection shake, roll & FOV recoil punch
+    this.gunScreenFovKick = THREE.MathUtils.damp(this.gunScreenFovKick, 0, 18, dt);
+    if (this.gunScreenFovKick < 0.005) this.gunScreenFovKick = 0;
+    const effectiveTargetFov = targetFov + this.gunScreenFovKick;
+
+    if (Math.abs(this.camera.fov - effectiveTargetFov) > 0.02) {
+      this.camera.fov = THREE.MathUtils.damp(this.camera.fov, effectiveTargetFov, 8.5, dt);
       this.camera.updateProjectionMatrix();
+    }
+
+    const ssAccelX = -255 * this.gunScreenShakeX - 21 * this.gunScreenShakeVelX;
+    const ssAccelY = -255 * this.gunScreenShakeY - 21 * this.gunScreenShakeVelY;
+    const ssAccelR = -240 * this.gunScreenRoll - 20 * this.gunScreenRollVel;
+    this.gunScreenShakeVelX += ssAccelX * dt;
+    this.gunScreenShakeVelY += ssAccelY * dt;
+    this.gunScreenRollVel += ssAccelR * dt;
+    this.gunScreenShakeX += this.gunScreenShakeVelX * dt;
+    this.gunScreenShakeY += this.gunScreenShakeVelY * dt;
+    this.gunScreenRoll += this.gunScreenRollVel * dt;
+
+    const hasScreenSpaceShake =
+      Math.abs(this.gunScreenShakeX) > 0.0002 ||
+      Math.abs(this.gunScreenShakeY) > 0.0002 ||
+      Math.abs(this.gunScreenShakeVelX) > 0.001 ||
+      Math.abs(this.gunScreenShakeVelY) > 0.001 ||
+      Math.abs(this.gunScreenRoll) > 0.0002;
+
+    if (!hasScreenSpaceShake) {
+      if (this.gunScreenShakeX !== 0 || this.gunScreenShakeY !== 0 || this.gunScreenRoll !== 0) {
+        this.gunScreenShakeX = 0;
+        this.gunScreenShakeY = 0;
+        this.gunScreenShakeVelX = 0;
+        this.gunScreenShakeVelY = 0;
+        this.gunScreenRoll = 0;
+        this.gunScreenRollVel = 0;
+        this.camera.updateProjectionMatrix();
+      }
     }
 
     this.camera.position.x = THREE.MathUtils.damp(this.camera.position.x, this.cameraTargetPos.x, dampLambda, dt);
@@ -4670,7 +4986,7 @@ export class WorldEngine {
     this.currentLookAt.y = THREE.MathUtils.damp(this.currentLookAt.y, this.cameraLookAt.y, dampLambda + 1.8, dt);
     this.currentLookAt.z = THREE.MathUtils.damp(this.currentLookAt.z, this.cameraLookAt.z, dampLambda + 1.8, dt);
 
-    const kickY = this.gunCamKick > 0.002 ? this.gunCamKick * 1.15 : 0;
+    const kickY = this.gunCamKick > 0.002 ? this.gunCamKick * 1.18 : 0;
     if (this.gunCamKick > 0.002) {
       this.gunCamKick = THREE.MathUtils.damp(this.gunCamKick, 0, 14, dt);
     } else {
@@ -4686,6 +5002,15 @@ export class WorldEngine {
     } else {
       this.shakeIntensity = 0;
       this.camera.lookAt(this.currentLookAt);
+    }
+
+    // Apply 2D screen-space camera roll & NDC projection matrix shake offset
+    if (hasScreenSpaceShake) {
+      this.camera.rotation.z += this.gunScreenRoll;
+      this.camera.updateProjectionMatrix();
+      this.camera.projectionMatrix.elements[8] += this.gunScreenShakeX;
+      this.camera.projectionMatrix.elements[9] += this.gunScreenShakeY;
+      this.camera.projectionMatrixInverse.copy(this.camera.projectionMatrix).invert();
     }
   }
 
@@ -4893,6 +5218,52 @@ export class WorldEngine {
     const x = Math.max(padX, Math.min(width - padX, rawX));
     const y = Math.max(padTop, Math.min(height - padBottom, rawY));
     return { x, y, visible: true };
+  }
+
+  private ensurePortalBrowserTexture(variant: 'A' | 'B'): THREE.CanvasTexture | null {
+    if (typeof document === 'undefined') return null;
+    if (variant === 'A') {
+      if (!this.portalCanvasA) {
+        this.portalCanvasA = document.createElement('canvas');
+        this.portalCanvasA.width = 480;
+        this.portalCanvasA.height = 396;
+        this.portalTexA = new THREE.CanvasTexture(this.portalCanvasA);
+        this.portalTexA.colorSpace = THREE.SRGBColorSpace;
+      }
+      return this.portalTexA;
+    }
+    if (!this.portalCanvasB) {
+      this.portalCanvasB = document.createElement('canvas');
+      this.portalCanvasB.width = 480;
+      this.portalCanvasB.height = 396;
+      this.portalTexB = new THREE.CanvasTexture(this.portalCanvasB);
+      this.portalTexB.colorSpace = THREE.SRGBColorSpace;
+    }
+    return this.portalTexB;
+  }
+
+  /**
+   * Redraws the 3D holographic Chromium browser tab canvas textures inside Portal A & Portal B.
+   */
+  public refreshPortalBrowserTextures(
+    drawFn: (ctx: CanvasRenderingContext2D, variant: 'A' | 'B', pulsePhase: number) => void,
+  ): void {
+    const texA = this.ensurePortalBrowserTexture('A');
+    if (texA && this.portalCanvasA) {
+      const ctxA = this.portalCanvasA.getContext('2d');
+      if (ctxA) {
+        drawFn(ctxA, 'A', this.elapsed);
+        texA.needsUpdate = true;
+      }
+    }
+    const texB = this.ensurePortalBrowserTexture('B');
+    if (texB && this.portalCanvasB) {
+      const ctxB = this.portalCanvasB.getContext('2d');
+      if (ctxB) {
+        drawFn(ctxB, 'B', this.elapsed);
+        texB.needsUpdate = true;
+      }
+    }
   }
 
   public dispose(): void {
