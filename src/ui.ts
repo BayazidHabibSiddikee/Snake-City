@@ -864,7 +864,8 @@ export class GameUI {
             <li>⚠️ Harsh climates drain Vitality — seek Shrine Shelter to recover HP &amp; Qi</li>
             <li>🌧️ Difficulty sets climate: Chill = Clear, Classic = Mist, Turbo = Rain</li>
           </ul>
-          <button type="button" class="primary-cta" id="closeTutorialBtn">Begin Adventure</button>
+          <button type="button" class="primary-cta" id="closeTutorialBtn">▶ Start Playing</button>
+          <p style="margin:12px 0 0;font-size:12px;opacity:0.5;text-align:center">Press Enter or Escape to skip</p>
         </div>
       </div>
 
@@ -1319,10 +1320,22 @@ export class GameUI {
     });
 
     // --- Tutorial Overlay ---
+    // "Begin Adventure" dismisses tutorial AND immediately starts the game
     this.root.querySelector('#closeTutorialBtn')!.addEventListener('click', () => {
       this.tutorialOverlay.classList.add('hidden');
       this.game.setModalFreeze(false);
       localStorage.setItem('SERPENT_PEAKS_TUTORIAL_SEEN', '1');
+      this.game.startGame();
+    });
+    // Also allow pressing Escape or Enter to dismiss
+    document.addEventListener('keydown', (e) => {
+      if (!this.tutorialOverlay.classList.contains('hidden') &&
+          (e.key === 'Escape' || e.key === 'Enter' || e.key === ' ')) {
+        this.tutorialOverlay.classList.add('hidden');
+        this.game.setModalFreeze(false);
+        localStorage.setItem('SERPENT_PEAKS_TUTORIAL_SEEN', '1');
+        this.game.startGame();
+      }
     });
 
     // --- Mobile Boost / Brake ---
