@@ -702,6 +702,13 @@ export interface AscensionAvatarRig {
   goldMat: THREE.MeshStandardMaterial;
   wingMat: THREE.MeshStandardMaterial;
   auraMat: THREE.MeshStandardMaterial;
+  gunGroup: THREE.Group;
+  gunSlide: THREE.Group;
+  gunMuzzleFlash: THREE.Group;
+  gunMuzzleAnchor: THREE.Object3D;
+  gunEjectAnchor: THREE.Object3D;
+  gunMuzzleLight: THREE.PointLight;
+  gunCoreMat: THREE.MeshStandardMaterial;
 }
 
 /**
@@ -890,6 +897,192 @@ export function createAscensionAvatar(res: ModelResources): AscensionAvatarRig {
   const rightArmPivot = buildArm(1);
   upperBody.add(leftArmPivot, rightArmPivot);
 
+  // 6b. Composite 11-Part PBR Runic Hand Cannon (equipped on right hand from Half-Human Lv 8+)
+  const gunGroup = new THREE.Group();
+  // Aligned so when rightArmPivot raises forward (-PI * 0.46), local +Z points dead-ahead out the barrel
+  gunGroup.position.set(0, -0.68, 0.11);
+  gunGroup.rotation.x = Math.PI * 0.46;
+  gunGroup.visible = false;
+
+  const gunGripMat = new THREE.MeshStandardMaterial({
+    color: 0x1d222a,
+    roughness: 0.86,
+    metalness: 0.08,
+  });
+  const gunFrameMat = new THREE.MeshStandardMaterial({
+    color: 0x262f3b,
+    roughness: 0.36,
+    metalness: 0.82,
+  });
+  const gunSlideMat = new THREE.MeshStandardMaterial({
+    color: 0x4b586b,
+    roughness: 0.22,
+    metalness: 0.92,
+  });
+  const gunBoreMat = new THREE.MeshStandardMaterial({
+    color: 0x090b0f,
+    roughness: 0.9,
+    metalness: 0.1,
+  });
+  const gunCoreMat = new THREE.MeshStandardMaterial({
+    color: 0xffd27d,
+    emissive: 0xff9f2e,
+    emissiveIntensity: 1.15,
+    roughness: 0.22,
+    metalness: 0.35,
+  });
+  const gunSightMat = new THREE.MeshStandardMaterial({
+    color: 0x7ef9ff,
+    emissive: 0x38e8ff,
+    emissiveIntensity: 1.6,
+    roughness: 0.2,
+    metalness: 0.2,
+  });
+
+  // 1) Ergonomic matte grip & gold-trimmed extended magazine baseplate
+  const grip = new THREE.Mesh(new THREE.BoxGeometry(0.082, 0.22, 0.115), gunGripMat);
+  grip.position.set(0, -0.075, -0.035);
+  grip.rotation.x = -0.24;
+  gunGroup.add(grip);
+
+  const magBase = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.032, 0.128), goldMat);
+  magBase.position.set(0, -0.188, -0.062);
+  magBase.rotation.x = -0.24;
+  gunGroup.add(magBase);
+
+  // 2) Trigger guard & curved trigger
+  const triggerGuardBottom = new THREE.Mesh(new THREE.BoxGeometry(0.032, 0.018, 0.12), gunFrameMat);
+  triggerGuardBottom.position.set(0, -0.048, 0.075);
+  gunGroup.add(triggerGuardBottom);
+
+  const triggerGuardFront = new THREE.Mesh(new THREE.BoxGeometry(0.032, 0.068, 0.018), gunFrameMat);
+  triggerGuardFront.position.set(0, -0.018, 0.13);
+  gunGroup.add(triggerGuardFront);
+
+  const trigger = new THREE.Mesh(new THREE.BoxGeometry(0.018, 0.048, 0.018), goldMat);
+  trigger.position.set(0, -0.015, 0.072);
+  trigger.rotation.x = 0.28;
+  gunGroup.add(trigger);
+
+  // 3) Blued forged-steel lower receiver & under-barrel tactical rail
+  const lowerFrame = new THREE.Mesh(new THREE.BoxGeometry(0.092, 0.072, 0.44), gunFrameMat);
+  lowerFrame.position.set(0, 0.042, 0.165);
+  gunGroup.add(lowerFrame);
+
+  const underRail = new THREE.Mesh(new THREE.BoxGeometry(0.068, 0.034, 0.22), gunGripMat);
+  underRail.position.set(0, 0.0, 0.265);
+  gunGroup.add(underRail);
+
+  // 4) Brushed gold cultivation reinforcement collar & glowing Dou Qi chamber strips
+  const goldBand = new THREE.Mesh(new THREE.BoxGeometry(0.104, 0.062, 0.052), goldMat);
+  goldBand.position.set(0, 0.062, 0.34);
+  gunGroup.add(goldBand);
+
+  const coreStrip = new THREE.Mesh(new THREE.BoxGeometry(0.101, 0.022, 0.19), gunCoreMat);
+  coreStrip.position.set(0, 0.056, 0.19);
+  gunGroup.add(coreStrip);
+
+  // 5) Animated reciprocating blowback slide (snaps back along -Z on each shot!)
+  const gunSlide = new THREE.Group();
+  const slideBody = new THREE.Mesh(new THREE.BoxGeometry(0.098, 0.076, 0.41), gunSlideMat);
+  slideBody.position.set(0, 0.106, 0.145);
+  gunSlide.add(slideBody);
+
+  const slideBevel = new THREE.Mesh(new THREE.BoxGeometry(0.076, 0.02, 0.39), gunSlideMat);
+  slideBevel.position.set(0, 0.15, 0.145);
+  gunSlide.add(slideBevel);
+
+  // Rear cocking serrations & luminous rear iron sight dots
+  for (let s = 0; s < 3; s++) {
+    const rib = new THREE.Mesh(new THREE.BoxGeometry(0.104, 0.052, 0.014), gunFrameMat);
+    rib.position.set(0, 0.105, -0.02 + s * 0.028);
+    gunSlide.add(rib);
+  }
+  const ejectPort = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.038, 0.088), gunBoreMat);
+  ejectPort.position.set(0.044, 0.114, 0.165);
+  gunSlide.add(ejectPort);
+
+  for (const side of [-1, 1]) {
+    const rearSight = new THREE.Mesh(new THREE.BoxGeometry(0.018, 0.022, 0.022), gunSightMat);
+    rearSight.position.set(side * 0.026, 0.166, -0.03);
+    gunSlide.add(rearSight);
+  }
+  const frontSight = new THREE.Mesh(new THREE.BoxGeometry(0.018, 0.026, 0.026), gunSightMat);
+  frontSight.position.set(0, 0.168, 0.325);
+  gunSlide.add(frontSight);
+  gunGroup.add(gunSlide);
+
+  // 6) Heavy rifled barrel, hexagonal muzzle brake compensator & dark hollow bore
+  const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.031, 0.034, 0.24, 10), gunFrameMat);
+  barrel.rotation.x = Math.PI / 2;
+  barrel.position.set(0, 0.098, 0.42);
+  gunGroup.add(barrel);
+
+  const compensator = new THREE.Mesh(new THREE.CylinderGeometry(0.046, 0.044, 0.11, 6), goldMat);
+  compensator.rotation.x = Math.PI / 2;
+  compensator.position.set(0, 0.098, 0.51);
+  gunGroup.add(compensator);
+
+  const boreHole = new THREE.Mesh(new THREE.CylinderGeometry(0.023, 0.023, 0.025, 10), gunBoreMat);
+  boreHole.rotation.x = Math.PI / 2;
+  boreHole.position.set(0, 0.098, 0.562);
+  gunGroup.add(boreHole);
+
+  // 7) Additive star-fin volumetric muzzle flash & dynamic local point light
+  const gunMuzzleFlash = new THREE.Group();
+  gunMuzzleFlash.position.set(0, 0.098, 0.585);
+  gunMuzzleFlash.visible = false;
+
+  const flashOuterMat = new THREE.MeshBasicMaterial({
+    color: 0xffb340,
+    transparent: true,
+    opacity: 0.92,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  });
+  const flashCoreMat = new THREE.MeshBasicMaterial({
+    color: 0xfff6d6,
+    transparent: true,
+    opacity: 0.98,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+  });
+
+  const flashCone = new THREE.Mesh(new THREE.ConeGeometry(0.11, 0.44, 6), flashOuterMat);
+  flashCone.rotation.x = Math.PI / 2;
+  flashCone.position.z = 0.2;
+  gunMuzzleFlash.add(flashCone);
+
+  const flashCore = new THREE.Mesh(new THREE.SphereGeometry(0.085, 8, 8), flashCoreMat);
+  flashCore.scale.set(1, 1, 1.85);
+  flashCore.position.z = 0.09;
+  gunMuzzleFlash.add(flashCore);
+
+  const finGeo = new THREE.ConeGeometry(0.048, 0.28, 4);
+  for (let f = 0; f < 4; f++) {
+    const fin = new THREE.Mesh(finGeo, flashOuterMat);
+    const angle = (f * Math.PI) / 2 + Math.PI / 4;
+    fin.rotation.z = angle;
+    fin.position.set(Math.cos(angle) * 0.1, Math.sin(angle) * 0.1, 0.05);
+    gunMuzzleFlash.add(fin);
+  }
+  gunGroup.add(gunMuzzleFlash);
+
+  const gunMuzzleAnchor = new THREE.Object3D();
+  gunMuzzleAnchor.position.set(0, 0.098, 0.62);
+  gunGroup.add(gunMuzzleAnchor);
+
+  const gunEjectAnchor = new THREE.Object3D();
+  gunEjectAnchor.position.set(0.08, 0.12, 0.17);
+  gunGroup.add(gunEjectAnchor);
+
+  const gunMuzzleLight = new THREE.PointLight(0xffcb6b, 0, 8.5, 2);
+  gunMuzzleLight.position.set(0, 0.1, 0.66);
+  gunGroup.add(gunMuzzleLight);
+
+  rightArmPivot.add(gunGroup);
+
   // 7 & 8. Composite Drake Wings (active during Levels 6-9)
   const buildWing = (side: -1 | 1): THREE.Group => {
     const pivot = new THREE.Group();
@@ -964,6 +1157,12 @@ export function createAscensionAvatar(res: ModelResources): AscensionAvatarRig {
 
   enableShadows(group, res.castShadows);
   auraRing.castShadow = false;
+  gunMuzzleFlash.traverse((o) => {
+    if ((o as THREE.Mesh).isMesh) {
+      o.castShadow = false;
+      o.receiveShadow = false;
+    }
+  });
   leftWingPivot.traverse((o) => {
     if ((o as THREE.Mesh).isMesh) o.castShadow = false;
   });
@@ -989,6 +1188,13 @@ export function createAscensionAvatar(res: ModelResources): AscensionAvatarRig {
     goldMat,
     wingMat,
     auraMat,
+    gunGroup,
+    gunSlide,
+    gunMuzzleFlash,
+    gunMuzzleAnchor,
+    gunEjectAnchor,
+    gunMuzzleLight,
+    gunCoreMat,
   };
 }
 
@@ -1714,4 +1920,106 @@ export function createPlayerAuraRig(): PlayerAuraRig {
   return { group, orbs, groundRing, orbMat, ringMat };
 }
 
+export interface TraversalWakeRig {
+  group: THREE.Group;
+  bowWaveMesh: THREE.Mesh;
+  leftWakeMesh: THREE.Mesh;
+  rightWakeMesh: THREE.Mesh;
+  eddyRingMesh: THREE.Mesh;
+  driftMotes: THREE.Mesh[];
+  primaryMat: THREE.MeshBasicMaterial;
+  secondaryMat: THREE.MeshBasicMaterial;
+  moteMat: THREE.MeshStandardMaterial;
+}
 
+/**
+ * 3D Ground-Hugging Difficult Traversal Wake (active during 'blizzard' & 'ashstorm').
+ * Features a forward snowplow/ash-parting crescent bow wave, asymmetric lateral flank
+ * drift ribbons that flare when turning against resistance, a swirling ground traction eddy,
+ * and 8 faceted snow-ice / cinder-ash motes whipping backward past the serpent.
+ */
+export function createTraversalWakeRig(): TraversalWakeRig {
+  const group = new THREE.Group();
+  group.visible = false;
+
+  const primaryMat = new THREE.MeshBasicMaterial({
+    color: 0xbae6fd,
+    transparent: true,
+    opacity: 0.0,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  });
+
+  const secondaryMat = new THREE.MeshBasicMaterial({
+    color: 0x38bdf8,
+    transparent: true,
+    opacity: 0.0,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  });
+
+  const moteMat = new THREE.MeshStandardMaterial({
+    color: 0xe0f2fe,
+    emissive: 0x38bdf8,
+    emissiveIntensity: 0.9,
+    roughness: 0.35,
+    metalness: 0.15,
+    transparent: true,
+    opacity: 0.88,
+  });
+
+  // 1. Crescent forward bow-wave arc parting deep snowdrifts or volcanic ash ahead of the head (+Z)
+  const bowGeo = new THREE.TorusGeometry(0.88, 0.075, 8, 24, Math.PI * 0.95);
+  const bowWaveMesh = new THREE.Mesh(bowGeo, primaryMat);
+  bowWaveMesh.rotation.x = Math.PI / 2;
+  bowWaveMesh.rotation.z = Math.PI * 0.025;
+  bowWaveMesh.position.set(0, 0.16, 0.36);
+  bowWaveMesh.castShadow = false;
+  group.add(bowWaveMesh);
+
+  // 2. Left & Right Flank V-Wake Drift Ribbons (flare asymmetrically when turning under strain)
+  const buildWakeRibbon = (side: -1 | 1): THREE.Mesh => {
+    const geo = new THREE.PlaneGeometry(0.34, 1.95, 1, 4);
+    geo.rotateX(-Math.PI / 2);
+    const m = new THREE.Mesh(geo, secondaryMat);
+    m.position.set(side * 0.64, 0.14, -0.42);
+    m.rotation.y = side * -0.34;
+    m.castShadow = false;
+    return m;
+  };
+  const leftWakeMesh = buildWakeRibbon(-1);
+  const rightWakeMesh = buildWakeRibbon(1);
+  group.add(leftWakeMesh, rightWakeMesh);
+
+  // 3. Swirling ground traction eddy ring under the front coils
+  const eddyGeo = new THREE.RingGeometry(0.52, 0.96, 24);
+  eddyGeo.rotateX(-Math.PI / 2);
+  const eddyRingMesh = new THREE.Mesh(eddyGeo, secondaryMat);
+  eddyRingMesh.position.set(0, 0.09, -0.08);
+  eddyRingMesh.castShadow = false;
+  group.add(eddyRingMesh);
+
+  // 4. Eight faceted drift motes (ice crystals in blizzard / glowing cinders in ashstorm)
+  const moteGeo = new THREE.OctahedronGeometry(0.11, 0);
+  const driftMotes: THREE.Mesh[] = [];
+  for (let i = 0; i < 8; i++) {
+    const mote = new THREE.Mesh(moteGeo, moteMat);
+    mote.castShadow = false;
+    group.add(mote);
+    driftMotes.push(mote);
+  }
+
+  return {
+    group,
+    bowWaveMesh,
+    leftWakeMesh,
+    rightWakeMesh,
+    eddyRingMesh,
+    driftMotes,
+    primaryMat,
+    secondaryMat,
+    moteMat,
+  };
+}

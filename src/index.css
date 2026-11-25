@@ -2896,6 +2896,286 @@ button:active {
   white-space: nowrap;
 }
 
+/* ==================== TRANSIENT CLIMATE NOTIFICATION LOG ==================== */
+@keyframes climateLogEnter {
+  0% {
+    opacity: 0;
+    transform: translateY(-9px) scale(0.97);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes climateLogTimerSweep {
+  0% {
+    transform: scaleX(1);
+  }
+  100% {
+    transform: scaleX(0);
+  }
+}
+
+.climate-log-stack {
+  position: absolute;
+  top: 106px;
+  left: 50%;
+  transform: translate3d(-50%, 0, 0);
+  width: min(440px, 86vw);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  pointer-events: none;
+  z-index: 18;
+  transition: transform 0.24s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.climate-log-stack.has-ambush {
+  transform: translate3d(-50%, 34px, 0);
+}
+
+.climate-log-stack.has-hostile {
+  transform: translate3d(-50%, 96px, 0);
+}
+
+.climate-log-stack.has-boss {
+  transform: translate3d(-50%, 124px, 0);
+}
+
+.climate-log-entry {
+  position: relative;
+  width: 100%;
+  padding: 8px 16px 9px;
+  border-radius: 10px;
+  background: rgba(9, 17, 17, 0.82);
+  border: 1px solid rgba(182, 224, 206, 0.24);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.42);
+  text-align: center;
+  overflow: hidden;
+  animation: climateLogEnter 0.3s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  transition:
+    opacity 0.3s ease,
+    transform 0.3s cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: transform, opacity;
+}
+
+.climate-log-entry:not(:first-child) {
+  opacity: 0.62;
+  transform: scale(0.96);
+}
+
+.climate-log-entry.is-leaving {
+  opacity: 0 !important;
+  transform: translateY(-6px) scale(0.96) !important;
+  animation: none;
+}
+
+.climate-log-message {
+  font-family: 'Cinzel', Georgia, serif;
+  font-size: 0.84rem;
+  font-weight: 600;
+  line-height: 1.38;
+  letter-spacing: 0.015em;
+  color: #f3f8f4;
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.72);
+}
+
+.climate-log-meta {
+  margin-top: 3px;
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+}
+
+.climate-log-timer {
+  position: absolute;
+  left: 14px;
+  right: 14px;
+  bottom: 0;
+  height: 1px;
+  background: rgba(182, 224, 206, 0.48);
+  transform-origin: center;
+  animation: climateLogTimerSweep 5.2s linear forwards;
+  opacity: 0.65;
+}
+
+/* Climate-specific atmospheric tinting (subtle hairline border + ink tones) */
+.climate-log-entry.climate-clear {
+  border-color: rgba(242, 193, 78, 0.36);
+}
+.climate-log-entry.climate-clear .climate-log-message {
+  color: #faf3dc;
+}
+.climate-log-entry.climate-clear .climate-log-meta {
+  color: #9be8be;
+}
+.climate-log-entry.climate-clear .climate-log-timer {
+  background: rgba(242, 193, 78, 0.6);
+}
+
+.climate-log-entry.climate-mist {
+  border-color: rgba(158, 224, 212, 0.34);
+}
+.climate-log-entry.climate-mist .climate-log-message {
+  color: #ebf8f5;
+}
+.climate-log-entry.climate-mist .climate-log-meta {
+  color: #9fd8cf;
+}
+.climate-log-entry.climate-mist .climate-log-timer {
+  background: rgba(158, 224, 212, 0.56);
+}
+
+.climate-log-entry.climate-fog {
+  border-color: rgba(164, 188, 198, 0.38);
+}
+.climate-log-entry.climate-fog .climate-log-message {
+  color: #e6eff2;
+}
+.climate-log-entry.climate-fog .climate-log-meta {
+  color: #a8c0ca;
+}
+.climate-log-entry.climate-fog .climate-log-timer {
+  background: rgba(164, 188, 198, 0.54);
+}
+
+.climate-log-entry.climate-rain {
+  border-color: rgba(104, 186, 232, 0.44);
+}
+.climate-log-entry.climate-rain .climate-log-message {
+  color: #e8f5fc;
+}
+.climate-log-entry.climate-rain .climate-log-meta {
+  color: #8cccf0;
+}
+.climate-log-entry.climate-rain .climate-log-timer {
+  background: rgba(104, 186, 232, 0.65);
+}
+
+.climate-log-entry.climate-storm {
+  border-color: rgba(112, 176, 255, 0.52);
+  background: rgba(10, 15, 24, 0.85);
+}
+.climate-log-entry.climate-storm .climate-log-message {
+  color: #ebf3ff;
+}
+.climate-log-entry.climate-storm .climate-log-meta {
+  color: #9ac5ff;
+}
+.climate-log-entry.climate-storm .climate-log-timer {
+  background: rgba(112, 176, 255, 0.72);
+}
+
+.climate-log-entry.climate-blizzard {
+  border-color: rgba(165, 227, 255, 0.56);
+  background: rgba(9, 18, 25, 0.85);
+}
+.climate-log-entry.climate-blizzard .climate-log-message {
+  color: #eef9ff;
+}
+.climate-log-entry.climate-blizzard .climate-log-meta {
+  color: #a5e3ff;
+}
+.climate-log-entry.climate-blizzard .climate-log-timer {
+  background: rgba(165, 227, 255, 0.78);
+}
+
+.climate-log-entry.climate-ashstorm {
+  border-color: rgba(255, 138, 76, 0.52);
+  background: rgba(22, 12, 11, 0.86);
+}
+.climate-log-entry.climate-ashstorm .climate-log-message {
+  color: #fff0e6;
+}
+.climate-log-entry.climate-ashstorm .climate-log-meta {
+  color: #ffb385;
+}
+.climate-log-entry.climate-ashstorm .climate-log-timer {
+  background: rgba(255, 138, 76, 0.75);
+}
+
+/* ==================== LIVE GEMINI SERPENT COMPLIMENT WHISPER ==================== */
+@keyframes complimentWhisperIn {
+  0% {
+    opacity: 0;
+    transform: translate3d(-50%, 10px, 0) scale(0.98);
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(-50%, 0, 0) scale(1);
+  }
+}
+
+.compliment-whisper {
+  position: absolute;
+  left: 50%;
+  bottom: 96px;
+  transform: translate3d(-50%, 0, 0);
+  width: min(460px, 86vw);
+  padding: 9px 18px 10px;
+  border-radius: 10px;
+  background: rgba(9, 19, 17, 0.84);
+  border: 1px solid rgba(242, 193, 78, 0.34);
+  box-shadow: 0 8px 26px rgba(0, 0, 0, 0.46);
+  text-align: center;
+  pointer-events: none;
+  z-index: 19;
+  transition:
+    opacity 0.32s ease,
+    transform 0.32s cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: transform, opacity;
+}
+
+.compliment-whisper.is-visible {
+  animation: complimentWhisperIn 0.34s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.compliment-whisper.is-leaving {
+  opacity: 0 !important;
+  transform: translate3d(-50%, 8px, 0) scale(0.98) !important;
+  animation: none;
+}
+
+.compliment-whisper.is-error {
+  border-color: rgba(240, 90, 90, 0.44);
+  background: rgba(22, 12, 14, 0.86);
+}
+
+.compliment-label {
+  display: block;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #8bf7c0;
+  margin-bottom: 3px;
+}
+
+.compliment-whisper.is-error .compliment-label {
+  color: #fca5a5;
+}
+
+.compliment-text {
+  margin: 0;
+  font-family: 'Cinzel', Georgia, serif;
+  font-size: 0.86rem;
+  font-weight: 600;
+  line-height: 1.42;
+  color: #fdf6e3;
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.72);
+}
+
+.compliment-whisper.is-error .compliment-text {
+  font-family: 'Plus Jakarta Sans', sans-serif;
+  font-size: 0.76rem;
+  font-weight: 500;
+  color: #ffd8d8;
+}
+
 /* ==================== FLOATING SOUL CLAN INFLUENCE COUNTER ==================== */
 @keyframes soulFloatBob {
   0%,
@@ -3225,6 +3505,310 @@ button:active {
   background: linear-gradient(90deg, #22c58b 0%, #c084fc 100%);
 }
 
+/* ==================== BOSS MODE SEGMENTED HEALTH BAR ==================== */
+@keyframes bossModeEnter {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -10px) scale(0.96);
+  }
+  100% {
+    opacity: 1;
+    transform: translate(-50%, 0) scale(1);
+  }
+}
+
+@keyframes bossAuraPulseGold {
+  0%, 100% {
+    box-shadow:
+      0 10px 32px rgba(0, 0, 0, 0.7),
+      0 0 18px rgba(242, 193, 78, 0.34),
+      0 0 42px rgba(242, 193, 78, 0.16),
+      inset 0 1px 0 rgba(255, 232, 163, 0.35);
+  }
+  50% {
+    box-shadow:
+      0 12px 36px rgba(0, 0, 0, 0.78),
+      0 0 26px rgba(255, 214, 102, 0.54),
+      0 0 58px rgba(242, 193, 78, 0.28),
+      inset 0 1px 0 rgba(255, 240, 190, 0.55);
+  }
+}
+
+@keyframes bossAuraPulsePurple {
+  0%, 100% {
+    box-shadow:
+      0 10px 32px rgba(0, 0, 0, 0.74),
+      0 0 20px rgba(192, 132, 252, 0.4),
+      0 0 46px rgba(217, 70, 239, 0.2),
+      inset 0 1px 0 rgba(240, 171, 252, 0.36);
+  }
+  50% {
+    box-shadow:
+      0 12px 38px rgba(0, 0, 0, 0.8),
+      0 0 30px rgba(217, 70, 239, 0.62),
+      0 0 64px rgba(168, 85, 247, 0.34),
+      inset 0 1px 0 rgba(245, 208, 254, 0.58);
+  }
+}
+
+@keyframes bossSheenSweep {
+  0% {
+    transform: translateX(-120%) skewX(-18deg);
+  }
+  100% {
+    transform: translateX(320%) skewX(-18deg);
+  }
+}
+
+.hostile-target-bar.is-boss-mode {
+  width: min(490px, 90vw);
+  padding: 10px 16px 11px;
+  border-radius: 12px;
+  gap: 7px;
+  animation: bossModeEnter 0.26s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.hostile-target-bar.is-boss-mode::before,
+.hostile-target-bar.is-boss-mode::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  width: 7px;
+  height: 7px;
+  transform: translateY(-50%) rotate(45deg);
+  pointer-events: none;
+}
+
+.hostile-target-bar.is-boss-mode::before {
+  left: -4px;
+}
+
+.hostile-target-bar.is-boss-mode::after {
+  right: -4px;
+}
+
+/* Imperial Gold Boss Glow Theme (Peak Guardians & High-Tier Wild Apex) */
+.hostile-target-bar.is-boss-mode.boss-theme-gold {
+  background: linear-gradient(180deg, rgba(30, 23, 12, 0.94) 0%, rgba(16, 14, 12, 0.95) 100%);
+  border: 1.5px solid rgba(242, 193, 78, 0.78);
+  animation:
+    bossModeEnter 0.26s cubic-bezier(0.22, 1, 0.36, 1) forwards,
+    bossAuraPulseGold 2.6s ease-in-out infinite;
+}
+
+.hostile-target-bar.is-boss-mode.boss-theme-gold::before,
+.hostile-target-bar.is-boss-mode.boss-theme-gold::after {
+  background: #f2c14e;
+  box-shadow: 0 0 10px rgba(242, 193, 78, 0.85);
+}
+
+/* Soul Clan Purple Boss Glow Theme (Soul Hall Reapers & Nether Wraiths) */
+.hostile-target-bar.is-boss-mode.boss-theme-purple {
+  background: linear-gradient(180deg, rgba(28, 12, 40, 0.95) 0%, rgba(15, 9, 24, 0.96) 100%);
+  border: 1.5px solid rgba(217, 70, 239, 0.82);
+  animation:
+    bossModeEnter 0.26s cubic-bezier(0.22, 1, 0.36, 1) forwards,
+    bossAuraPulsePurple 2.3s ease-in-out infinite;
+}
+
+.hostile-target-bar.is-boss-mode.boss-theme-purple::before,
+.hostile-target-bar.is-boss-mode.boss-theme-purple::after {
+  background: #e879f9;
+  box-shadow: 0 0 12px rgba(217, 70, 239, 0.92);
+}
+
+.boss-mode-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.boss-mode-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.63rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.boss-crown-svg {
+  width: 13px;
+  height: 11px;
+  flex-shrink: 0;
+}
+
+.hostile-target-bar.boss-theme-gold .boss-mode-badge {
+  color: #f7d373;
+  text-shadow: 0 0 10px rgba(242, 193, 78, 0.55);
+}
+
+.hostile-target-bar.boss-theme-purple .boss-mode-badge {
+  color: #f0abfc;
+  text-shadow: 0 0 12px rgba(217, 70, 239, 0.72);
+}
+
+.boss-mode-tier {
+  font-size: 0.64rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.88;
+}
+
+.hostile-target-bar.boss-theme-gold .boss-mode-tier {
+  color: #ffe9b3;
+}
+
+.hostile-target-bar.boss-theme-purple .boss-mode-tier {
+  color: #e9d5ff;
+}
+
+.hostile-target-bar.is-boss-mode .hostile-target-name {
+  font-family: 'Cinzel', Georgia, serif;
+  font-size: 0.96rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.hostile-target-bar.is-boss-mode.boss-theme-gold .hostile-target-name {
+  color: #fff3cf;
+  text-shadow: 0 1px 10px rgba(242, 193, 78, 0.45);
+}
+
+.hostile-target-bar.is-boss-mode.boss-theme-purple .hostile-target-name {
+  color: #fae8ff;
+  text-shadow: 0 1px 12px rgba(217, 70, 239, 0.55);
+}
+
+.hostile-target-bar.is-boss-mode .hostile-target-hp {
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.hostile-target-bar.is-boss-mode.boss-theme-gold .hostile-target-hp {
+  color: #f9d876;
+}
+
+.hostile-target-bar.is-boss-mode.boss-theme-purple .hostile-target-hp {
+  color: #f0abfc;
+}
+
+/* Segmented HP Bar Track */
+.boss-segment-shell {
+  position: relative;
+  width: 100%;
+  height: 13px;
+  border-radius: 5px;
+  padding: 2px;
+  background: rgba(6, 7, 11, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  overflow: hidden;
+}
+
+.hostile-target-bar.boss-theme-gold .boss-segment-shell {
+  border-color: rgba(242, 193, 78, 0.36);
+  box-shadow: inset 0 1px 4px rgba(0, 0, 0, 0.75);
+}
+
+.hostile-target-bar.boss-theme-purple .boss-segment-shell {
+  border-color: rgba(217, 70, 239, 0.4);
+  box-shadow: inset 0 1px 4px rgba(0, 0, 0, 0.78);
+}
+
+/* Delayed damage lag flash behind discrete segments */
+.boss-hp-lag-fill {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  left: 2px;
+  width: 100%;
+  max-width: calc(100% - 4px);
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.34);
+  transition: width 0.22s ease-out;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.boss-segment-track {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  grid-template-columns: repeat(var(--boss-seg-count, 6), minmax(0, 1fr));
+  gap: 3px;
+  width: 100%;
+  height: 100%;
+}
+
+.boss-hp-seg {
+  position: relative;
+  height: 100%;
+  border-radius: 2.5px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.65);
+}
+
+.boss-hp-seg.is-empty {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.boss-hp-seg-fill {
+  position: relative;
+  height: 100%;
+  width: 100%;
+  border-radius: 2px;
+  transition: width 0.1s linear;
+  overflow: hidden;
+}
+
+.hostile-target-bar.boss-theme-gold .boss-hp-seg-fill {
+  background: linear-gradient(180deg, #ffe799 0%, #f2c14e 52%, #c9861a 100%);
+  box-shadow: 0 0 8px rgba(242, 193, 78, 0.55);
+}
+
+.hostile-target-bar.boss-theme-purple .boss-hp-seg-fill {
+  background: linear-gradient(180deg, #f5c2ff 0%, #c084fc 48%, #9333ea 100%);
+  box-shadow: 0 0 9px rgba(217, 70, 239, 0.62);
+}
+
+.hostile-target-bar.is-boss-mode.is-critical .boss-hp-seg-fill {
+  background: linear-gradient(180deg, #ff9d8a 0%, #f43f5e 52%, #b91c1c 100%);
+  box-shadow: 0 0 10px rgba(244, 63, 94, 0.72);
+}
+
+.boss-segment-shell::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  width: 36%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.28), transparent);
+  pointer-events: none;
+  z-index: 3;
+  animation: bossSheenSweep 2.8s ease-in-out infinite;
+}
+
+.boss-segment-footer {
+  font-size: 0.61rem;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.76;
+}
+
+.hostile-target-bar.boss-theme-gold .boss-segment-footer {
+  color: #f3d78f;
+}
+
+.hostile-target-bar.boss-theme-purple .boss-segment-footer {
+  color: #e2b8ff;
+}
+
 .bar-label-row {
   display: flex;
   align-items: baseline;
@@ -3412,8 +3996,39 @@ button:active {
   .ambush-alert-banner {
     top: 64px;
   }
+  .climate-log-stack {
+    top: 66px;
+    width: min(360px, 90vw);
+  }
+  .climate-log-entry {
+    padding: 7px 12px 8px;
+  }
+  .climate-log-message {
+    font-size: 0.78rem;
+  }
+  .climate-log-meta {
+    font-size: 0.64rem;
+  }
+  .compliment-whisper {
+    bottom: 78px;
+    width: min(350px, 90vw);
+    padding: 7px 13px 8px;
+  }
+  .compliment-text {
+    font-size: 0.78rem;
+  }
   .hostile-target-bar {
     top: 94px;
+  }
+  .hostile-target-bar.is-boss-mode {
+    width: min(360px, 92vw);
+    padding: 8px 11px 9px;
+  }
+  .hostile-target-bar.is-boss-mode .hostile-target-name {
+    font-size: 0.84rem;
+  }
+  .boss-segment-shell {
+    height: 11px;
   }
   .action-skill-bar {
     position: fixed;
@@ -3440,7 +4055,14 @@ button:active {
   .soul-influence-float.state-imminent,
   .soul-influence-float.state-active,
   .soul-pulse-ring,
-  .soul-beacon {
+  .soul-beacon,
+  .hostile-target-bar.is-boss-mode,
+  .hostile-target-bar.is-boss-mode.boss-theme-gold,
+  .hostile-target-bar.is-boss-mode.boss-theme-purple,
+  .boss-segment-shell::after,
+  .climate-log-entry,
+  .climate-log-timer,
+  .compliment-whisper.is-visible {
     animation: none;
   }
   .humanity-ring-arc,
@@ -3451,8 +4073,13 @@ button:active {
   .vitality-fill,
   .qi-fill,
   .hostile-hp-fill,
+  .boss-hp-seg-fill,
+  .boss-hp-lag-fill,
   .magic-cd-fill,
-  .combat-vignette {
+  .combat-vignette,
+  .climate-log-stack,
+  .climate-log-entry,
+  .compliment-whisper {
     transition: none;
   }
 }
@@ -3607,3 +4234,100 @@ button:active {
 .mobile-action-btn.accent:active {
   background: rgba(242, 193, 78, 0.35);
 }
+
+/* ============================================================
+   3D-TRACKED FLOATING SERPENT COMBAT TAUNT SPEECH BUBBLE
+   ============================================================ */
+.serpent-taunt-bubble {
+  --taunt-x: 50vw;
+  --taunt-y: 38vh;
+  --taunt-accent: #38bdf8;
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 320;
+  pointer-events: none;
+  user-select: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  transform: translate3d(var(--taunt-x), var(--taunt-y), 0) translate(-50%, -100%);
+  will-change: transform, opacity;
+  opacity: 0;
+  transition: opacity 0.22s ease;
+}
+
+.serpent-taunt-bubble.hidden,
+.serpent-taunt-bubble.is-offscreen {
+  display: none;
+}
+
+.serpent-taunt-bubble.is-visible {
+  opacity: 1;
+}
+
+.serpent-taunt-bubble.is-leaving {
+  opacity: 0;
+}
+
+.taunt-bubble-card {
+  max-width: 280px;
+  min-width: 150px;
+  padding: 8px 13px 10px;
+  border-radius: 13px;
+  background: linear-gradient(165deg, rgba(8, 18, 22, 0.94) 0%, rgba(12, 26, 30, 0.91) 100%);
+  border: 1.5px solid var(--taunt-accent);
+  box-shadow:
+    0 10px 26px rgba(0, 0, 0, 0.62),
+    0 0 16px color-mix(in srgb, var(--taunt-accent) 32%, transparent);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  text-align: center;
+  animation: tauntBubblePop 0.26s cubic-bezier(0.22, 1.15, 0.36, 1) both;
+}
+
+.serpent-taunt-bubble.is-error .taunt-bubble-card {
+  border-color: rgba(248, 113, 113, 0.72);
+  background: rgba(28, 10, 14, 0.92);
+}
+
+.taunt-bubble-badge {
+  display: inline-block;
+  font-size: 9.5px;
+  font-weight: 800;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  color: var(--taunt-accent);
+  margin-bottom: 3px;
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.85);
+}
+
+.taunt-bubble-text {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.32;
+  color: #f8fafc;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.9);
+  letter-spacing: 0.01em;
+}
+
+.taunt-bubble-tail {
+  width: 0;
+  height: 0;
+  border-left: 8px solid transparent;
+  border-right: 8px solid transparent;
+  border-top: 9px solid var(--taunt-accent);
+  margin-top: -1px;
+  filter: drop-shadow(0 3px 5px rgba(0, 0, 0, 0.55));
+}
+
+@keyframes tauntBubblePop {
+  0% {
+    transform: scale(0.82) translateY(8px);
+  }
+  100% {
+    transform: scale(1) translateY(0);
+  }
+}
+

@@ -10,10 +10,12 @@ import {
   EVOLUTION_STAGES,
   EvolutionUnlockSummary,
   MAX_EVOLUTION_LEVEL,
+  computeBossBarSegments,
   getMagicTierForLevel,
 } from './evolution';
+import { ComplimentNotice, FloatingTauntNotice } from './compliments';
 import { PRESET_FORMATIONS } from './formations';
-import { SnakeGameController } from './game';
+import { ClimateLogNotice, SnakeGameController } from './game';
 import { renderHumanityGrowthChart } from './humanityChart';
 import { WORLD_LANDMARKS, terrainHeightAt } from './terrain';
 import {
@@ -106,6 +108,17 @@ export class GameUI {
   private evolutionSummaryModal!: HTMLElement;
   private bestiaryModal!: HTMLElement;
   private toastEl!: HTMLElement;
+  private climateLogStackEl!: HTMLElement;
+  private climateLogTimers = new Set<number>();
+  private complimentBannerEl!: HTMLElement;
+  private complimentLabelEl!: HTMLElement;
+  private complimentTextEl!: HTMLElement;
+  private complimentTimer = 0;
+  private tauntBubbleEl!: HTMLElement;
+  private tauntBadgeEl!: HTMLElement;
+  private tauntTextEl!: HTMLElement;
+  private tauntTimer = 0;
+  private tauntBubbleActive = false;
 
   // Title progress nodes
   private startPlayBtn!: HTMLButtonElement;
@@ -146,9 +159,20 @@ export class GameUI {
 
   // Combat, Vitality, Dou Qi & 4-Skill Action Bar nodes
   private hostileBarWrap!: HTMLElement;
+  private hostileBossHeaderEl!: HTMLElement;
+  private hostileBossBadgeEl!: HTMLElement;
+  private hostileBossTierEl!: HTMLElement;
   private hostileNameEl!: HTMLElement;
   private hostileHpTextEl!: HTMLElement;
+  private hostileHpTrackEl!: HTMLElement;
   private hostileHpFillEl!: HTMLElement;
+  private bossSegmentShellEl!: HTMLElement;
+  private bossSegmentTrackEl!: HTMLElement;
+  private bossHpLagFillEl!: HTMLElement;
+  private bossSegmentMetaEl!: HTMLElement;
+  private bossSegmentFills: HTMLElement[] = [];
+  private lastBossTargetId: number | null = null;
+  private bossLagPct = 100;
   private hpFillEl!: HTMLElement;
   private hpTextEl!: HTMLElement;
   private hpStatusTagEl!: HTMLElement;
@@ -308,11 +332,6 @@ export class GameUI {
               <span>Continent</span>
               <select id="titlePresetSelect" class="dark-select"></select>
             </label>
-            <div class="speed-group" role="group" aria-label="Difficulty and climate">
-              <button type="button" class="speed-btn" data-speed="chill">Chill · Clear</button>
-              <button type="button" class="speed-btn active" data-speed="classic">Classic · Mist</button>
-              <button type="button" class="speed-btn" data-speed="turbo">Turbo · Rain</button>
-            </div>
           </div>
 
           <p class="control-hint">A / D Steer · W / Space Boost · F/1 Bolt · Q/2 Wave · E/3 Dash Strike · R/4 Flame Lotus · C Camera · K Bestiary · Esc Pause</p>
@@ -386,6 +405,16 @@ export class GameUI {
         </div>
       </header>
 
+      <!-- TRANSIENT UPPER-CENTER CLIMATE NOTIFICATION LOG -->
+      <div
+        class="climate-log-stack hidden"
+        id="climateLogStack"
+        role="log"
+        aria-live="polite"
+        aria-relevant="additions text"
+        aria-label="Climate updates"
+      ></div>
+
       <!-- NON-BLOCKING SOUL CLAN AMBUSH ALERT STRIP -->
       <div class="ambush-alert-banner hidden" id="ambushAlertBanner" role="status" aria-live="polite">
         <span class="ambush-alert-text" id="ambushAlertText">SOUL CLAN AMBUSH · SPIRITS RISING FROM THE EARTH</span>
@@ -431,15 +460,29 @@ export class GameUI {
         </div>
       </button>
 
-      <!-- ENGAGED HOSTILE BEAST / GHOST BAR -->
+      <!-- ENGAGED HOSTILE / BOSS MODE HEALTH BAR -->
       <div class="hostile-target-bar hidden" id="hostileBarWrap" aria-live="polite">
+        <div class="boss-mode-header hidden" id="hostileBossHeader">
+          <span class="boss-mode-badge" id="hostileBossBadge">
+            <svg class="boss-crown-svg" viewBox="0 0 18 14" aria-hidden="true">
+              <path d="M1.5 11.5L3 4l4 3.5L9 1.5l2 6L15 4l1.5 7.5z" fill="currentColor" />
+            </svg>
+            <span id="hostileBossBadgeText">BOSS MODE</span>
+          </span>
+          <span class="boss-mode-tier" id="hostileBossTier">Sovereign Crucible · 3.3× HP</span>
+        </div>
         <div class="hostile-target-top">
           <span class="hostile-target-name" id="hostileName">Dire Ridge Wolf</span>
-          <span class="hostile-target-hp" id="hostileHpText">46 / 46 HP</span>
+          <span class="hostile-target-hp" id="hostileHpText">200 / 200 HP</span>
         </div>
-        <div class="hostile-hp-track">
+        <div class="hostile-hp-track" id="hostileHpTrack">
           <div class="hostile-hp-fill" id="hostileHpFill"></div>
         </div>
+        <div class="boss-segment-shell hidden" id="bossSegmentShell">
+          <div class="boss-hp-lag-fill" id="bossHpLagFill"></div>
+          <div class="boss-segment-track" id="bossSegmentTrack"></div>
+        </div>
+        <div class="boss-segment-footer hidden" id="bossSegmentMeta"></div>
       </div>
 
       <!-- PLAYING BOTTOM PERIMETER HUD (Vitals & Compass | 4-Skill Action Bar | Continent Radar) -->
@@ -549,11 +592,10 @@ export class GameUI {
           </div>
 
           <div class="dock-section">
-            <span class="dock-label">MOUNTAIN &amp; WEATHER</span>
+            <span class="dock-label">MOUNTAIN COURSE</span>
             <div class="dock-inline">
               <select id="builderPresetSelect" class="dark-select compact"></select>
               <button type="button" class="small-btn" id="builderBiomeBtn">Biome: Alpine</button>
-              <button type="button" class="small-btn" id="builderWeatherBtn">Weather: Mist</button>
               <button type="button" class="small-btn" id="builderMirrorBtn">Mirror: Off</button>
               <button type="button" class="small-btn danger" id="builderClearBtn">Clear Props</button>
             </div>
@@ -730,24 +772,7 @@ export class GameUI {
       <div class="modal-backdrop hidden" id="pauseModal">
         <div class="modal-card">
           <h2 class="modal-title">Expedition Paused</h2>
-          <p class="modal-sub">Catch your breath above the valley, inspect your Humanity Path stats, or adjust difficulty &amp; weather.</p>
-          <div class="modal-controls-row">
-            <span class="modal-field-label">Difficulty</span>
-            <div class="speed-group" role="group">
-              <button type="button" class="speed-btn" data-speed="chill">Chill</button>
-              <button type="button" class="speed-btn active" data-speed="classic">Classic</button>
-              <button type="button" class="speed-btn" data-speed="turbo">Turbo</button>
-            </div>
-          </div>
-          <div class="modal-controls-row">
-            <span class="modal-field-label">Weather</span>
-            <div class="weather-switch compact" role="group" aria-label="Mountain weather">
-              <button type="button" class="weather-btn" data-weather="clear">Clear</button>
-              <button type="button" class="weather-btn active" data-weather="mist">Mist</button>
-              <button type="button" class="weather-btn" data-weather="fog">Fog</button>
-              <button type="button" class="weather-btn" data-weather="rain">Rain</button>
-            </div>
-          </div>
+          <p class="modal-sub">Catch your breath above the valley, inspect your Humanity Path stats, or review your expedition.</p>
           <div class="modal-actions">
             <button type="button" class="primary-cta" id="resumeBtn">Resume</button>
             <button type="button" class="secondary-cta" id="pauseSettingsBtn">Settings</button>
@@ -811,6 +836,21 @@ export class GameUI {
       <!-- TOAST NOTIFICATION -->
       <div class="toast hidden" id="toastEl" role="status" aria-live="polite"></div>
 
+      <!-- LIVE GEMINI SERPENT COMPLIMENT WHISPER -->
+      <div class="compliment-whisper hidden" id="complimentWhisper" role="status" aria-live="polite">
+        <span class="compliment-label" id="complimentLabel">Mountain Spirit</span>
+        <p class="compliment-text" id="complimentText"></p>
+      </div>
+
+      <!-- 3D-TRACKED FLOATING SERPENT COMBAT TAUNT SPEECH BUBBLE -->
+      <div class="serpent-taunt-bubble hidden" id="serpentTauntBubble" role="status" aria-live="polite">
+        <div class="taunt-bubble-card">
+          <span class="taunt-bubble-badge" id="tauntBubbleBadge">VS PACK STALKER</span>
+          <p class="taunt-bubble-text" id="tauntBubbleText"></p>
+        </div>
+        <span class="taunt-bubble-tail" aria-hidden="true"></span>
+      </div>
+
       <!-- SETTINGS MODAL -->
       <div class="modal-backdrop hidden" id="settingsModal" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
         <div class="modal-card">
@@ -861,8 +901,8 @@ export class GameUI {
             <li><span class="keycap">F / 1</span> Qi Bolt &nbsp;·&nbsp; <span class="keycap">Q / 2</span> Shockwave</li>
             <li><span class="keycap">E / 3</span> Dash &nbsp;·&nbsp; <span class="keycap">R / 4</span> Flame Lotus</li>
             <li>Conquer all 12 Trial Peak Shrines to evolve into an Ascended Human</li>
-            <li>⚠️ Harsh climates drain Vitality — seek Shrine Shelter to recover HP &amp; Qi</li>
-            <li>🌧️ Difficulty sets climate: Chill = Clear, Classic = Mist, Turbo = Rain</li>
+            <li>⚠️ Severe climates shift automatically on every run &amp; mid-climb — seek Shrine Shelter to recover HP &amp; Qi</li>
+            <li>⚔️ Enemy health &amp; damage scale upward from 200 HP with every Cultivation Stage (up to 8× HP &amp; 4.5× DMG at Dou Di)</li>
           </ul>
           <button type="button" class="primary-cta" id="closeTutorialBtn">▶ Start Playing</button>
           <p style="margin:12px 0 0;font-size:12px;opacity:0.5;text-align:center">Press Enter or Escape to skip</p>
@@ -889,6 +929,13 @@ export class GameUI {
     this.evolutionSummaryModal = uiLayer.querySelector('#evolutionSummaryModal')!;
     this.bestiaryModal = uiLayer.querySelector('#bestiaryModal')!;
     this.toastEl = uiLayer.querySelector('#toastEl')!;
+    this.climateLogStackEl = uiLayer.querySelector('#climateLogStack')!;
+    this.complimentBannerEl = uiLayer.querySelector('#complimentWhisper')!;
+    this.complimentLabelEl = uiLayer.querySelector('#complimentLabel')!;
+    this.complimentTextEl = uiLayer.querySelector('#complimentText')!;
+    this.tauntBubbleEl = uiLayer.querySelector('#serpentTauntBubble')!;
+    this.tauntBadgeEl = uiLayer.querySelector('#tauntBubbleBadge')!;
+    this.tauntTextEl = uiLayer.querySelector('#tauntBubbleText')!;
     this.settingsModal = uiLayer.querySelector('#settingsModal')!;
     this.tutorialOverlay = uiLayer.querySelector('#tutorialOverlay')!;
 
@@ -934,9 +981,17 @@ export class GameUI {
     this.dockToggleBtn = uiLayer.querySelector('#dockToggleBtn')!;
 
     this.hostileBarWrap = uiLayer.querySelector('#hostileBarWrap')!;
+    this.hostileBossHeaderEl = uiLayer.querySelector('#hostileBossHeader')!;
+    this.hostileBossBadgeEl = uiLayer.querySelector('#hostileBossBadgeText')!;
+    this.hostileBossTierEl = uiLayer.querySelector('#hostileBossTier')!;
     this.hostileNameEl = uiLayer.querySelector('#hostileName')!;
     this.hostileHpTextEl = uiLayer.querySelector('#hostileHpText')!;
+    this.hostileHpTrackEl = uiLayer.querySelector('#hostileHpTrack')!;
     this.hostileHpFillEl = uiLayer.querySelector('#hostileHpFill')!;
+    this.bossSegmentShellEl = uiLayer.querySelector('#bossSegmentShell')!;
+    this.bossSegmentTrackEl = uiLayer.querySelector('#bossSegmentTrack')!;
+    this.bossHpLagFillEl = uiLayer.querySelector('#bossHpLagFill')!;
+    this.bossSegmentMetaEl = uiLayer.querySelector('#bossSegmentMeta')!;
     this.hpFillEl = uiLayer.querySelector('#hudHpFill')!;
     this.hpTextEl = uiLayer.querySelector('#hudHpText')!;
     this.hpStatusTagEl = uiLayer.querySelector('#hudHpStatusTag')!;
@@ -1056,20 +1111,6 @@ export class GameUI {
       btn.addEventListener('click', () => {
         const biome = btn.dataset.biome as BiomeId;
         this.game.setBiome(biome);
-      });
-    });
-
-    this.root.querySelectorAll<HTMLButtonElement>('.weather-btn').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const weather = btn.dataset.weather as WeatherMode;
-        this.game.setWeather(weather);
-      });
-    });
-
-    this.root.querySelectorAll<HTMLButtonElement>('.speed-btn').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const preset = btn.dataset.speed as SpeedPreset;
-        this.game.setSpeedPreset(preset);
       });
     });
 
@@ -1229,10 +1270,6 @@ export class GameUI {
     this.root.querySelector('#builderBiomeBtn')!.addEventListener('click', () => {
       const next = this.game.getFormation().biome === 'jungle' ? 'mountain' : 'jungle';
       this.game.setBiome(next);
-    });
-
-    this.root.querySelector('#builderWeatherBtn')!.addEventListener('click', () => {
-      this.game.cycleWeather();
     });
 
     this.mirrorBtnEl.addEventListener('click', () => {
@@ -2003,6 +2040,145 @@ export class GameUI {
     }, 3600);
   }
 
+  public pushClimateNotice(notice: ClimateLogNotice): void {
+    const stack = this.climateLogStackEl;
+    if (!stack) return;
+
+    const entry = document.createElement('div');
+    entry.className = `climate-log-entry climate-${notice.weather} severity-${notice.severity}`;
+
+    const messageEl = document.createElement('div');
+    messageEl.className = 'climate-log-message';
+    messageEl.textContent = notice.message;
+
+    const metaEl = document.createElement('div');
+    metaEl.className = 'climate-log-meta';
+    metaEl.textContent = `${notice.label} · ${notice.effectNote}`;
+
+    const timerLineEl = document.createElement('div');
+    timerLineEl.className = 'climate-log-timer';
+    timerLineEl.setAttribute('aria-hidden', 'true');
+
+    entry.appendChild(messageEl);
+    entry.appendChild(metaEl);
+    entry.appendChild(timerLineEl);
+
+    // Prepend newest notice at top of the log stack
+    stack.prepend(entry);
+    stack.classList.remove('hidden');
+
+    const dismissEntry = (node: HTMLElement) => {
+      if (!node.isConnected || node.classList.contains('is-leaving')) return;
+      node.classList.add('is-leaving');
+      const removeTimer = window.setTimeout(() => {
+        this.climateLogTimers.delete(removeTimer);
+        node.remove();
+        if (stack.childElementCount === 0) {
+          stack.classList.add('hidden');
+        }
+      }, 340);
+      this.climateLogTimers.add(removeTimer);
+    };
+
+    // Cap visible active notices at 3 so the upper viewport stays uncluttered
+    const activeNodes = Array.from(stack.children).filter(
+      (child): child is HTMLElement =>
+        child instanceof HTMLElement && !child.classList.contains('is-leaving'),
+    );
+    while (activeNodes.length > 3) {
+      const oldest = activeNodes.pop();
+      if (oldest) dismissEntry(oldest);
+    }
+
+    const holdMs = 5200;
+    const fadeTimer = window.setTimeout(() => {
+      this.climateLogTimers.delete(fadeTimer);
+      dismissEntry(entry);
+    }, holdMs);
+    this.climateLogTimers.add(fadeTimer);
+  }
+
+  public clearClimateNotices(): void {
+    for (const timerId of this.climateLogTimers) {
+      window.clearTimeout(timerId);
+    }
+    this.climateLogTimers.clear();
+    if (this.climateLogStackEl) {
+      this.climateLogStackEl.replaceChildren();
+      this.climateLogStackEl.classList.add('hidden');
+    }
+  }
+
+  public showCompliment(notice: ComplimentNotice): void {
+    if (!this.complimentBannerEl) return;
+    window.clearTimeout(this.complimentTimer);
+    this.complimentLabelEl.textContent = notice.label;
+    this.complimentTextEl.textContent = notice.text;
+    this.complimentBannerEl.classList.toggle('is-error', Boolean(notice.isError));
+    this.complimentBannerEl.classList.remove('hidden', 'is-leaving');
+    // Restart subtle entrance animation cleanly
+    void this.complimentBannerEl.offsetWidth;
+    this.complimentBannerEl.classList.add('is-visible');
+
+    const durationMs = notice.isError ? 4600 : 6800;
+    this.complimentTimer = window.setTimeout(() => {
+      this.complimentBannerEl.classList.add('is-leaving');
+      this.complimentTimer = window.setTimeout(() => {
+        this.complimentBannerEl.classList.add('hidden');
+        this.complimentBannerEl.classList.remove('is-visible', 'is-leaving');
+      }, 340);
+    }, durationMs);
+  }
+
+  public clearCompliment(): void {
+    window.clearTimeout(this.complimentTimer);
+    if (this.complimentBannerEl) {
+      this.complimentBannerEl.classList.add('hidden');
+      this.complimentBannerEl.classList.remove('is-visible', 'is-leaving');
+    }
+  }
+
+  public showCombatTaunt(notice: FloatingTauntNotice): void {
+    if (!this.tauntBubbleEl) return;
+    window.clearTimeout(this.tauntTimer);
+    this.tauntBubbleActive = true;
+    this.tauntBadgeEl.textContent = notice.badgeLabel;
+    this.tauntTextEl.textContent = notice.text;
+    this.tauntBubbleEl.style.setProperty('--taunt-accent', notice.accentHex);
+    this.tauntBubbleEl.dataset.enemyKind = notice.enemyKind;
+    this.tauntBubbleEl.dataset.moment = notice.moment;
+    this.tauntBubbleEl.classList.toggle('is-error', Boolean(notice.isError));
+    this.tauntBubbleEl.classList.remove('hidden', 'is-leaving');
+    void this.tauntBubbleEl.offsetWidth;
+    this.tauntBubbleEl.classList.add('is-visible');
+
+    const durationMs = notice.isError ? 3600 : 4400;
+    this.tauntTimer = window.setTimeout(() => {
+      this.tauntBubbleEl.classList.add('is-leaving');
+      this.tauntTimer = window.setTimeout(() => {
+        this.tauntBubbleActive = false;
+        this.tauntBubbleEl.classList.add('hidden');
+        this.tauntBubbleEl.classList.remove('is-visible', 'is-leaving');
+      }, 280);
+    }, durationMs);
+  }
+
+  public updateTauntBubblePosition(pos: { x: number; y: number; visible: boolean }): void {
+    if (!this.tauntBubbleEl || !this.tauntBubbleActive) return;
+    this.tauntBubbleEl.style.setProperty('--taunt-x', `${pos.x.toFixed(1)}px`);
+    this.tauntBubbleEl.style.setProperty('--taunt-y', `${pos.y.toFixed(1)}px`);
+    this.tauntBubbleEl.classList.toggle('is-offscreen', !pos.visible);
+  }
+
+  public clearCombatTaunt(): void {
+    window.clearTimeout(this.tauntTimer);
+    this.tauntBubbleActive = false;
+    if (this.tauntBubbleEl) {
+      this.tauntBubbleEl.classList.add('hidden');
+      this.tauntBubbleEl.classList.remove('is-visible', 'is-leaving', 'is-offscreen');
+    }
+  }
+
   private renderJourneyList(): void {
     const snap = this.lastHudSnap;
     const curLevel = snap ? snap.level : 1;
@@ -2065,6 +2241,9 @@ export class GameUI {
     this.builderDockWrap.classList.toggle('hidden', snap.mode !== 'builder');
     this.pauseModal.classList.toggle('hidden', snap.mode !== 'paused');
     this.gameOverModal.classList.toggle('hidden', snap.mode !== 'gameover');
+    if (snap.mode !== 'playing') {
+      this.clearCombatTaunt();
+    }
 
     // Title screen progress CTA
     if (snap.level > 1 || snap.xp > 0 || snap.visitedCount > 0) {
@@ -2081,7 +2260,11 @@ export class GameUI {
     // Top-left evolution, Cultivation Realm & stats
     this.evoLevelEl.textContent = `LV ${snap.level}/${snap.maxLevel}`;
     this.evoTitleEl.textContent = snap.stageTitle;
-    this.evoRealmEl.textContent = snap.realmName;
+    this.evoRealmEl.textContent = `${snap.realmName} · ${snap.difficultyHpMult.toFixed(1)}×`;
+    const evoBox = this.root.querySelector<HTMLElement>('#hudEvoTrigger');
+    if (evoBox) {
+      evoBox.title = `${snap.difficultyTierLabel} · Enemy HP ${snap.difficultyHpMult.toFixed(2)}× · Enemy DMG ${snap.difficultyDamageMult.toFixed(2)}× — Click to inspect Humanity Path`;
+    }
     this.xpFillEl.style.width = `${Math.round(snap.xpProgress * 100)}%`;
     this.xpFillEl.classList.toggle('human-full', snap.isHuman);
     if (snap.isHuman) {
@@ -2100,11 +2283,11 @@ export class GameUI {
     // Realm Environment Climate Hazard readout
     this.envHazardEl.className = `env-hazard-line ${snap.isSheltered ? 'is-sheltered' : `severity-${snap.envHazardSeverity}`}`;
     if (snap.isSheltered) {
-      this.envHazardEl.textContent = `Shrine Shelter · Restoring HP & Qi`;
+      this.envHazardEl.textContent = `${snap.weatherLabel} · Shrine Shelter (Restoring HP & Qi)`;
     } else if (snap.envHpDrainPerSec > 0) {
-      this.envHazardEl.textContent = `${snap.envHazardName} · -${snap.envHpDrainPerSec.toFixed(1)} HP/s`;
+      this.envHazardEl.textContent = `${snap.weatherLabel} · ${snap.envHazardName} · -${snap.envHpDrainPerSec.toFixed(1)} HP/s`;
     } else {
-      this.envHazardEl.textContent = `${snap.envHazardName} · Safe Climate`;
+      this.envHazardEl.textContent = `${snap.weatherLabel} · ${snap.envHazardName} · Safe Climate`;
     }
 
     // Vice-City Soul Clan Heat (5-Skull Meter)
@@ -2172,25 +2355,100 @@ export class GameUI {
     );
     this.combatVignetteEl.style.setProperty('--hurt-alpha', snap.mode === 'playing' ? snap.recentHurtPulse.toFixed(2) : '0');
 
-    // Engaged hostile beast / ghost bar (top-center)
+    // Engaged hostile / Boss Mode health bar (top-center)
     const showHostile = snap.mode === 'playing' && snap.nearbyHostileName !== null;
     this.hostileBarWrap.classList.toggle('hidden', !showHostile);
+
+    // Keep upper-center climate log & lower-center compliment whisper clean outside gameplay
+    const allowClimateLog = snap.mode === 'playing' || snap.mode === 'paused';
+    if (!allowClimateLog) {
+      if (this.climateLogStackEl.childElementCount > 0) {
+        this.clearClimateNotices();
+      }
+      if (!this.complimentBannerEl.classList.contains('hidden')) {
+        this.clearCompliment();
+      }
+    } else {
+      const isBossOverlay = showHostile && (snap.nearbyHostileIsHighTier || snap.nearbyHostileBoss);
+      this.climateLogStackEl.classList.toggle('has-ambush', showAmbush && !showHostile);
+      this.climateLogStackEl.classList.toggle('has-hostile', showHostile && !isBossOverlay);
+      this.climateLogStackEl.classList.toggle('has-boss', isBossOverlay);
+    }
+
     if (showHostile && snap.nearbyHostileName) {
       const isGhost = snap.nearbyHostileFaction === 'ghost_clan';
-      this.hostileBarWrap.classList.toggle('is-boss', snap.nearbyHostileBoss);
-      this.hostileBarWrap.classList.toggle('is-ghost', isGhost);
-      const prefix = isGhost
-        ? snap.nearbyHostileBoss
-          ? 'Soul Hall Boss · '
-          : 'Soul Clan · '
-        : snap.nearbyHostileBoss
-          ? 'Peak Guardian · '
-          : '';
-      this.hostileNameEl.textContent = `${prefix}${snap.nearbyHostileName}`;
+      const isBossMode = snap.nearbyHostileIsHighTier || snap.nearbyHostileBoss;
+      // Purple glow for Soul Clan bosses/wraiths & arcane elders; Gold glow for Peak Guardians & Apex wild beasts
+      const usePurpleGlow = isGhost || snap.nearbyHostileKind === 'soul_elder' || snap.nearbyHostileKind === 'wraith';
       const curHp = Math.max(0, Math.ceil(snap.nearbyHostileHp));
       const maxHp = Math.max(1, Math.ceil(snap.nearbyHostileMaxHp));
-      this.hostileHpTextEl.textContent = `${curHp} / ${maxHp} HP`;
-      this.hostileHpFillEl.style.width = `${Math.max(0, Math.min(100, (snap.nearbyHostileHp / Math.max(1, snap.nearbyHostileMaxHp)) * 100)).toFixed(1)}%`;
+      const hpPct = Math.max(0, Math.min(100, (snap.nearbyHostileHp / maxHp) * 100));
+
+      this.hostileBarWrap.classList.toggle('is-boss', snap.nearbyHostileBoss);
+      this.hostileBarWrap.classList.toggle('is-ghost', isGhost);
+      this.hostileBarWrap.classList.toggle('is-boss-mode', isBossMode);
+      this.hostileBarWrap.classList.toggle('boss-theme-purple', isBossMode && usePurpleGlow);
+      this.hostileBarWrap.classList.toggle('boss-theme-gold', isBossMode && !usePurpleGlow);
+      this.hostileBarWrap.classList.toggle('is-critical', isBossMode && hpPct <= 25);
+
+      this.hostileBossHeaderEl.classList.toggle('hidden', !isBossMode);
+      this.hostileHpTrackEl.classList.toggle('hidden', isBossMode);
+      this.bossSegmentShellEl.classList.toggle('hidden', !isBossMode);
+      this.bossSegmentMetaEl.classList.toggle('hidden', !isBossMode);
+
+      if (isBossMode) {
+        if (this.lastBossTargetId !== snap.nearbyHostileId) {
+          this.lastBossTargetId = snap.nearbyHostileId;
+          this.bossLagPct = hpPct;
+        } else {
+          this.bossLagPct = hpPct > this.bossLagPct ? hpPct : this.bossLagPct + (hpPct - this.bossLagPct) * 0.22;
+        }
+        this.bossHpLagFillEl.style.width = `${this.bossLagPct.toFixed(1)}%`;
+
+        this.hostileBossBadgeEl.textContent = snap.nearbyHostileBoss
+          ? isGhost
+            ? 'BOSS MODE · SOUL HALL'
+            : 'BOSS MODE · GUARDIAN'
+          : isGhost
+            ? 'HIGH-TIER · SOUL CLAN'
+            : 'HIGH-TIER · APEX FOE';
+        this.hostileBossTierEl.textContent = `${snap.difficultyTierLabel} · ${snap.nearbyHostileHpMult.toFixed(1)}× HP · ${snap.difficultyDamageMult.toFixed(1)}× ATK`;
+
+        this.hostileNameEl.textContent = snap.nearbyHostileName;
+        this.hostileHpTextEl.textContent = `${curHp.toLocaleString()} / ${maxHp.toLocaleString()} HP`;
+
+        const segs = computeBossBarSegments(maxHp, curHp, snap.nearbyHostileHpMult, snap.nearbyHostileBoss);
+        if (this.bossSegmentFills.length !== segs.segmentCount) {
+          this.bossSegmentTrackEl.innerHTML = '';
+          this.bossSegmentFills = [];
+          this.bossSegmentTrackEl.style.setProperty('--boss-seg-count', String(segs.segmentCount));
+          for (let i = 0; i < segs.segmentCount; i++) {
+            const cell = document.createElement('div');
+            cell.className = 'boss-hp-seg';
+            const fill = document.createElement('div');
+            fill.className = 'boss-hp-seg-fill';
+            cell.appendChild(fill);
+            this.bossSegmentTrackEl.appendChild(cell);
+            this.bossSegmentFills.push(fill);
+          }
+        }
+        for (let i = 0; i < segs.segmentCount; i++) {
+          const pct = Math.round(segs.segmentFills[i] * 1000) / 10;
+          const fillEl = this.bossSegmentFills[i];
+          fillEl.style.width = `${pct}%`;
+          fillEl.parentElement?.classList.toggle('is-empty', pct <= 0.1);
+          fillEl.parentElement?.classList.toggle('is-active-edge', pct > 0.1 && pct < 99.9);
+        }
+        this.bossSegmentMetaEl.textContent = `${segs.activeSegments} / ${segs.segmentCount} SEGMENTS · ~${Math.round(segs.hpPerSegment)} HP/BAR`;
+      } else {
+        this.lastBossTargetId = null;
+        const prefix = isGhost ? 'Soul Clan · ' : '';
+        this.hostileNameEl.textContent = `${prefix}${snap.nearbyHostileName}`;
+        this.hostileHpTextEl.textContent = `${curHp} / ${maxHp} HP · ${snap.difficultyDamageMult.toFixed(1)}× ATK`;
+        this.hostileHpFillEl.style.width = `${hpPct.toFixed(1)}%`;
+      }
+    } else {
+      this.lastBossTargetId = null;
     }
 
     // Bottom-left speedometer, Vitality (HP), Dou Qi, Climb Boost & Peak Compass
@@ -2259,13 +2517,6 @@ export class GameUI {
       this.comboBadgeEl.classList.add('hidden');
     }
 
-    const weatherShort: Record<WeatherMode, string> = {
-      clear: 'Clear',
-      mist: 'Mist',
-      fog: 'Fog',
-      rain: 'Rain',
-    };
-
     const camNames: Record<CameraMode, string> = {
       ant: 'Ant View',
       chase: 'GTA Chase',
@@ -2279,17 +2530,9 @@ export class GameUI {
 
     const biomeBtn = this.root.querySelector('#builderBiomeBtn')!;
     biomeBtn.textContent = `Biome: ${snap.biome === 'jungle' ? 'Jungle' : 'Alpine'}`;
-    const builderWeatherBtn = this.root.querySelector('#builderWeatherBtn')!;
-    builderWeatherBtn.textContent = `Weather: ${weatherShort[snap.weather]}`;
 
     this.root.querySelectorAll<HTMLButtonElement>('.biome-btn').forEach((b) => {
       b.classList.toggle('active', b.dataset.biome === snap.biome);
-    });
-    this.root.querySelectorAll<HTMLButtonElement>('.weather-btn').forEach((b) => {
-      b.classList.toggle('active', b.dataset.weather === snap.weather);
-    });
-    this.root.querySelectorAll<HTMLButtonElement>('.speed-btn').forEach((b) => {
-      b.classList.toggle('active', b.dataset.speed === snap.speedPreset);
     });
 
     if (snap.mode === 'gameover') {

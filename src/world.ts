@@ -7,6 +7,7 @@ import {
   BeastRig,
   GroundFissureRig,
   PlayerAuraRig,
+  TraversalWakeRig,
   createAscensionAvatar,
   createBeastModel,
   createBoostBlock,
@@ -19,6 +20,7 @@ import {
   createSerpentHead,
   createSerpentSegment,
   createTotemBlock,
+  createTraversalWakeRig,
   createWallBlock,
   ModelResources,
 } from './models';
@@ -55,6 +57,84 @@ import {
   WorldObstacle,
   WorldPoint2D,
 } from './types';
+import { WeatherAudioCueEvent } from './audio';
+
+export interface WeatherVfxIntensity {
+  rainSplash: number;
+  frostTarget: number;
+  condensation: number;
+  heatAsh: number;
+}
+
+/**
+ * Pure intensity curve mapping active climate, live rain swell, altitude,
+ * and shrine shelter status to subtle screen-space lens VFX weights (0..1).
+ */
+export function computeWeatherVfxIntensity(
+  weather: WeatherMode,
+  liveRainIntensity: number,
+  altitudeNorm: number,
+  isSheltered: boolean,
+): WeatherVfxIntensity {
+  const rain = Math.max(0, Math.min(1, liveRainIntensity));
+  const alt = Math.max(0, Math.min(1, altitudeNorm));
+  const shelterMul = isSheltered ? 0.28 : 1.0;
+
+  let rainSplash = 0;
+  let frostTarget = 0;
+  let condensation = 0;
+  let heatAsh = 0;
+
+  switch (weather) {
+    case 'clear':
+      break;
+    case 'mist':
+      condensation = (0.28 + alt * 0.16) * shelterMul;
+      break;
+    case 'fog':
+      condensation = (0.58 + alt * 0.22) * shelterMul;
+      break;
+    case 'rain':
+      rainSplash = Math.min(1, (0.34 + rain * 0.56) * shelterMul);
+      condensation = (0.22 + rain * 0.16) * shelterMul;
+      break;
+    case 'storm':
+      rainSplash = Math.min(1, (0.58 + rain * 0.42 + alt * 0.12) * shelterMul);
+      condensation = (0.3 + rain * 0.18) * shelterMul;
+      break;
+    case 'blizzard':
+      frostTarget = Math.min(1, (0.52 + alt * 0.48) * (isSheltered ? 0.18 : 1.0));
+      break;
+    case 'ashstorm':
+      heatAsh = Math.min(1, (0.52 + alt * 0.38) * shelterMul);
+      break;
+  }
+
+  return { rainSplash, frostTarget, condensation, heatAsh };
+}
+
+export interface BlizzardFrostParams {
+  effectiveIntensity: number;
+  opacity: number;
+  blurRadiusPx: number;
+  edgeReach: number;
+}
+
+/**
+ * Pure scaling curve mapping progressive blizzard frost intensity (0..1) and
+ * ice-gust audio surges to shader opacity, frosted-glass edge-blur radius (px),
+ * and inward viewport edge reach so environmental hostility reads unmistakably.
+ */
+export function computeBlizzardFrostParams(
+  frostIntensity01: number,
+  gustPulse01: number,
+): BlizzardFrostParams {
+  const effectiveIntensity = Math.max(0, Math.min(1, frostIntensity01 + gustPulse01 * 0.28));
+  const opacity = effectiveIntensity <= 0.001 ? 0 : Math.pow(effectiveIntensity, 0.85) * 0.8;
+  const blurRadiusPx = effectiveIntensity <= 0.001 ? 0 : effectiveIntensity * 14.5;
+  const edgeReach = 0.14 + effectiveIntensity * 0.36;
+  return { effectiveIntensity, opacity, blurRadiusPx, edgeReach };
+}
 
 export interface SnakePose3D {
   x: number;
@@ -71,6 +151,9 @@ export interface RenderSnakeState {
   segments: SnakePose3D[];
   boostActive: boolean;
   speedRatio: number;
+  traversalStrain?: number;
+  steerRateNorm?: number;
+  traversalClimate?: WeatherMode;
 }
 
 interface BurstParticle {
@@ -165,6 +248,16 @@ interface WeatherAtmosphere {
   mistOpacity: number;
   mistSize: number;
   mistTint: number;
+  // Dynamic GPU climate particle shader parameters
+  particleOpacity: number;
+  particleSize: number;
+  particleWindX: number;
+  particleWindZ: number;
+  particleVelY: number;
+  particleColorA: number;
+  particleColorB: number;
+  particleStyle: number; // 0 = mist/mote, 1 = blizzard snowflake, 2 = ash & ember, 3 = storm spark/spray
+  overlayTint: number;
 }
 
 const WEATHER_PRESETS: Record<BiomeId, Record<WeatherMode, WeatherAtmosphere>> = {
@@ -180,42 +273,141 @@ const WEATHER_PRESETS: Record<BiomeId, Record<WeatherMode, WeatherAtmosphere>> =
       mistOpacity: 0.0,
       mistSize: 15,
       mistTint: 0xdbeeff,
+      particleOpacity: 0.22,
+      particleSize: 2.2,
+      particleWindX: 0.8,
+      particleWindZ: 0.3,
+      particleVelY: 0.35,
+      particleColorA: 0xe6f6ff,
+      particleColorB: 0xfff0c2,
+      particleStyle: 0,
+      overlayTint: 0x8cc8ff,
     },
     mist: {
-      fogDensity: 0.0078,
+      fogDensity: 0.0084,
       skyHex: 0x4b6a82,
       fogHex: 0x6d8aa0,
-      sunScale: 0.85,
+      sunScale: 0.82,
       hemiScale: 1.02,
-      rimScale: 0.88,
-      exposure: 1.04,
-      mistOpacity: 0.27,
-      mistSize: 17,
+      rimScale: 0.86,
+      exposure: 1.03,
+      mistOpacity: 0.32,
+      mistSize: 18,
       mistTint: 0xdcebf7,
+      particleOpacity: 0.42,
+      particleSize: 3.0,
+      particleWindX: 2.2,
+      particleWindZ: 0.8,
+      particleVelY: -0.45,
+      particleColorA: 0xdceeff,
+      particleColorB: 0x9fc4de,
+      particleStyle: 0,
+      overlayTint: 0x9ec0d9,
     },
     fog: {
-      fogDensity: 0.0178,
-      skyHex: 0x798d9c,
-      fogHex: 0x8ea0ae,
-      sunScale: 0.44,
+      fogDensity: 0.0215,
+      skyHex: 0x718594,
+      fogHex: 0x899ba8,
+      sunScale: 0.38,
       hemiScale: 1.15,
-      rimScale: 0.55,
-      exposure: 0.98,
-      mistOpacity: 0.48,
-      mistSize: 23,
+      rimScale: 0.48,
+      exposure: 0.96,
+      mistOpacity: 0.56,
+      mistSize: 26,
       mistTint: 0xd9e3eb,
+      particleOpacity: 0.58,
+      particleSize: 4.4,
+      particleWindX: 1.5,
+      particleWindZ: -0.6,
+      particleVelY: -0.25,
+      particleColorA: 0xd8e4ed,
+      particleColorB: 0x9fb2bf,
+      particleStyle: 0,
+      overlayTint: 0xb7cad8,
     },
     rain: {
-      fogDensity: 0.0114,
-      skyHex: 0x34495e,
-      fogHex: 0x4c6278,
-      sunScale: 0.52,
-      hemiScale: 0.92,
-      rimScale: 0.72,
-      exposure: 0.96,
-      mistOpacity: 0.24,
-      mistSize: 16,
+      fogDensity: 0.0135,
+      skyHex: 0x2c4054,
+      fogHex: 0x42586e,
+      sunScale: 0.46,
+      hemiScale: 0.9,
+      rimScale: 0.68,
+      exposure: 0.94,
+      mistOpacity: 0.28,
+      mistSize: 17,
       mistTint: 0xb7cadc,
+      particleOpacity: 0.65,
+      particleSize: 2.8,
+      particleWindX: -5.4,
+      particleWindZ: -1.8,
+      particleVelY: -13.5,
+      particleColorA: 0xcbe8ff,
+      particleColorB: 0x7cb6e6,
+      particleStyle: 3,
+      overlayTint: 0x5c8ab5,
+    },
+    storm: {
+      fogDensity: 0.0185,
+      skyHex: 0x162233,
+      fogHex: 0x24364d,
+      sunScale: 0.3,
+      hemiScale: 0.72,
+      rimScale: 0.95,
+      exposure: 0.9,
+      mistOpacity: 0.4,
+      mistSize: 21,
+      mistTint: 0x8ea7c2,
+      particleOpacity: 0.88,
+      particleSize: 3.4,
+      particleWindX: -12.5,
+      particleWindZ: -4.2,
+      particleVelY: -22.0,
+      particleColorA: 0xc8ebff,
+      particleColorB: 0x6ec3ff,
+      particleStyle: 3,
+      overlayTint: 0x3b6fa3,
+    },
+    blizzard: {
+      fogDensity: 0.0255,
+      skyHex: 0x9bb7cc,
+      fogHex: 0xbcd4e6,
+      sunScale: 0.42,
+      hemiScale: 1.24,
+      rimScale: 0.78,
+      exposure: 1.0,
+      mistOpacity: 0.58,
+      mistSize: 24,
+      mistTint: 0xeaf6ff,
+      particleOpacity: 0.96,
+      particleSize: 4.5,
+      particleWindX: -15.5,
+      particleWindZ: -5.5,
+      particleVelY: -8.5,
+      particleColorA: 0xffffff,
+      particleColorB: 0xbde7ff,
+      particleStyle: 1,
+      overlayTint: 0xd9f2ff,
+    },
+    ashstorm: {
+      fogDensity: 0.0235,
+      skyHex: 0x3d1c16,
+      fogHex: 0x5c2a1e,
+      sunScale: 0.44,
+      hemiScale: 0.86,
+      rimScale: 1.15,
+      exposure: 0.94,
+      mistOpacity: 0.52,
+      mistSize: 23,
+      mistTint: 0x8f503c,
+      particleOpacity: 0.95,
+      particleSize: 4.2,
+      particleWindX: 9.8,
+      particleWindZ: 3.6,
+      particleVelY: 4.6,
+      particleColorA: 0xff8a3d,
+      particleColorB: 0x3c2c28,
+      particleStyle: 2,
+      overlayTint: 0xff6229,
     },
   },
   jungle: {
@@ -230,42 +422,141 @@ const WEATHER_PRESETS: Record<BiomeId, Record<WeatherMode, WeatherAtmosphere>> =
       mistOpacity: 0.0,
       mistSize: 15,
       mistTint: 0xd4f5ea,
+      particleOpacity: 0.28,
+      particleSize: 2.4,
+      particleWindX: 0.6,
+      particleWindZ: 0.4,
+      particleVelY: 0.45,
+      particleColorA: 0xaefce0,
+      particleColorB: 0xffe999,
+      particleStyle: 0,
+      overlayTint: 0x56d9a8,
     },
     mist: {
-      fogDensity: 0.0086,
+      fogDensity: 0.0092,
       skyHex: 0x2b5752,
       fogHex: 0x41726c,
-      sunScale: 0.84,
+      sunScale: 0.82,
       hemiScale: 1.02,
-      rimScale: 0.9,
-      exposure: 1.03,
-      mistOpacity: 0.3,
-      mistSize: 18,
+      rimScale: 0.88,
+      exposure: 1.02,
+      mistOpacity: 0.34,
+      mistSize: 19,
       mistTint: 0xd4f0e7,
+      particleOpacity: 0.44,
+      particleSize: 3.2,
+      particleWindX: 2.0,
+      particleWindZ: 0.9,
+      particleVelY: -0.35,
+      particleColorA: 0xcff7e9,
+      particleColorB: 0x88c7b6,
+      particleStyle: 0,
+      overlayTint: 0x7ac7b4,
     },
     fog: {
-      fogDensity: 0.0185,
-      skyHex: 0x567772,
-      fogHex: 0x6f8f8a,
-      sunScale: 0.42,
+      fogDensity: 0.022,
+      skyHex: 0x4c6e69,
+      fogHex: 0x658782,
+      sunScale: 0.36,
       hemiScale: 1.16,
-      rimScale: 0.55,
-      exposure: 0.97,
-      mistOpacity: 0.52,
-      mistSize: 24,
+      rimScale: 0.48,
+      exposure: 0.95,
+      mistOpacity: 0.58,
+      mistSize: 26,
       mistTint: 0xcce3dd,
+      particleOpacity: 0.6,
+      particleSize: 4.5,
+      particleWindX: 1.4,
+      particleWindZ: -0.5,
+      particleVelY: -0.2,
+      particleColorA: 0xcde6df,
+      particleColorB: 0x8ab0a7,
+      particleStyle: 0,
+      overlayTint: 0x99bfb6,
     },
     rain: {
-      fogDensity: 0.0124,
-      skyHex: 0x1e3839,
-      fogHex: 0x335355,
-      sunScale: 0.5,
-      hemiScale: 0.92,
-      rimScale: 0.72,
-      exposure: 0.95,
-      mistOpacity: 0.26,
-      mistSize: 16,
+      fogDensity: 0.0142,
+      skyHex: 0x183032,
+      fogHex: 0x2b4b4d,
+      sunScale: 0.45,
+      hemiScale: 0.9,
+      rimScale: 0.68,
+      exposure: 0.93,
+      mistOpacity: 0.3,
+      mistSize: 17,
       mistTint: 0xaad0cc,
+      particleOpacity: 0.68,
+      particleSize: 2.9,
+      particleWindX: -5.2,
+      particleWindZ: -2.0,
+      particleVelY: -14.0,
+      particleColorA: 0xc4f2ee,
+      particleColorB: 0x67b5b0,
+      particleStyle: 3,
+      overlayTint: 0x428f8b,
+    },
+    storm: {
+      fogDensity: 0.0195,
+      skyHex: 0x102126,
+      fogHex: 0x1d353b,
+      sunScale: 0.28,
+      hemiScale: 0.72,
+      rimScale: 0.96,
+      exposure: 0.89,
+      mistOpacity: 0.42,
+      mistSize: 22,
+      mistTint: 0x7ca6ab,
+      particleOpacity: 0.9,
+      particleSize: 3.5,
+      particleWindX: -12.8,
+      particleWindZ: -4.5,
+      particleVelY: -22.5,
+      particleColorA: 0xc2f6ff,
+      particleColorB: 0x52c7d9,
+      particleStyle: 3,
+      overlayTint: 0x2f7d8f,
+    },
+    blizzard: {
+      fogDensity: 0.025,
+      skyHex: 0x7da3a8,
+      fogHex: 0xa2c6cc,
+      sunScale: 0.42,
+      hemiScale: 1.22,
+      rimScale: 0.8,
+      exposure: 0.99,
+      mistOpacity: 0.56,
+      mistSize: 24,
+      mistTint: 0xe3f7fa,
+      particleOpacity: 0.95,
+      particleSize: 4.5,
+      particleWindX: -15.0,
+      particleWindZ: -5.2,
+      particleVelY: -8.4,
+      particleColorA: 0xffffff,
+      particleColorB: 0xb2ecf5,
+      particleStyle: 1,
+      overlayTint: 0xcbf2fa,
+    },
+    ashstorm: {
+      fogDensity: 0.024,
+      skyHex: 0x3b1a14,
+      fogHex: 0x59291c,
+      sunScale: 0.42,
+      hemiScale: 0.85,
+      rimScale: 1.15,
+      exposure: 0.93,
+      mistOpacity: 0.54,
+      mistSize: 23,
+      mistTint: 0x8f4e39,
+      particleOpacity: 0.95,
+      particleSize: 4.2,
+      particleWindX: 9.6,
+      particleWindZ: 3.4,
+      particleVelY: 4.8,
+      particleColorA: 0xff8533,
+      particleColorB: 0x382824,
+      particleStyle: 2,
+      overlayTint: 0xff5e26,
     },
   },
 };
@@ -317,6 +608,7 @@ export class WorldEngine {
   private readonly bouldersGroup = new THREE.Group();
   private readonly beastsGroup = new THREE.Group();
   private readonly combatFxGroup = new THREE.Group();
+  private readonly lastSnakeHeadPos = new THREE.Vector3(0, 0, 4);
   private readonly evoExplosionGroup = new THREE.Group();
   private readonly landmarksGroup = new THREE.Group();
   private readonly weatherGroup = new THREE.Group();
@@ -365,6 +657,88 @@ export class WorldEngine {
   private splashCursor = 0;
   private weatherNormalScratch = { x: 0, y: 1, z: 0 };
 
+  // GPU-driven Dynamic Weather Particle System (snowflakes, ash/embers, storm spray, mist motes)
+  private climateParticles!: THREE.Points;
+  private climateParticleMat!: THREE.ShaderMaterial;
+
+  // Fullscreen Three.js ShaderMaterial Atmospheric Climate Overlay
+  private overlayScene!: THREE.Scene;
+  private overlayCamera!: THREE.OrthographicCamera;
+  private weatherOverlayMesh!: THREE.Mesh;
+  private weatherOverlayMat!: THREE.ShaderMaterial;
+  private weatherShiftPulse = 0;
+  private lightningFlash = 0;
+  private lightningTimer = 3.2;
+  private pendingLightningStrike = 0;
+
+  // Audio-Synchronized Weather Screen-Space VFX (lens raindrop splashes, crystalline frost, mist condensation, ash cinders)
+  private weatherAltitudeNorm = 0.2;
+  private weatherSheltered = false;
+  private blizzardExposure = 0;
+  private screenFrostLevel = 0;
+  private frostGustPulse = 0;
+  private frostBiasX = 0;
+  private condensationLevel = 0;
+  private ashCinderPulse = 0;
+  private ashBiasX = 0;
+  private rainSprayPulse = 0;
+  private screenDropletSpawnAccum = 0;
+  private screenDropletCursor = 0;
+  private screenDropletUniforms: THREE.Vector4[] = Array.from({ length: 12 }, () => new THREE.Vector4(0.5, 0.5, 0.02, 0));
+  private screenDropletMeta: Array<{
+    active: boolean;
+    age: number;
+    life: number;
+    slideSpeed: number;
+    driftX: number;
+  }> = Array.from({ length: 12 }, () => ({
+    active: false,
+    age: 0,
+    life: 1.5,
+    slideSpeed: 0.04,
+    driftX: 0,
+  }));
+
+  // Dedicated Shader-Based Screen Frost Edge-Blur Overlay (uses FramebufferTexture for real frosted-glass blur)
+  private frostOverlayScene!: THREE.Scene;
+  private frostOverlayMesh!: THREE.Mesh;
+  private frostOverlayMat!: THREE.ShaderMaterial;
+  private frostFrameTexture: THREE.FramebufferTexture | null = null;
+  private frostBufferSize = new THREE.Vector2(0, 0);
+  private frostSizeScratch = new THREE.Vector2(0, 0);
+
+  // Soul Clan Skill VFX: temporary purple screen-space distortion + 3D vortex particle burst
+  private soulSkillPulse = 0;
+  private soulSkillPhase = 0;
+  private soulSkillPower = 0;
+  private soulVortexPoints!: THREE.Points;
+  private soulVortexMat!: THREE.PointsMaterial;
+  private soulVortexPositions!: Float32Array;
+  private soulVortexColors!: Float32Array;
+  private soulVortexParticles: Array<{
+    active: boolean;
+    x: number;
+    y: number;
+    z: number;
+    vx: number;
+    vy: number;
+    vz: number;
+    originX: number;
+    originZ: number;
+    swirlSpeed: number;
+    age: number;
+    life: number;
+    r: number;
+    g: number;
+    b: number;
+  }> = [];
+  private soulVortexRingMesh!: THREE.Mesh;
+  private soulVortexRingMat!: THREE.MeshBasicMaterial;
+  private soulVortexRingAge = 0;
+  private soulVortexRingLife = 0;
+  private soulVortexRingMaxRadius = 6;
+  private soulVortexRingOrigin = new THREE.Vector3();
+
   // Snake & 12-Stage Ascension Human Avatar visuals
   private snakeHeadGroup!: THREE.Group;
   private snakeTongue!: THREE.Group;
@@ -378,6 +752,7 @@ export class WorldEngine {
   private snakeBellyMat!: THREE.MeshStandardMaterial;
   private ascensionRig!: AscensionAvatarRig;
   private playerAuraRig!: PlayerAuraRig;
+  private traversalWakeRig!: TraversalWakeRig;
   private gaitPhase = 0;
   private snakeScaleMap!: THREE.Texture;
   private contactShadowMap!: THREE.Texture;
@@ -472,6 +847,13 @@ export class WorldEngine {
   private builderFocus = new THREE.Vector3(0, 8, -12);
   private shakeIntensity = 0;
 
+  // Half-human hand cannon recoil & muzzle flash state
+  private gunRecoil = 0;
+  private gunRecoilVel = 0;
+  private gunSlideKick = 0;
+  private gunFlashTimer = 0;
+  private gunCamKick = 0;
+
   // Loop & XR state
   private running = false;
   private frameId = 0;
@@ -547,6 +929,7 @@ export class WorldEngine {
     this.initCombatFxPools();
     this.initBuilderHelpers();
     this.initBurstParticles();
+    this.initSoulSkillEffect();
     this.initEvolutionExplosion();
     this.initWeatherSystem();
     this.setBiome('mountain');
@@ -699,6 +1082,10 @@ export class WorldEngine {
     // Escalating Player Arcane Aura (orbiting rune shards + ground halo)
     this.playerAuraRig = createPlayerAuraRig();
     this.snakeGroup.add(this.playerAuraRig.group);
+
+    // 3D Blizzard / Ashstorm Difficult Traversal Wake & Flank Drift Rig
+    this.traversalWakeRig = createTraversalWakeRig();
+    this.snakeGroup.add(this.traversalWakeRig.group);
 
     const bodyGeo = new THREE.SphereGeometry(0.37, 14, 12);
     const crestGeo = new THREE.OctahedronGeometry(0.11, 0);
@@ -958,6 +1345,198 @@ export class WorldEngine {
         p.scale = 0.75 + Math.random() * 0.95;
         p.color.setHex(colorHex);
         spawned++;
+      }
+    }
+  }
+
+  private initSoulSkillEffect(): void {
+    const count = 96;
+    this.soulVortexPositions = new Float32Array(count * 3);
+    this.soulVortexColors = new Float32Array(count * 3);
+    this.soulVortexParticles = [];
+    for (let i = 0; i < count; i++) {
+      this.soulVortexPositions[i * 3 + 1] = -400;
+      this.soulVortexColors[i * 3] = 0.72;
+      this.soulVortexColors[i * 3 + 1] = 0.28;
+      this.soulVortexColors[i * 3 + 2] = 1.0;
+      this.soulVortexParticles.push({
+        active: false,
+        x: 0,
+        y: -400,
+        z: 0,
+        vx: 0,
+        vy: 0,
+        vz: 0,
+        originX: 0,
+        originZ: 0,
+        swirlSpeed: 0,
+        age: 0,
+        life: 0.7,
+        r: 0.72,
+        g: 0.28,
+        b: 1.0,
+      });
+    }
+
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(this.soulVortexPositions, 3));
+    geo.setAttribute('color', new THREE.BufferAttribute(this.soulVortexColors, 3));
+    this.soulVortexMat = new THREE.PointsMaterial({
+      size: 1.15,
+      map: this.sparkGlowMap,
+      vertexColors: true,
+      transparent: true,
+      opacity: 0.94,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      sizeAttenuation: true,
+    });
+    this.soulVortexPoints = new THREE.Points(geo, this.soulVortexMat);
+    this.soulVortexPoints.frustumCulled = false;
+    this.soulVortexPoints.visible = false;
+    this.soulVortexPoints.renderOrder = 5;
+    this.combatFxGroup.add(this.soulVortexPoints);
+
+    const ringGeo = new THREE.TorusGeometry(1, 0.085, 8, 40);
+    ringGeo.rotateX(Math.PI / 2);
+    this.soulVortexRingMat = new THREE.MeshBasicMaterial({
+      color: 0xc084fc,
+      transparent: true,
+      opacity: 0,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
+    this.soulVortexRingMesh = new THREE.Mesh(ringGeo, this.soulVortexRingMat);
+    this.soulVortexRingMesh.visible = false;
+    this.soulVortexRingMesh.renderOrder = 5;
+    this.combatFxGroup.add(this.soulVortexRingMesh);
+  }
+
+  /**
+   * Triggers a dramatic Three.js Soul Clan skill visual effect:
+   * 1) Temporary purple screen-space concentric distortion & arcane violet vignette pulse.
+   * 2) 3D spiraling purple/magenta/indigo particle burst & expanding arcane torus ring.
+   */
+  public triggerSoulSkillEffect(x: number, y: number, z: number, intensity = 0.8): void {
+    const clamped = Math.max(0.25, Math.min(1.0, intensity));
+    this.soulSkillPulse = Math.max(this.soulSkillPulse, clamped);
+    this.soulSkillPower = Math.max(this.soulSkillPower, clamped);
+    this.soulSkillPhase = 0;
+
+    // Expanding 3D violet arcane ring
+    this.soulVortexRingOrigin.set(x, y + 0.55, z);
+    this.soulVortexRingAge = 0;
+    this.soulVortexRingLife = 0.48 + clamped * 0.34;
+    this.soulVortexRingMaxRadius = 3.2 + clamped * 7.5;
+    this.soulVortexRingMesh.visible = true;
+    this.soulVortexRingMesh.position.copy(this.soulVortexRingOrigin);
+    this.soulVortexRingMesh.scale.setScalar(0.5);
+
+    // Spiraling 3D Soul Clan violet/magenta particle burst
+    const palette = [
+      [0.49, 0.23, 0.93], // Deep indigo-purple (#7c3aed)
+      [0.75, 0.52, 0.99], // Luminous spectral violet (#c084fc)
+      [0.91, 0.30, 0.96], // Soul Clan magenta-orchid (#e879f9)
+    ];
+    const desired = Math.round(24 + clamped * 56);
+    let spawned = 0;
+    for (let i = 0; i < this.soulVortexParticles.length && spawned < desired; i++) {
+      const p = this.soulVortexParticles[i];
+      if (p.active && spawned < desired * 0.65) continue;
+      const ang = (spawned / desired) * Math.PI * 2 + Math.random() * 0.45;
+      const startRad = 0.35 + Math.random() * 0.85;
+      const outSpeed = (2.8 + Math.random() * 5.6) * (0.65 + clamped * 0.65);
+      const col = palette[spawned % palette.length];
+      p.active = true;
+      p.originX = x;
+      p.originZ = z;
+      p.x = x + Math.cos(ang) * startRad;
+      p.y = y + 0.35 + Math.random() * 0.9;
+      p.z = z + Math.sin(ang) * startRad;
+      p.vx = Math.cos(ang) * outSpeed;
+      p.vy = 2.2 + Math.random() * (3.6 + clamped * 3.4);
+      p.vz = Math.sin(ang) * outSpeed;
+      p.swirlSpeed = (spawned % 2 === 0 ? 1 : -1) * (3.2 + Math.random() * 3.4);
+      p.age = 0;
+      p.life = 0.46 + Math.random() * (0.38 + clamped * 0.25);
+      p.r = col[0];
+      p.g = col[1];
+      p.b = col[2];
+      spawned++;
+    }
+    this.soulVortexPoints.visible = true;
+
+    // Layer crisp faceted violet burst shards for extra 3D depth
+    this.spawnBurst(x, y + 0.9, z, clamped >= 0.8 ? 0xd946ef : 0xa855f7, Math.round(10 + clamped * 16));
+  }
+
+  private updateSoulSkillEffect(dt: number): void {
+    // Update 3D violet vortex particles
+    let anyActive = false;
+    const posArr = this.soulVortexPositions;
+    const colArr = this.soulVortexColors;
+    for (let i = 0; i < this.soulVortexParticles.length; i++) {
+      const p = this.soulVortexParticles[i];
+      const idx = i * 3;
+      if (!p.active) {
+        posArr[idx + 1] = -400;
+        continue;
+      }
+      p.age += dt;
+      if (p.age >= p.life) {
+        p.active = false;
+        posArr[idx + 1] = -400;
+        continue;
+      }
+      anyActive = true;
+      // Tangential vortex swirl around cast origin + buoyant upward drift
+      const rx = p.x - p.originX;
+      const rz = p.z - p.originZ;
+      const swirl = p.swirlSpeed * dt;
+      const cosS = Math.cos(swirl);
+      const sinS = Math.sin(swirl);
+      const rotX = rx * cosS - rz * sinS;
+      const rotZ = rx * sinS + rz * cosS;
+      p.x = p.originX + rotX + p.vx * dt;
+      p.z = p.originZ + rotZ + p.vz * dt;
+      p.y += p.vy * dt;
+      p.vx *= Math.max(0, 1 - dt * 1.9);
+      p.vz *= Math.max(0, 1 - dt * 1.9);
+      p.vy -= 3.2 * dt;
+
+      const fade = Math.max(0, 1 - p.age / p.life);
+      const bright = fade * fade;
+      posArr[idx] = p.x;
+      posArr[idx + 1] = p.y;
+      posArr[idx + 2] = p.z;
+      colArr[idx] = p.r * bright;
+      colArr[idx + 1] = p.g * bright;
+      colArr[idx + 2] = p.b * bright;
+    }
+    this.soulVortexPoints.visible = anyActive;
+    if (anyActive) {
+      (this.soulVortexPoints.geometry.attributes.position as THREE.BufferAttribute).needsUpdate = true;
+      (this.soulVortexPoints.geometry.attributes.color as THREE.BufferAttribute).needsUpdate = true;
+    }
+
+    // Update expanding 3D purple arcane torus ring
+    if (this.soulVortexRingMesh.visible) {
+      this.soulVortexRingAge += dt;
+      if (this.soulVortexRingAge >= this.soulVortexRingLife) {
+        this.soulVortexRingMesh.visible = false;
+        this.soulVortexRingMat.opacity = 0;
+      } else {
+        const u = this.soulVortexRingAge / this.soulVortexRingLife;
+        const easeOut = 1 - Math.pow(1 - u, 3);
+        const radius = 0.5 + easeOut * this.soulVortexRingMaxRadius;
+        this.soulVortexRingMesh.position.set(
+          this.soulVortexRingOrigin.x,
+          this.soulVortexRingOrigin.y + easeOut * 1.35,
+          this.soulVortexRingOrigin.z,
+        );
+        this.soulVortexRingMesh.scale.set(radius, 1 + (1 - u) * 1.2, radius);
+        this.soulVortexRingMesh.rotation.y += dt * 5.2;
+        this.soulVortexRingMat.opacity = (1 - u) * 0.82;
       }
     }
   }
@@ -1412,6 +1991,43 @@ export class WorldEngine {
     this.shakeIntensity = Math.min(1.4, Math.max(this.shakeIntensity, amount));
   }
 
+  /**
+   * Fires mechanical blowback recoil, upper-body fallback kick, volumetric muzzle flash,
+   * cordite smoke sparks, ejected brass shell glint, and camera kick on the half-human gun.
+   */
+  public triggerGunRecoil(strength = 1.0): void {
+    const s = Math.max(0.4, Math.min(1.8, strength));
+    this.gunRecoil = Math.min(1.5, this.gunRecoil + 0.78 * s);
+    this.gunRecoilVel = Math.min(16, this.gunRecoilVel + 6.8 * s);
+    this.gunSlideKick = 1.0;
+    this.gunFlashTimer = 0.072;
+    this.gunCamKick = Math.min(0.68, this.gunCamKick + 0.34 * s);
+    this.triggerShake(0.24 * s);
+
+    const rig = this.ascensionRig;
+    rig.gunMuzzleFlash.rotation.z = Math.random() * Math.PI * 2;
+    if (rig.group.visible && rig.gunGroup.visible) {
+      rig.group.updateMatrixWorld(true);
+      rig.gunMuzzleAnchor.getWorldPosition(_vec3A);
+      this.spawnBurst(_vec3A.x, _vec3A.y, _vec3A.z, 0xffd166, 12);
+      this.spawnBurst(_vec3A.x, _vec3A.y, _vec3A.z, 0xcbd5e1, 5);
+
+      rig.gunEjectAnchor.getWorldPosition(_vec3B);
+      this.spawnBurst(_vec3B.x, _vec3B.y, _vec3B.z, 0xfbbf24, 4);
+    }
+  }
+
+  /**
+   * Returns current world-space coordinates of the half-human hand cannon muzzle when equipped.
+   */
+  public getGunMuzzleWorldPosition(): { x: number; y: number; z: number } | null {
+    const rig = this.ascensionRig;
+    if (!rig.group.visible || !rig.gunGroup.visible) return null;
+    rig.group.updateMatrixWorld(true);
+    rig.gunMuzzleAnchor.getWorldPosition(_vec3A);
+    return { x: _vec3A.x, y: _vec3A.y, z: _vec3A.z };
+  }
+
   private initWeatherSystem(): void {
     // 1. Drifting Mountain Mist & Dense Fog Billows (soft translucent sprites hugging terrain)
     const mistCount = this.isSoftwareGl ? 84 : 168;
@@ -1518,15 +2134,582 @@ export class WorldEngine {
     }
     this.splashInstanced.instanceMatrix.needsUpdate = true;
     this.weatherGroup.add(this.splashInstanced);
+
+    // 4. GPU-Driven Dynamic Climate Particle System (ShaderMaterial: snow, embers/ash, storm sparks, mist)
+    const climateCount = this.isSoftwareGl ? 360 : 820;
+    const climatePos = new Float32Array(climateCount * 3);
+    const climateSeeds = new Float32Array(climateCount * 4);
+    for (let i = 0; i < climateCount; i++) {
+      climatePos[i * 3] = (Math.random() - 0.5) * 64;
+      climatePos[i * 3 + 1] = Math.random() * 30;
+      climatePos[i * 3 + 2] = (Math.random() - 0.5) * 64;
+
+      climateSeeds[i * 4] = Math.random() * Math.PI * 2; // phase
+      climateSeeds[i * 4 + 1] = 0.65 + Math.random() * 0.85; // speed scale
+      climateSeeds[i * 4 + 2] = 0.6 + Math.random() * 1.15; // size scale
+      climateSeeds[i * 4 + 3] = Math.random(); // color mix
+    }
+    const climateGeo = new THREE.BufferGeometry();
+    climateGeo.setAttribute('position', new THREE.BufferAttribute(climatePos, 3));
+    climateGeo.setAttribute('aSeed', new THREE.BufferAttribute(climateSeeds, 4));
+
+    this.climateParticleMat = new THREE.ShaderMaterial({
+      uniforms: {
+        uTime: { value: 0 },
+        uFocus: { value: new THREE.Vector3(0, 8, 0) },
+        uWind: { value: new THREE.Vector3(1.5, -0.4, 0.5) },
+        uSize: { value: 3.0 },
+        uOpacity: { value: 0.4 },
+        uColorA: { value: new THREE.Color(0xdceeff) },
+        uColorB: { value: new THREE.Color(0x9fc4de) },
+        uStyle: { value: 0.0 },
+        uPixelRatio: { value: this.renderer.getPixelRatio() },
+      },
+      vertexShader: `
+        attribute vec4 aSeed;
+        uniform float uTime;
+        uniform vec3 uFocus;
+        uniform vec3 uWind;
+        uniform float uSize;
+        uniform float uStyle;
+        uniform float uPixelRatio;
+
+        varying float vMix;
+        varying float vAlpha;
+        varying float vPhase;
+        varying float vStyle;
+
+        void main() {
+          vec3 box = vec3(64.0, 30.0, 64.0);
+          float phase = aSeed.x;
+          float spd = aSeed.y;
+          float sizeMul = aSeed.z;
+
+          vec3 drift = uWind * (uTime * spd);
+          float swirlAmp = mix(0.85, 2.6, clamp(uStyle, 0.0, 1.0));
+          drift.x += sin(uTime * 1.35 + phase) * swirlAmp;
+          drift.z += cos(uTime * 1.1 + phase * 1.3) * swirlAmp;
+          drift.y += sin(uTime * 0.9 + phase * 0.7) * 0.7;
+
+          vec3 rel = mod(position + drift - uFocus + box * 0.5, box) - box * 0.5;
+          vec3 worldPos = uFocus + rel;
+
+          vec4 mvPos = modelViewMatrix * vec4(worldPos, 1.0);
+          gl_Position = projectionMatrix * mvPos;
+
+          float radial = length(rel.xz) / 32.0;
+          float edgeFade = 1.0 - smoothstep(0.68, 1.0, radial);
+          float vertFade = smoothstep(-15.0, -9.0, rel.y) * (1.0 - smoothstep(10.0, 15.0, rel.y));
+          vAlpha = edgeFade * vertFade;
+          vMix = aSeed.w;
+          vPhase = phase + uTime * (1.8 + spd);
+          vStyle = uStyle;
+
+          float depthScale = 235.0 / max(2.0, -mvPos.z);
+          gl_PointSize = clamp(uSize * sizeMul * uPixelRatio * depthScale * 0.14, 1.5, 26.0);
+        }
+      `,
+      fragmentShader: `
+        uniform float uOpacity;
+        uniform vec3 uColorA;
+        uniform vec3 uColorB;
+
+        varying float vMix;
+        varying float vAlpha;
+        varying float vPhase;
+        varying float vStyle;
+
+        void main() {
+          vec2 uv = gl_PointCoord - vec2(0.5);
+          float d = length(uv);
+          if (d > 0.5) discard;
+
+          vec3 col = mix(uColorA, uColorB, vMix);
+          float shape = smoothstep(0.5, 0.05, d);
+
+          if (vStyle > 0.5 && vStyle < 1.5) {
+            // Blizzard crystalline 6-point snowflake
+            float ang = atan(uv.y, uv.x) + vPhase * 0.35;
+            float arms = pow(abs(cos(ang * 3.0)), 3.0);
+            float crystal = smoothstep(0.5, 0.08, d) * (0.55 + 0.45 * arms);
+            float core = smoothstep(0.22, 0.0, d);
+            shape = clamp(crystal + core * 0.65, 0.0, 1.0);
+          } else if (vStyle >= 1.5 && vStyle < 2.5) {
+            // Volcanic ash & glowing embers (hot flicker on embers, smoky soot on ash)
+            float emberFlag = step(0.42, vMix);
+            float flicker = 0.65 + 0.35 * sin(vPhase * 3.8);
+            vec3 emberCol = mix(vec3(1.0, 0.32, 0.08), vec3(1.0, 0.88, 0.42), flicker);
+            vec3 ashCol = vec3(0.2, 0.16, 0.15);
+            col = mix(emberCol, ashCol, emberFlag);
+            shape = mix(smoothstep(0.46, 0.02, d) * (0.75 + 0.25 * flicker), smoothstep(0.48, 0.14, d) * 0.82, emberFlag);
+          } else if (vStyle >= 2.5) {
+            // Storm wind-driven spray / electric glint
+            float stretch = length(vec2(uv.x * 1.9, uv.y * 0.7));
+            shape = smoothstep(0.5, 0.04, stretch);
+          }
+
+          float alpha = shape * vAlpha * uOpacity;
+          if (alpha < 0.01) discard;
+          gl_FragColor = vec4(col, alpha);
+        }
+      `,
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.NormalBlending,
+    });
+
+    this.climateParticles = new THREE.Points(climateGeo, this.climateParticleMat);
+    this.climateParticles.frustumCulled = false;
+    this.climateParticles.renderOrder = 4;
+    this.weatherGroup.add(this.climateParticles);
+
+    // 5. Fullscreen Three.js ShaderMaterial Atmospheric Climate Overlay
+    this.overlayScene = new THREE.Scene();
+    this.overlayCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+
+    const w = this.container.clientWidth || window.innerWidth;
+    const h = Math.max(1, this.container.clientHeight || window.innerHeight);
+
+    this.weatherOverlayMat = new THREE.ShaderMaterial({
+      uniforms: {
+        uTime: { value: 0 },
+        uAspect: { value: w / h },
+        uMistAmt: { value: 0 },
+        uFogAmt: { value: 0 },
+        uRainAmt: { value: 0 },
+        uStormAmt: { value: 0 },
+        uBlizzardAmt: { value: 0 },
+        uAshAmt: { value: 0 },
+        uLightning: { value: 0 },
+        uShiftPulse: { value: 0 },
+        uTint: { value: new THREE.Color(0x9ec0d9) },
+        uSoulPulse: { value: 0 },
+        uSoulPhase: { value: 0 },
+        uSoulPower: { value: 0 },
+        uDroplets: { value: this.screenDropletUniforms },
+        uRainVfx: { value: 0 },
+        uFrostLevel: { value: 0 },
+        uFrostPulse: { value: 0 },
+        uFrostBiasX: { value: 0 },
+        uCondensation: { value: 0 },
+        uAshCinderPulse: { value: 0 },
+        uAshBiasX: { value: 0 },
+      },
+      vertexShader: `
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          gl_Position = vec4(position.xy, 0.0, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform float uTime;
+        uniform float uAspect;
+        uniform float uMistAmt;
+        uniform float uFogAmt;
+        uniform float uRainAmt;
+        uniform float uStormAmt;
+        uniform float uBlizzardAmt;
+        uniform float uAshAmt;
+        uniform float uLightning;
+        uniform float uShiftPulse;
+        uniform vec3 uTint;
+        uniform float uSoulPulse;
+        uniform float uSoulPhase;
+        uniform float uSoulPower;
+        uniform vec4 uDroplets[12];
+        uniform float uRainVfx;
+        uniform float uFrostLevel;
+        uniform float uFrostPulse;
+        uniform float uFrostBiasX;
+        uniform float uCondensation;
+        uniform float uAshCinderPulse;
+        uniform float uAshBiasX;
+
+        varying vec2 vUv;
+
+        float hash21(vec2 p) {
+          p = fract(p * vec2(123.34, 456.21));
+          p += dot(p, p + 45.32);
+          return fract(p.x * p.y);
+        }
+
+        float vnoise(vec2 p) {
+          vec2 i = floor(p);
+          vec2 f = fract(p);
+          vec2 u = f * f * (3.0 - 2.0 * f);
+          float a = hash21(i);
+          float b = hash21(i + vec2(1.0, 0.0));
+          float c = hash21(i + vec2(0.0, 1.0));
+          float d = hash21(i + vec2(1.0, 1.0));
+          return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+        }
+
+        float fbm(vec2 p) {
+          float v = 0.0;
+          v += 0.55 * vnoise(p);
+          v += 0.30 * vnoise(p * 2.07 + vec2(1.7, 9.2));
+          v += 0.15 * vnoise(p * 4.13 + vec2(8.3, 2.8));
+          return v;
+        }
+
+        void main() {
+          vec2 centered = (vUv - 0.5) * vec2(uAspect, 1.0);
+          float rad = length(centered);
+          float edge = smoothstep(0.36, 0.96, rad);
+          float outerEdge = smoothstep(0.52, 1.06, rad);
+
+          vec3 col = vec3(0.0);
+          float alpha = 0.0;
+
+          // 1. Mist & Dense Fog creeping perimeter veil
+          float fogWeight = uMistAmt * 0.42 + uFogAmt;
+          if (fogWeight > 0.005) {
+            float wisp = fbm(vec2(vUv.x * 3.2 * uAspect + uTime * 0.08, vUv.y * 2.8 - uTime * 0.03));
+            float topFog = smoothstep(0.45, 1.0, vUv.y) * 0.45;
+            float fogMask = clamp((edge * 0.85 + topFog) * (0.55 + 0.65 * wisp), 0.0, 1.0) * fogWeight * 0.52;
+            col = mix(col, mix(vec3(0.78, 0.86, 0.91), uTint, 0.45), clamp(fogMask / max(0.001, alpha + fogMask), 0.0, 1.0));
+            alpha += fogMask;
+          }
+
+          // 2. Rain & Thunder Tempest diagonal rain-sheen + storm gloom + lightning flash
+          float wetWeight = max(uRainAmt, uStormAmt);
+          if (wetWeight > 0.005) {
+            vec2 rainUv = vec2(vUv.x * uAspect * 14.0 + vUv.y * 4.5, vUv.y * 4.0 + uTime * (2.8 + uStormAmt * 2.2));
+            float streak = pow(vnoise(rainUv), 4.0);
+            float rainMask = streak * (0.12 + edge * 0.24) * (uRainAmt * 0.55 + uStormAmt * 0.9);
+            float gloom = outerEdge * uStormAmt * 0.34;
+            col += vec3(0.55, 0.78, 0.96) * rainMask + vec3(0.05, 0.10, 0.18) * gloom;
+            alpha += rainMask * 0.75 + gloom;
+          }
+
+          // 3. Whiteout Blizzard crystalline frost vignette + howling horizontal squall bands
+          if (uBlizzardAmt > 0.005) {
+            float frostNoise = fbm(vec2(vUv.x * 7.5 * uAspect, vUv.y * 7.5));
+            float frostRim = smoothstep(0.42, 0.98, rad + (frostNoise - 0.5) * 0.32) * uBlizzardAmt;
+            float squall = fbm(vec2(vUv.x * 2.6 * uAspect + uTime * 1.85, vUv.y * 8.5 + uTime * 0.55));
+            float squallMask = smoothstep(0.48, 0.9, squall) * (0.14 + edge * 0.26) * uBlizzardAmt;
+            float bAlpha = frostRim * 0.52 + squallMask * 0.45;
+            vec3 iceCol = mix(vec3(0.76, 0.91, 1.0), vec3(0.95, 0.99, 1.0), squall);
+            col += iceCol * bAlpha;
+            alpha += bAlpha;
+          }
+
+          // 4. Volcanic Ash Storm scorching soot vignette + fiery rising ember shimmer
+          if (uAshAmt > 0.005) {
+            float smoke = fbm(vec2(vUv.x * 3.4 * uAspect - uTime * 0.38, vUv.y * 3.4 - uTime * 0.28));
+            float sootRim = edge * (0.55 + 0.55 * smoke) * uAshAmt * 0.58;
+            float emberGlow = pow(vnoise(vec2(vUv.x * 16.0 * uAspect - uTime * 1.4, vUv.y * 12.0 - uTime * 2.2)), 6.0) * uAshAmt;
+            vec3 ashCol = mix(vec3(0.16, 0.07, 0.05), vec3(1.0, 0.36, 0.08), clamp(smoke * 0.75, 0.0, 1.0));
+            col += ashCol * sootRim + vec3(1.0, 0.58, 0.18) * emberGlow * 0.85;
+            alpha += sootRim + emberGlow * 0.55;
+          }
+
+          // 5. Storm Lightning Flash
+          if (uLightning > 0.005) {
+            float skyBias = mix(0.45, 1.0, vUv.y);
+            float flashAmt = uLightning * skyBias * 0.42;
+            col += vec3(0.82, 0.92, 1.0) * flashAmt;
+            alpha += flashAmt;
+          }
+
+          // 6. Climate Shift Atmospheric Front Sweep (visual feedback whenever climate changes)
+          if (uShiftPulse > 0.005) {
+            float wavePos = 1.15 - uShiftPulse * 1.3;
+            float band = exp(-pow((vUv.y - wavePos) * 5.2, 2.0)) * uShiftPulse;
+            float rimPulse = edge * uShiftPulse * 0.24;
+            float pulseAmt = band * 0.26 + rimPulse;
+            col += uTint * pulseAmt;
+            alpha += pulseAmt;
+          }
+
+          // 6b. Audio-Synced Screen-Space Raindrop Splashes & Gravity Trickle Beads
+          if (uRainVfx > 0.004) {
+            float dropLight = 0.0;
+            float dropAlpha = 0.0;
+            for (int i = 0; i < 12; i++) {
+              vec4 d = uDroplets[i];
+              if (d.w <= 0.002) continue;
+              vec2 dp = (vUv - d.xy) * vec2(uAspect, 1.0);
+              float r = d.z;
+              // Teardrop bead body
+              float beadDist = length(vec2(dp.x, dp.y * 0.78));
+              float beadMask = smoothstep(r, r * 0.42, beadDist);
+              float rimRing = smoothstep(r * 1.15, r * 0.85, beadDist) * smoothstep(r * 0.55, r * 0.82, beadDist);
+              // Upper-left crisp specular glint on water bead
+              float specDist = length(dp - vec2(-r * 0.28, r * 0.30));
+              float spec = smoothstep(r * 0.42, 0.0, specDist);
+              // Initial contact splash ring right as the raindrop hits the lens
+              float splashRing = 0.0;
+              if (d.w > 0.70) {
+                float sp = (1.0 - d.w) / 0.30;
+                float sRad = r * (0.95 + sp * 2.35);
+                splashRing = exp(-pow((length(dp) - sRad) / max(0.003, r * 0.26), 2.0)) * (1.0 - sp) * 0.85;
+              }
+              // Delicate trailing wet trickle above sliding droplet
+              float trailMask = 0.0;
+              if (dp.y > 0.0 && dp.y < r * 3.6) {
+                float ty = dp.y / (r * 3.6);
+                float tWidth = r * mix(0.45, 0.08, ty);
+                trailMask = smoothstep(tWidth, 0.0, abs(dp.x)) * (1.0 - ty) * 0.38;
+              }
+              float lifeFade = smoothstep(0.0, 0.28, d.w);
+              float wScale = lifeFade * (0.45 + 0.55 * uRainVfx);
+              dropLight += (spec * 0.92 + rimRing * 0.42 + splashRing * 0.78 + trailMask * 0.35) * wScale;
+              dropAlpha += (beadMask * 0.16 + rimRing * 0.24 + spec * 0.36 + splashRing * 0.34 + trailMask * 0.16) * wScale;
+            }
+            if (dropAlpha > 0.002) {
+              vec3 waterCol = mix(vec3(0.68, 0.86, 0.98), vec3(0.94, 0.99, 1.0), clamp(dropLight, 0.0, 1.0));
+              col += waterCol * min(0.85, dropAlpha + dropLight * 0.35);
+              alpha += min(0.42, dropAlpha);
+            }
+          }
+
+          // 6d. Subtle Mist / Fog Corner Lens Condensation
+          if (uCondensation > 0.004) {
+            float dewNoise = fbm(vec2(vUv.x * 5.2 * uAspect + uTime * 0.04, vUv.y * 5.2));
+            float dewMask = outerEdge * (0.5 + 0.5 * dewNoise) * uCondensation * 0.22;
+            col += vec3(0.84, 0.92, 0.96) * dewMask;
+            alpha += dewMask;
+          }
+
+          // 6e. Volcanic Ash Audio-Synced Cinder Sparks & Scorching Rim Pulse
+          if (uAshCinderPulse > 0.004) {
+            float sideHeat = clamp(0.65 + (vUv.x - 0.5) * uAshBiasX * 1.4, 0.2, 1.35);
+            float cinder = pow(vnoise(vec2(vUv.x * 22.0 * uAspect - uTime * 1.9, vUv.y * 16.0 - uTime * 3.1)), 7.0);
+            float heatRim = outerEdge * sideHeat * uAshCinderPulse * 0.24;
+            float sparkAmt = cinder * (0.35 + edge * 0.65) * sideHeat * uAshCinderPulse * 0.65;
+            col += vec3(1.0, 0.42, 0.12) * heatRim + vec3(1.0, 0.78, 0.34) * sparkAmt;
+            alpha += heatRim * 0.65 + sparkAmt * 0.55;
+          }
+
+          // 7. Soul Clan Skill Temporary Purple Screen-Space Distortion & Arcane Ripple Wave
+          if (uSoulPulse > 0.004) {
+            float ang = atan(centered.y, centered.x);
+            float waveRad = mix(0.06, 1.12, uSoulPhase);
+            float ringDist = abs(rad - waveRad);
+            float shockRing = exp(-pow(ringDist * 11.5, 2.0));
+            // Swirling screen-space void warp & concentric purple interference ripples
+            vec2 warpUv = vec2(ang * 2.2 + rad * 4.5 - uTime * 3.8, rad * 6.5 - uSoulPhase * 5.0);
+            float vortexNoise = fbm(warpUv);
+            float ripple = 0.5 + 0.5 * sin((rad - waveRad) * 38.0 + vortexNoise * 5.2 - uTime * 15.0);
+            // Prismatic chromatic split bands around the expanding shock ring
+            float chromaOuter = exp(-pow(abs(rad - (waveRad + 0.032)) * 18.0, 2.0));
+            float chromaInner = exp(-pow(abs(rad - max(0.0, waveRad - 0.028)) * 18.0, 2.0));
+            float soulVignette = smoothstep(0.28, 1.02, rad + (vortexNoise - 0.5) * 0.22);
+
+            float power = uSoulPulse * (0.55 + 0.45 * uSoulPower);
+            float ringStrength = shockRing * (0.45 + 0.55 * ripple) * power * 0.72;
+            float vigStrength = soulVignette * (0.42 + 0.58 * vortexNoise) * power * 0.54;
+
+            vec3 deepViolet = vec3(0.42, 0.14, 0.85);
+            vec3 brightOrchid = vec3(0.86, 0.34, 1.0);
+            vec3 coreLavender = vec3(0.95, 0.76, 1.0);
+
+            vec3 soulCol =
+              deepViolet * (vigStrength + chromaOuter * power * 0.38) +
+              brightOrchid * (ringStrength + chromaInner * power * 0.34) +
+              coreLavender * (shockRing * ripple * power * 0.28);
+
+            float soulAlpha = ringStrength * 0.82 + vigStrength * 0.78 + (chromaOuter + chromaInner) * power * 0.22;
+            col += soulCol;
+            alpha += soulAlpha;
+          }
+
+          alpha = clamp(alpha, 0.0, 0.76);
+          if (alpha < 0.004) discard;
+          gl_FragColor = vec4(col / max(0.25, alpha + 0.35), alpha);
+        }
+      `,
+      transparent: true,
+      depthTest: false,
+      depthWrite: false,
+    });
+
+    const overlayGeo = new THREE.PlaneGeometry(2, 2);
+    this.weatherOverlayMesh = new THREE.Mesh(overlayGeo, this.weatherOverlayMat);
+    this.weatherOverlayMesh.frustumCulled = false;
+    this.overlayScene.add(this.weatherOverlayMesh);
+
+    // 6. Dedicated Shader-Based Screen Frost Edge-Blur Overlay (frosted-glass blur + progressive rime opacity)
+    this.frostOverlayScene = new THREE.Scene();
+    this.frostOverlayMat = new THREE.ShaderMaterial({
+      uniforms: {
+        tScene: { value: null },
+        uHasSceneTex: { value: 0 },
+        uTime: { value: 0 },
+        uAspect: { value: w / h },
+        uTexelSize: { value: new THREE.Vector2(1 / Math.max(1, w), 1 / Math.max(1, h)) },
+        uFrostIntensity: { value: 0 },
+        uFrostOpacity: { value: 0 },
+        uFrostBlurPx: { value: 0 },
+        uFrostReach: { value: 0.14 },
+        uFrostPulse: { value: 0 },
+        uFrostBiasX: { value: 0 },
+      },
+      vertexShader: `
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          gl_Position = vec4(position.xy, 0.0, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform sampler2D tScene;
+        uniform float uHasSceneTex;
+        uniform float uTime;
+        uniform float uAspect;
+        uniform vec2 uTexelSize;
+        uniform float uFrostIntensity;
+        uniform float uFrostOpacity;
+        uniform float uFrostBlurPx;
+        uniform float uFrostReach;
+        uniform float uFrostPulse;
+        uniform float uFrostBiasX;
+
+        varying vec2 vUv;
+
+        float fHash21(vec2 p) {
+          p = fract(p * vec2(127.1, 311.7));
+          p += dot(p, p + 34.23);
+          return fract(p.x * p.y);
+        }
+
+        float fNoise(vec2 p) {
+          vec2 i = floor(p);
+          vec2 f = fract(p);
+          vec2 u = f * f * (3.0 - 2.0 * f);
+          return mix(
+            mix(fHash21(i), fHash21(i + vec2(1.0, 0.0)), u.x),
+            mix(fHash21(i + vec2(0.0, 1.0)), fHash21(i + vec2(1.0, 1.0)), u.x),
+            u.y
+          );
+        }
+
+        // Anisotropic crystalline ice-fern veins & faceted frost shards
+        float iceCrystalField(vec2 uv) {
+          vec2 a = vec2(uv.x * 0.80 - uv.y * 0.60, uv.x * 0.60 + uv.y * 0.80);
+          vec2 b = vec2(uv.x * 0.56 + uv.y * 0.83, -uv.x * 0.83 + uv.y * 0.56);
+          float n1 = 1.0 - abs(fNoise(a * 11.5) * 2.0 - 1.0);
+          float n2 = 1.0 - abs(fNoise(b * 21.0 + vec2(4.2, 8.7)) * 2.0 - 1.0);
+          float n3 = fNoise(uv * 34.0 - vec2(1.9, 5.3));
+          return clamp(n1 * 0.48 + n2 * 0.36 + n3 * 0.16, 0.0, 1.0);
+        }
+
+        void main() {
+          if (uFrostIntensity <= 0.003) discard;
+
+          vec2 fUv = vUv * vec2(uAspect, 1.0);
+          float crystals = iceCrystalField(fUv);
+          float coarse = fNoise(fUv * 5.2 + vec2(0.6, 2.1));
+
+          // Elliptical + corner-weighted distance from viewport center so frost frames the screen naturally
+          vec2 p = vUv - 0.5;
+          float boxEdge = max(abs(p.x) * 1.12, abs(p.y) * 1.08);
+          float radEdge = length(vec2(p.x * 1.06, p.y * 1.04));
+          float edgeDist = mix(radEdge, boxEdge, 0.55);
+
+          // Stereo-panned blizzard gust biases frost slightly toward the windward edge
+          float windBias = 1.0 + clamp(p.x * uFrostBiasX * 1.5, -0.28, 0.55) * uFrostPulse;
+
+          // Progressive inward frost creep controlled by uFrostReach (0.14 -> 0.50)
+          float innerStart = clamp(0.66 - uFrostReach * 0.78, 0.24, 0.58);
+          float jagged = (crystals - 0.45) * 0.19 + (coarse - 0.5) * 0.12;
+          float frostMask = smoothstep(innerStart, 0.74, edgeDist + jagged) * windBias;
+          frostMask = clamp(frostMask * (0.72 + 0.48 * crystals), 0.0, 1.0);
+
+          if (frostMask <= 0.004) discard;
+
+          // Subtle cold rim tint & sparkling specular ice needles
+          float veinSpark = pow(crystals, 4.2) * (0.45 + 0.55 * sin(uTime * 3.1 + fUv.x * 12.0 + fUv.y * 9.0));
+          float gustGlint = veinSpark * (0.4 + 0.6 * uFrostPulse);
+          vec3 iceRimeCol = mix(vec3(0.72, 0.89, 0.99), vec3(0.95, 0.99, 1.0), clamp(crystals * 0.85 + gustGlint * 0.45, 0.0, 1.0));
+          vec3 glacialEdgeTint = vec3(0.56, 0.80, 0.96);
+
+          if (uHasSceneTex > 0.5) {
+            // Compute crystal refraction gradient + 12-tap Vogel-disk frosted-glass edge blur
+            float eps = 0.004;
+            float cx = iceCrystalField(fUv + vec2(eps, 0.0)) - crystals;
+            float cy = iceCrystalField(fUv + vec2(0.0, eps)) - crystals;
+            vec2 refractOffset = vec2(cx, cy) * (0.016 * frostMask * (0.4 + 0.6 * uFrostIntensity));
+            vec2 blurStep = uTexelSize * uFrostBlurPx * frostMask;
+
+            vec3 blurred = vec3(0.0);
+            float totalW = 0.0;
+            // Golden-angle Vogel spiral taps for smooth, artifact-free frosted glass diffusion
+            const float GOLDEN_ANGLE = 2.39996323;
+            for (int i = 0; i < 12; i++) {
+              float fi = float(i);
+              float r = sqrt((fi + 0.5) / 12.0);
+              float theta = fi * GOLDEN_ANGLE + coarse * 6.2831;
+              vec2 tapUv = clamp(vUv + refractOffset + vec2(cos(theta), sin(theta)) * r * blurStep, vec2(0.002), vec2(0.998));
+              float w = 1.0 - r * 0.35;
+              blurred += texture2D(tScene, tapUv).rgb * w;
+              totalW += w;
+            }
+            blurred /= max(0.001, totalW);
+
+            // Desaturate and chill the blurred background through frosted ice
+            float lum = dot(blurred, vec3(0.299, 0.587, 0.114));
+            vec3 chilledScene = mix(blurred, vec3(lum) * glacialEdgeTint * 1.18, 0.32 * uFrostIntensity);
+
+            // Blend progressively opaque crystalline ice rime over the frosted blurred edge
+            float rimeBlend = clamp(uFrostOpacity * (0.36 + 0.64 * crystals) * frostMask, 0.0, 0.86);
+            vec3 finalRgb = mix(chilledScene, iceRimeCol, rimeBlend) + vec3(0.92, 0.98, 1.0) * gustGlint * frostMask * 0.28;
+
+            // Smooth alpha transition so the blurred glass fades seamlessly into the crisp central scene
+            float edgeAlpha = clamp(smoothstep(0.0, 0.32, frostMask) * (0.38 + 0.62 * uFrostIntensity), 0.0, 0.96);
+            gl_FragColor = vec4(finalRgb, edgeAlpha);
+          } else {
+            // Software WebGL fallback: clean procedural milky frosted glass + crystalline rime
+            float milkyAlpha = clamp(frostMask * uFrostOpacity * (0.62 + 0.48 * crystals), 0.0, 0.72);
+            vec3 finalRgb = mix(glacialEdgeTint, iceRimeCol, clamp(crystals + gustGlint * 0.4, 0.0, 1.0));
+            gl_FragColor = vec4(finalRgb, milkyAlpha);
+          }
+        }
+      `,
+      transparent: true,
+      depthTest: false,
+      depthWrite: false,
+    });
+
+    const frostGeo = new THREE.PlaneGeometry(2, 2);
+    this.frostOverlayMesh = new THREE.Mesh(frostGeo, this.frostOverlayMat);
+    this.frostOverlayMesh.frustumCulled = false;
+    this.frostOverlayScene.add(this.frostOverlayMesh);
+  }
+
+  private ensureFrostFrameTexture(): THREE.FramebufferTexture {
+    this.renderer.getDrawingBufferSize(this.frostSizeScratch);
+    const w = Math.max(1, Math.floor(this.frostSizeScratch.x));
+    const h = Math.max(1, Math.floor(this.frostSizeScratch.y));
+    if (!this.frostFrameTexture || this.frostBufferSize.x !== w || this.frostBufferSize.y !== h) {
+      this.frostFrameTexture?.dispose();
+      const tex = new THREE.FramebufferTexture(w, h);
+      tex.minFilter = THREE.LinearFilter;
+      tex.magFilter = THREE.LinearFilter;
+      tex.wrapS = THREE.ClampToEdgeWrapping;
+      tex.wrapT = THREE.ClampToEdgeWrapping;
+      tex.generateMipmaps = false;
+      this.frostFrameTexture = tex;
+      this.frostBufferSize.set(w, h);
+      (this.frostOverlayMat.uniforms.uTexelSize.value as THREE.Vector2).set(1 / w, 1 / h);
+    }
+    return this.frostFrameTexture;
   }
 
   public setWeather(weather: WeatherMode): void {
     if (this.weather === weather) return;
     this.weather = weather;
-    if (weather === 'rain') {
-      // Begin near an active light shower peak so rain is immediately visible on toggle,
-      // then naturally ebb and swell between gentle drizzle lulls and steady light showers
+    this.weatherShiftPulse = 1.0;
+    if (weather === 'rain' || weather === 'storm') {
+      // Begin near an active shower/tempest peak so rainfall is immediately visible on transition
       this.rainCyclePhase = Math.PI * 0.42;
+    }
+    if (weather === 'storm') {
+      this.lightningFlash = 0.85;
+      this.pendingLightningStrike = 0.9;
+      this.lightningTimer = 2.6 + Math.random() * 3.0;
     }
   }
 
@@ -1536,6 +2719,107 @@ export class WorldEngine {
 
   public getLiveRainIntensity(): number {
     return this.liveRainIntensity;
+  }
+
+  /**
+   * Updates environmental context used by screen-space weather VFX
+   * (altitude boosts blizzard frost/storm spray; Shrine shelter warms & thaws frost).
+   */
+  public setWeatherContext(altitudeNorm: number, isSheltered: boolean): void {
+    this.weatherAltitudeNorm = Math.max(0, Math.min(1, altitudeNorm));
+    this.weatherSheltered = isSheltered;
+  }
+
+  /**
+   * Synchronizes subtle screen-space lens VFX directly with real-time Web Audio weather cues.
+   */
+  public triggerWeatherAudioCue(cue: WeatherAudioCueEvent): void {
+    const intensity = Math.max(0.15, Math.min(1.2, cue.intensity));
+    const biasX = Math.max(-1, Math.min(1, cue.pan));
+
+    switch (cue.kind) {
+      case 'rain_splash': {
+        if (this.weatherSheltered && Math.random() < 0.65) return;
+        const count = intensity > 0.72 ? 2 : 1;
+        for (let i = 0; i < count; i++) {
+          this.spawnScreenDroplet(intensity, biasX);
+        }
+        this.rainSprayPulse = Math.max(this.rainSprayPulse, 0.25 + intensity * 0.45);
+        break;
+      }
+      case 'thunder_jolt': {
+        if (this.weather === 'rain' || this.weather === 'storm') {
+          const count = this.weatherSheltered ? 1 : intensity > 0.75 ? 3 : 2;
+          for (let i = 0; i < count; i++) {
+            this.spawnScreenDroplet(Math.min(1, intensity), biasX);
+          }
+          this.rainSprayPulse = Math.max(this.rainSprayPulse, Math.min(1, 0.45 + intensity * 0.55));
+        } else if (this.weather === 'ashstorm') {
+          this.ashCinderPulse = Math.max(this.ashCinderPulse, 0.45 + intensity * 0.4);
+          this.ashBiasX = biasX;
+        }
+        break;
+      }
+      case 'blizzard_gust': {
+        const shelterScale = this.weatherSheltered ? 0.25 : 1.0;
+        this.frostGustPulse = Math.max(this.frostGustPulse, intensity * shelterScale);
+        this.frostBiasX = biasX;
+        if (!this.weatherSheltered) {
+          this.screenFrostLevel = Math.min(1, this.screenFrostLevel + 0.08 * intensity);
+        }
+        break;
+      }
+      case 'ash_cinder': {
+        const shelterScale = this.weatherSheltered ? 0.3 : 1.0;
+        this.ashCinderPulse = Math.max(this.ashCinderPulse, intensity * shelterScale);
+        this.ashBiasX = biasX;
+        break;
+      }
+      case 'wind_surge': {
+        if (this.weather === 'storm' && !this.weatherSheltered) {
+          this.spawnScreenDroplet(intensity * 0.8, biasX);
+        } else if (this.weather === 'blizzard' && !this.weatherSheltered) {
+          this.frostGustPulse = Math.max(this.frostGustPulse, intensity * 0.6);
+          this.frostBiasX = biasX;
+        }
+        break;
+      }
+    }
+  }
+
+  private spawnScreenDroplet(intensity: number, panBiasX?: number): void {
+    const idx = this.screenDropletCursor;
+    this.screenDropletCursor = (this.screenDropletCursor + 1) % this.screenDropletUniforms.length;
+
+    const u = this.screenDropletUniforms[idx];
+    const m = this.screenDropletMeta[idx];
+
+    // Bias slightly toward outer viewing regions so the center gameplay crosshair stays clear
+    let uvX: number;
+    if (typeof panBiasX === 'number') {
+      uvX = Math.max(0.06, Math.min(0.94, 0.5 + panBiasX * 0.36 + (Math.random() - 0.5) * 0.22));
+    } else {
+      uvX = 0.06 + Math.random() * 0.88;
+    }
+    let uvY = 0.16 + Math.random() * 0.78;
+    // Nudge away from dead-center focal region so droplets stay subtle and unobtrusive
+    if (Math.abs(uvX - 0.5) < 0.14 && Math.abs(uvY - 0.5) < 0.14) {
+      uvY = uvY >= 0.5 ? Math.min(0.92, uvY + 0.2) : Math.max(0.14, uvY - 0.18);
+    }
+
+    const radius = (0.011 + Math.random() * 0.015) * (0.78 + intensity * 0.38);
+    u.set(uvX, uvY, radius, 1.0);
+    m.active = true;
+    m.age = 0;
+    m.life = 1.15 + Math.random() * 1.45;
+    m.slideSpeed = (0.022 + Math.random() * 0.055) * (0.7 + intensity * 0.65);
+    m.driftX = (this.weather === 'storm' ? 0.028 : 0.008) * (Math.random() * 0.6 + 0.4);
+  }
+
+  public consumeLightningStrike(): number {
+    const val = this.pendingLightningStrike;
+    this.pendingLightningStrike = 0;
+    return val;
   }
 
   private applyWeatherImmediate(): void {
@@ -1582,17 +2866,44 @@ export class WorldEngine {
     const dampT = 1 - Math.exp(-2.2 * dt);
     const t = this.elapsed;
 
+    // 0. Storm Lightning Flash Oscillator & Climate Transition Sweep Pulse
+    if (this.weather === 'storm') {
+      this.lightningTimer -= dt;
+      if (this.lightningTimer <= 0) {
+        this.lightningFlash = 0.78 + Math.random() * 0.35;
+        this.pendingLightningStrike = this.lightningFlash;
+        this.lightningTimer = 3.2 + Math.random() * 5.2;
+      }
+    }
+    this.lightningFlash = THREE.MathUtils.damp(this.lightningFlash, 0, 7.5, dt);
+    this.weatherShiftPulse = Math.max(0, this.weatherShiftPulse - dt * 0.82);
+    if (this.soulSkillPulse > 0.002) {
+      this.soulSkillPulse = Math.max(0, this.soulSkillPulse - dt * (1.28 - this.soulSkillPower * 0.32));
+      this.soulSkillPhase = Math.min(1.15, this.soulSkillPhase + dt * 1.48);
+      if (this.soulSkillPulse <= 0.002) {
+        this.soulSkillPulse = 0;
+        this.soulSkillPower = 0;
+      }
+    }
+
     // 1. Smoothly blend Weather Preset + Cultivation Level Environment (sky, fog, sun, hemi, rim, motes)
+    const lightningSkyBoost = this.lightningFlash * 0.38;
     if (!this.xrActive) {
       if (!(this.scene.background instanceof THREE.Color)) {
         this.scene.background = new THREE.Color(preset.skyHex);
       }
-      _targetSkyColor.setHex(preset.skyHex).lerp(_levelTintColor.setHex(lvlEnv.skyHex), wBlend);
+      _targetSkyColor.setHex(preset.skyHex).lerp(_levelTintColor.setHex(lvlEnv.skyHex), wBlend * 0.58);
+      if (lightningSkyBoost > 0.01) {
+        _targetSkyColor.lerp(_color.setHex(0xd8ecff), lightningSkyBoost);
+      }
       this.scene.background.lerp(_targetSkyColor, dampT);
     }
 
     if (this.scene.fog instanceof THREE.FogExp2) {
-      _targetFogColor.setHex(preset.fogHex).lerp(_levelTintColor.setHex(lvlEnv.fogHex), wBlend);
+      _targetFogColor.setHex(preset.fogHex).lerp(_levelTintColor.setHex(lvlEnv.fogHex), wBlend * 0.58);
+      if (lightningSkyBoost > 0.01) {
+        _targetFogColor.lerp(_color.setHex(0xd8ecff), lightningSkyBoost * 0.75);
+      }
       this.scene.fog.color.lerp(_targetFogColor, dampT);
       const targetDensity = preset.fogDensity + lvlEnv.fogDensityBoost;
       this.scene.fog.density = THREE.MathUtils.damp(this.scene.fog.density, targetDensity, 2.2, dt);
@@ -1600,7 +2911,7 @@ export class WorldEngine {
 
     this.renderer.toneMappingExposure = THREE.MathUtils.damp(
       this.renderer.toneMappingExposure,
-      preset.exposure,
+      preset.exposure + this.lightningFlash * 0.24,
       2.4,
       dt,
     );
@@ -1608,7 +2919,12 @@ export class WorldEngine {
     const curSun = this.csm
       ? this.csm.lightIntensity
       : (this.fallbackSunLight?.intensity ?? this.baseSunIntensity);
-    const nextSun = THREE.MathUtils.damp(curSun, this.baseSunIntensity * preset.sunScale, 2.4, dt);
+    const nextSun = THREE.MathUtils.damp(
+      curSun,
+      this.baseSunIntensity * (preset.sunScale + this.lightningFlash * 1.15),
+      2.4,
+      dt,
+    );
     _targetSunColor.setHex(0xffffff).lerp(_levelTintColor.setHex(lvlEnv.sunHex), Math.min(0.85, wBlend + 0.15));
     if (this.csm) {
       this.csm.lightIntensity = nextSun;
@@ -1623,7 +2939,7 @@ export class WorldEngine {
 
     this.hemiLight.intensity = THREE.MathUtils.damp(
       this.hemiLight.intensity,
-      this.baseHemiIntensity * preset.hemiScale,
+      this.baseHemiIntensity * (preset.hemiScale + this.lightningFlash * 0.55),
       2.4,
       dt,
     );
@@ -1647,23 +2963,34 @@ export class WorldEngine {
       moteMat.color.lerp(_levelTintColor, dampT);
     }
 
-    // 2. Drifting 3D Valley Mist & Dense Fog Puffs
+    // 2. Drifting 3D Valley Mist, Blizzard Squalls & Volcanic Smoke Puffs
     const envMistBoost = this.activeEvolutionLevel >= 5 ? 0.08 : 0;
     this.mistMat.opacity = THREE.MathUtils.damp(
       this.mistMat.opacity,
-      Math.min(0.62, preset.mistOpacity + envMistBoost),
+      Math.min(0.68, preset.mistOpacity + envMistBoost),
       2.6,
       dt,
     );
     this.mistMat.size = THREE.MathUtils.damp(this.mistMat.size, preset.mistSize, 2.6, dt);
-    _targetMistColor.setHex(preset.mistTint).lerp(_levelTintColor.setHex(lvlEnv.fogHex), wBlend * 0.72);
+    _targetMistColor.setHex(preset.mistTint).lerp(_levelTintColor.setHex(lvlEnv.fogHex), wBlend * 0.35);
     this.mistMat.color.lerp(_targetMistColor, 1 - Math.exp(-2.6 * dt));
 
     const mistVisible = this.mistMat.opacity > 0.008;
     this.mistPoints.visible = mistVisible;
     if (mistVisible) {
       const mistRadius = 64;
-      const windSpeedMul = this.weather === 'rain' ? 1.55 : this.weather === 'fog' ? 0.72 : 1.0;
+      const windSpeedMul =
+        this.weather === 'blizzard'
+          ? 2.85
+          : this.weather === 'storm'
+            ? 2.4
+            : this.weather === 'ashstorm'
+              ? 2.1
+              : this.weather === 'rain'
+                ? 1.55
+                : this.weather === 'fog'
+                  ? 0.72
+                  : 1.0;
       const posAttr = this.mistPoints.geometry.attributes.position as THREE.BufferAttribute;
 
       for (let i = 0; i < this.mistParticles.length; i++) {
@@ -1697,27 +3024,34 @@ export class WorldEngine {
       posAttr.needsUpdate = true;
     }
 
-    // 3. Occasional Light Rain Oscillator, Slanted Rain Streaks & Ground Splashes
+    // 3. Driving Rain & Thunder Tempest Oscillator, Slanted Rain Streaks & Ground Splashes
     let targetRain = 0;
     if (this.weather === 'rain') {
       this.rainCyclePhase += dt * 0.26;
       const showerWave =
-        0.62 +
-        0.3 * Math.sin(this.rainCyclePhase) +
-        0.1 * Math.sin(this.rainCyclePhase * 2.3 + 0.7);
-      targetRain = THREE.MathUtils.clamp(showerWave, 0.26, 0.96);
+        0.68 +
+        0.24 * Math.sin(this.rainCyclePhase) +
+        0.08 * Math.sin(this.rainCyclePhase * 2.3 + 0.7);
+      targetRain = THREE.MathUtils.clamp(showerWave, 0.36, 0.96);
+    } else if (this.weather === 'storm') {
+      this.rainCyclePhase += dt * 0.42;
+      targetRain = THREE.MathUtils.clamp(0.92 + 0.08 * Math.sin(this.rainCyclePhase * 1.9), 0.85, 1.0);
     }
     this.liveRainIntensity = THREE.MathUtils.damp(this.liveRainIntensity, targetRain, 2.2, dt);
 
     const rainActive = this.liveRainIntensity > 0.02;
     this.rainLines.visible = rainActive;
     if (rainActive) {
-      this.rainMat.opacity = 0.16 + this.liveRainIntensity * 0.42;
+      const isStorm = this.weather === 'storm';
+      this.rainMat.opacity = (isStorm ? 0.32 : 0.18) + this.liveRainIntensity * (isStorm ? 0.52 : 0.42);
       const halfSpan = 28;
       const boxHeight = 30;
-      const windX = -3.4;
-      const windZ = -1.2;
-      const activeCount = Math.floor(this.rainDrops.length * (0.25 + this.liveRainIntensity * 0.75));
+      const windX = isStorm ? -9.5 : -3.8;
+      const windZ = isStorm ? -3.4 : -1.4;
+      const speedMul = isStorm ? 1.45 : 1.05;
+      const activeCount = Math.floor(
+        this.rainDrops.length * (isStorm ? 1.0 : 0.3 + this.liveRainIntensity * 0.7),
+      );
       const rainAttr = this.rainLines.geometry.attributes.position as THREE.BufferAttribute;
 
       for (let i = 0; i < this.rainDrops.length; i++) {
@@ -1735,7 +3069,7 @@ export class WorldEngine {
         }
 
         d.x += windX * dt;
-        d.y -= d.speed * dt;
+        d.y -= d.speed * speedMul * dt;
         d.z += windZ * dt;
 
         // Wrap horizontally around focal point
@@ -1748,7 +3082,7 @@ export class WorldEngine {
         if (d.y < groundY) {
           // Spawn a subtle ground splash ring if drop hits near the player/camera
           const distSq = (d.x - focusX) * (d.x - focusX) + (d.z - focusZ) * (d.z - focusZ);
-          if (distSq < 26 * 26 && Math.random() < 0.22 * this.liveRainIntensity) {
+          if (distSq < 26 * 26 && Math.random() < (isStorm ? 0.38 : 0.24) * this.liveRainIntensity) {
             this.spawnRainSplash(d.x, groundY, d.z);
           }
           d.x = focusX + (Math.random() - 0.5) * halfSpan * 2;
@@ -1757,16 +3091,180 @@ export class WorldEngine {
           d.y = Math.max(focusY + 14, spawnGround + 16) + Math.random() * boxHeight * 0.5;
         }
 
-        const slantScale = d.len / d.speed;
+        const slantScale = (d.len * (isStorm ? 1.35 : 1.0)) / (d.speed * speedMul);
         this.rainPositions[base] = d.x;
         this.rainPositions[base + 1] = d.y;
         this.rainPositions[base + 2] = d.z;
         this.rainPositions[base + 3] = d.x - windX * slantScale;
-        this.rainPositions[base + 4] = d.y + d.len;
+        this.rainPositions[base + 4] = d.y + d.len * (isStorm ? 1.35 : 1.0);
         this.rainPositions[base + 5] = d.z - windZ * slantScale;
       }
       rainAttr.needsUpdate = true;
     }
+
+    // 5. Update Dynamic GPU Climate Particle System (snowflakes, ash/embers, storm spray, mist motes)
+    const pUniforms = this.climateParticleMat.uniforms;
+    pUniforms.uTime.value = t;
+    (pUniforms.uFocus.value as THREE.Vector3).set(focusX, focusY + 6.5, focusZ);
+    const windVec = pUniforms.uWind.value as THREE.Vector3;
+    windVec.x = THREE.MathUtils.damp(windVec.x, preset.particleWindX, 2.4, dt);
+    windVec.y = THREE.MathUtils.damp(windVec.y, preset.particleVelY, 2.4, dt);
+    windVec.z = THREE.MathUtils.damp(windVec.z, preset.particleWindZ, 2.4, dt);
+    pUniforms.uSize.value = THREE.MathUtils.damp(pUniforms.uSize.value as number, preset.particleSize, 2.6, dt);
+    pUniforms.uOpacity.value = THREE.MathUtils.damp(
+      pUniforms.uOpacity.value as number,
+      preset.particleOpacity,
+      2.6,
+      dt,
+    );
+    (pUniforms.uColorA.value as THREE.Color).lerp(_color.setHex(preset.particleColorA), dampT);
+    (pUniforms.uColorB.value as THREE.Color).lerp(_levelTintColor.setHex(preset.particleColorB), dampT);
+    pUniforms.uStyle.value = preset.particleStyle;
+    pUniforms.uPixelRatio.value = this.renderer.getPixelRatio();
+    this.climateParticles.visible = (pUniforms.uOpacity.value as number) > 0.02;
+
+    // 6. Update Fullscreen Atmospheric Climate Shader Overlay uniforms
+    const oUniforms = this.weatherOverlayMat.uniforms;
+    oUniforms.uTime.value = t;
+    oUniforms.uMistAmt.value = THREE.MathUtils.damp(
+      oUniforms.uMistAmt.value as number,
+      this.weather === 'mist' ? 1.0 : 0.0,
+      2.5,
+      dt,
+    );
+    oUniforms.uFogAmt.value = THREE.MathUtils.damp(
+      oUniforms.uFogAmt.value as number,
+      this.weather === 'fog' ? 1.0 : 0.0,
+      2.5,
+      dt,
+    );
+    oUniforms.uRainAmt.value = THREE.MathUtils.damp(
+      oUniforms.uRainAmt.value as number,
+      this.weather === 'rain' ? 1.0 : 0.0,
+      2.5,
+      dt,
+    );
+    oUniforms.uStormAmt.value = THREE.MathUtils.damp(
+      oUniforms.uStormAmt.value as number,
+      this.weather === 'storm' ? 1.0 : 0.0,
+      2.5,
+      dt,
+    );
+    oUniforms.uBlizzardAmt.value = THREE.MathUtils.damp(
+      oUniforms.uBlizzardAmt.value as number,
+      this.weather === 'blizzard' ? 1.0 : 0.0,
+      2.5,
+      dt,
+    );
+    oUniforms.uAshAmt.value = THREE.MathUtils.damp(
+      oUniforms.uAshAmt.value as number,
+      this.weather === 'ashstorm' ? 1.0 : 0.0,
+      2.5,
+      dt,
+    );
+    oUniforms.uLightning.value = this.lightningFlash;
+    oUniforms.uShiftPulse.value = this.weatherShiftPulse;
+    (oUniforms.uTint.value as THREE.Color).lerp(_color.setHex(preset.overlayTint), dampT);
+    oUniforms.uSoulPulse.value = this.soulSkillPulse;
+    oUniforms.uSoulPhase.value = this.soulSkillPhase;
+    oUniforms.uSoulPower.value = this.soulSkillPower;
+
+    // 6b. Update Intensity-Scaled & Audio-Synced Screen-Space Weather VFX (droplets, frost, condensation, cinders)
+    const vfx = computeWeatherVfxIntensity(
+      this.weather,
+      this.liveRainIntensity,
+      this.weatherAltitudeNorm,
+      this.weatherSheltered,
+    );
+
+    // Spawn continuous ambient lens droplets during rain/storm proportional to weather intensity
+    if (vfx.rainSplash > 0.04) {
+      const dropletsPerSec = 0.65 + vfx.rainSplash * (this.weather === 'storm' ? 5.2 : 2.9);
+      this.screenDropletSpawnAccum += dt * dropletsPerSec;
+      while (this.screenDropletSpawnAccum >= 1) {
+        this.screenDropletSpawnAccum -= 1;
+        this.spawnScreenDroplet(vfx.rainSplash);
+      }
+    } else {
+      this.screenDropletSpawnAccum = 0;
+    }
+
+    // Advance sliding screen droplets & decay splash pulses
+    let anyActiveDroplet = false;
+    for (let i = 0; i < this.screenDropletUniforms.length; i++) {
+      const m = this.screenDropletMeta[i];
+      const u = this.screenDropletUniforms[i];
+      if (!m.active) {
+        u.w = 0;
+        continue;
+      }
+      m.age += dt;
+      if (m.age >= m.life) {
+        m.active = false;
+        u.w = 0;
+        continue;
+      }
+      anyActiveDroplet = true;
+      const life01 = Math.max(0, 1 - m.age / m.life);
+      // Droplets pause briefly on impact then trickle downward under gravity
+      const slideFactor = m.age > 0.16 ? 1.0 : 0.15;
+      u.x = Math.max(0.02, Math.min(0.98, u.x + m.driftX * slideFactor * dt));
+      u.y -= m.slideSpeed * slideFactor * dt;
+      u.w = life01;
+      if (u.y < -0.05) {
+        m.active = false;
+        u.w = 0;
+      }
+    }
+
+    // Progressive blizzard exposure & hostility buildup: frost gradually thickens & blurs edges
+    // the longer the player endures exposed blizzard conditions (faster at high altitude, thawing in Shrine Shelter)
+    if (this.weather === 'blizzard' && !this.weatherSheltered) {
+      const climbAccel = 0.048 + this.weatherAltitudeNorm * 0.045;
+      this.blizzardExposure = Math.min(1, this.blizzardExposure + dt * climbAccel);
+    } else {
+      const thawSpeed = this.weatherSheltered ? 0.34 : 0.24;
+      this.blizzardExposure = Math.max(0, this.blizzardExposure - dt * thawSpeed);
+    }
+    const squallWave = 0.88 + 0.12 * Math.sin(t * 0.45);
+    const progressiveFrostTarget =
+      this.weather === 'blizzard'
+        ? Math.min(1, vfx.frostTarget * (0.28 + 0.72 * this.blizzardExposure) * squallWave)
+        : 0;
+
+    // Smoothly creep or thaw screen frost, mist condensation, and decay audio-triggered weather pulses
+    const frostRate = progressiveFrostTarget > this.screenFrostLevel ? 0.65 : 1.25;
+    this.screenFrostLevel = THREE.MathUtils.damp(this.screenFrostLevel, progressiveFrostTarget, frostRate, dt);
+    this.frostGustPulse = THREE.MathUtils.damp(this.frostGustPulse, 0, 2.2, dt);
+    this.condensationLevel = THREE.MathUtils.damp(this.condensationLevel, vfx.condensation, 1.8, dt);
+    this.ashCinderPulse = THREE.MathUtils.damp(
+      this.ashCinderPulse,
+      vfx.heatAsh * 0.24,
+      2.6,
+      dt,
+    );
+    this.rainSprayPulse = THREE.MathUtils.damp(this.rainSprayPulse, 0, 3.2, dt);
+
+    oUniforms.uRainVfx.value = anyActiveDroplet
+      ? Math.max(vfx.rainSplash, this.rainSprayPulse, 0.22)
+      : 0;
+    oUniforms.uFrostLevel.value = this.screenFrostLevel;
+    oUniforms.uFrostPulse.value = this.frostGustPulse;
+    oUniforms.uFrostBiasX.value = this.frostBiasX;
+    oUniforms.uCondensation.value = this.condensationLevel;
+    oUniforms.uAshCinderPulse.value = this.ashCinderPulse;
+    oUniforms.uAshBiasX.value = this.ashBiasX;
+
+    // Update dedicated Shader-Based Screen Frost Edge-Blur Overlay uniforms
+    const frostParams = computeBlizzardFrostParams(this.screenFrostLevel, this.frostGustPulse);
+    const fUniforms = this.frostOverlayMat.uniforms;
+    fUniforms.uTime.value = t;
+    fUniforms.uFrostIntensity.value = frostParams.effectiveIntensity;
+    fUniforms.uFrostOpacity.value = frostParams.opacity;
+    fUniforms.uFrostBlurPx.value = frostParams.blurRadiusPx;
+    fUniforms.uFrostReach.value = frostParams.edgeReach;
+    fUniforms.uFrostPulse.value = this.frostGustPulse;
+    fUniforms.uFrostBiasX.value = this.frostBiasX;
 
     // 4. Update Expanding Ground Rain Splash Rings
     let anySplash = false;
@@ -2332,6 +3830,7 @@ export class WorldEngine {
   ): void {
     this.elapsed += dt;
     this.activeEvolutionLevel = evolutionLevel;
+    this.lastSnakeHeadPos.set(snake.head.x, snake.head.y, snake.head.z);
     const t = this.elapsed;
     const stage = getStageForLevel(evolutionLevel);
     const magic = getMagicTierForLevel(evolutionLevel);
@@ -2344,11 +3843,21 @@ export class WorldEngine {
     }
 
     // 2. Update 12-Stage Morphing Serpent -> Naga -> Ascended Human Avatar!
+    const traversalStrain = Math.max(0, Math.min(1, snake.traversalStrain ?? 0));
+    const steerNorm = Math.max(-1, Math.min(1, snake.steerRateNorm ?? 0));
+    const isAshTraversal =
+      (snake.traversalClimate ?? this.weather) === 'ashstorm';
+
     const showSerpentHead = stage.humanFaceBlend < 0.85 && stage.serpentScale > 0.05;
     this.snakeHeadGroup.visible = showSerpentHead;
     if (showSerpentHead) {
       const headScale = stage.serpentScale * (1 - stage.humanFaceBlend * 0.45);
       this.applyTerrainPose(this.snakeHeadGroup, snake.head, 0.03);
+      if (traversalStrain > 0.01) {
+        // Bank head against heavy snowdrift/ash resistance when turning & buffet slightly in headwind
+        this.snakeHeadGroup.rotateZ(steerNorm * traversalStrain * 0.28);
+        this.snakeHeadGroup.rotateY(Math.sin(t * 9.5) * 0.055 * traversalStrain);
+      }
       this.snakeHeadGroup.scale.setScalar(headScale);
       const hornS = Math.max(0.001, stage.hornScale);
       this.snakeLeftHorn.scale.setScalar(hornS);
@@ -2361,8 +3870,18 @@ export class WorldEngine {
       this.snakeTongue.rotation.y = Math.sin(t * 20) * 0.16 * flick;
     }
 
-    // Scale color progression + sprint boost glow
+    // Scale color progression + sprint boost glow + blizzard frost rime / ashstorm cinder coating
     _color.setHex(stage.scaleColorHex);
+    if (traversalStrain > 0.02) {
+      const weatherTintHex = isAshTraversal ? 0xf97316 : 0xbae6fd;
+      const rT = ((weatherTintHex >> 16) & 255) / 255;
+      const gT = ((weatherTintHex >> 8) & 255) / 255;
+      const bT = (weatherTintHex & 255) / 255;
+      const blend = traversalStrain * 0.26;
+      _color.r = _color.r * (1 - blend) + rT * blend;
+      _color.g = _color.g * (1 - blend) + gT * blend;
+      _color.b = _color.b * (1 - blend) + bT * blend;
+    }
     this.snakeHeadMat.color.lerp(_color, 1 - Math.exp(-3 * dt));
     this.snakeBodyMat.color.lerp(_color, 1 - Math.exp(-3 * dt));
 
@@ -2399,11 +3918,75 @@ export class WorldEngine {
       segMesh.visible = true;
       const pose = snake.segments[i];
       this.applyTerrainPose(segMesh, pose, 0.03);
+      if (traversalStrain > 0.02) {
+        // Labored lateral coil heave as the serpent pushes through deep snowdrifts or volcanic ash
+        const lateralStrain =
+          Math.sin(t * 7.2 - i * 0.55) * 0.085 * traversalStrain * (1 + Math.abs(steerNorm) * 0.7);
+        segMesh.translateX(lateralStrain);
+      }
 
       const ratio = segCount > 1 ? i / (segCount - 1) : 0;
       const taper = THREE.MathUtils.lerp(0.92, 0.42, Math.pow(ratio, 1.35)) * bodyScaleBase;
       const pulse = 1 + Math.sin(t * 8.0 - i * 0.48) * 0.04;
       segMesh.scale.setScalar(taper * pulse);
+    }
+
+    // 2a-ii. 3D Difficult Traversal Wake & Turning Resistance VFX ('blizzard' snowplow / 'ashstorm' cinder wake)
+    const wakeRig = this.traversalWakeRig;
+    const showWake = traversalStrain > 0.015 && gameMode === 'playing';
+    wakeRig.group.visible = showWake;
+    if (showWake) {
+      this.applyTerrainPose(wakeRig.group, snake.head, 0.02);
+      const primaryHex = isAshTraversal ? 0xfb923c : 0xdbeafe;
+      const secondaryHex = isAshTraversal ? 0xfacc15 : 0x38bdf8;
+      const moteHex = isAshTraversal ? 0xfdba74 : 0xe0f2fe;
+      const moteEmissiveHex = isAshTraversal ? 0xea580c : 0x0284c7;
+
+      wakeRig.primaryMat.color.setHex(primaryHex);
+      wakeRig.secondaryMat.color.setHex(secondaryHex);
+      wakeRig.moteMat.color.setHex(moteHex);
+      wakeRig.moteMat.emissive.setHex(moteEmissiveHex);
+
+      const speedFactor = Math.max(0.45, Math.min(1.4, snake.speedRatio));
+      const turnEffort = Math.abs(steerNorm);
+      wakeRig.primaryMat.opacity = Math.min(0.82, traversalStrain * (0.44 + speedFactor * 0.22 + turnEffort * 0.16));
+      wakeRig.secondaryMat.opacity = Math.min(0.74, traversalStrain * (0.34 + turnEffort * 0.28));
+      wakeRig.moteMat.opacity = Math.min(0.92, traversalStrain * 0.88);
+
+      // Forward snowplow / ash-drift crescent bow wave pulses and banks with steering
+      const bowScale = (0.82 + speedFactor * 0.28 + Math.sin(t * 9.0) * 0.06) * (0.75 + traversalStrain * 0.35);
+      wakeRig.bowWaveMesh.scale.set(bowScale + turnEffort * 0.18, bowScale, 1 + traversalStrain * 0.4);
+      wakeRig.bowWaveMesh.rotation.z = Math.PI * 0.025 - steerNorm * 0.32;
+
+      // Asymmetric flank V-wake ribbons: turning left (steerNorm > 0) flares the outside right wake & vice versa!
+      const leftFlare = 1 + Math.max(0, -steerNorm) * 0.85 + turnEffort * 0.2;
+      const rightFlare = 1 + Math.max(0, steerNorm) * 0.85 + turnEffort * 0.2;
+      wakeRig.leftWakeMesh.scale.set(leftFlare, 1, 0.78 + speedFactor * 0.34);
+      wakeRig.rightWakeMesh.scale.set(rightFlare, 1, 0.78 + speedFactor * 0.34);
+      wakeRig.leftWakeMesh.rotation.y = -0.34 - Math.max(0, -steerNorm) * 0.26;
+      wakeRig.rightWakeMesh.rotation.y = 0.34 + Math.max(0, steerNorm) * 0.26;
+
+      // Swirling ground traction eddy ring
+      wakeRig.eddyRingMesh.rotation.z = t * (2.6 + turnEffort * 3.2) * (steerNorm >= 0 ? 1 : -1);
+      const eddyScale = 0.88 + traversalStrain * 0.32 + Math.sin(t * 7.5) * 0.07;
+      wakeRig.eddyRingMesh.scale.setScalar(eddyScale);
+
+      // 8 faceted drift motes streaming backward from the bow wave along both flanks
+      const moteCount = wakeRig.driftMotes.length;
+      for (let i = 0; i < moteCount; i++) {
+        const mote = wakeRig.driftMotes[i];
+        const side = i % 2 === 0 ? 1 : -1;
+        const phase = (t * (1.85 + speedFactor * 0.95) + i / moteCount) % 1;
+        const zPos = 0.58 - phase * 2.45;
+        const sideBoost = side * steerNorm < 0 ? 1.35 : 0.85;
+        const xPos =
+          side * (0.42 + phase * 0.92 * sideBoost) - steerNorm * phase * 0.48;
+        const yPos = 0.12 + Math.sin(phase * Math.PI) * (0.46 + turnEffort * 0.28);
+        mote.position.set(xPos, yPos, zPos);
+        mote.rotation.set(t * 5.2 + i, t * 6.4 - i, t * 4.1);
+        const s = Math.sin(phase * Math.PI) * (0.75 + traversalStrain * 0.55);
+        mote.scale.setScalar(Math.max(0.01, s));
+      }
     }
 
     // Articulated Evolution & Ascended Human Rig (Lv 5+ forelimbs/wings -> Lv 8+ Naga -> Lv 11-12 Full Human!)
@@ -2420,8 +4003,9 @@ export class WorldEngine {
       _basisMat.makeBasis(_right, _up, _fwd);
       rig.group.quaternion.setFromRotationMatrix(_basisMat);
 
-      // Advance running gait phase proportional to speed
-      this.gaitPhase += dt * (4.2 + snake.speedRatio * 4.8);
+      // Advance running gait phase proportional to speed (slightly heavier cadence against blizzard/ashstorm drag)
+      const gaitDrag = 1 - traversalStrain * 0.14;
+      this.gaitPhase += dt * (4.2 + snake.speedRatio * 4.8) * gaitDrag;
       const stride = Math.sin(this.gaitPhase);
 
       // Scale whole human rig cleanly (1.05 height at Ascended Human so mountains still feel monumental!)
@@ -2442,14 +4026,61 @@ export class WorldEngine {
         rig.upperBody.position.y = 0.22 + stage.nagaTorsoBlend * 0.16;
       }
 
-      // Forelimbs / Arms animate smoothly
+      // Spring-damped hand cannon recoil, mechanical blowback slide & muzzle flash simulation
+      const recoilAccel = -165 * this.gunRecoil - 19 * this.gunRecoilVel;
+      this.gunRecoilVel += recoilAccel * dt;
+      this.gunRecoil = Math.max(-0.18, this.gunRecoil + this.gunRecoilVel * dt);
+      if (Math.abs(this.gunRecoil) < 0.002 && Math.abs(this.gunRecoilVel) < 0.01) {
+        this.gunRecoil = 0;
+        this.gunRecoilVel = 0;
+      }
+      this.gunSlideKick = THREE.MathUtils.damp(this.gunSlideKick, 0, 26, dt);
+      this.gunFlashTimer = Math.max(0, this.gunFlashTimer - dt);
+
+      // Forelimbs / Arms + Half-Human Mounted Hand Cannon (Lv 8+)
       const armScale = Math.max(0.01, stage.nagaTorsoBlend);
       rig.leftArmPivot.scale.setScalar(armScale);
       rig.rightArmPivot.scale.setScalar(armScale);
       rig.leftArmPivot.rotation.x = -stride * 0.58;
-      rig.rightArmPivot.rotation.x = stride * 0.58;
       rig.leftArmPivot.rotation.z = 0.14 + Math.sin(t * 2.5) * 0.04;
-      rig.rightArmPivot.rotation.z = -0.14 - Math.sin(t * 2.5) * 0.04;
+
+      const showGun = evolutionLevel >= 8;
+      rig.gunGroup.visible = showGun;
+      if (showGun) {
+        // Right arm locks into forward firing stance with vertical recoil flip & wrist kickback
+        const kick = Math.max(0, this.gunRecoil);
+        rig.rightArmPivot.rotation.x = -Math.PI * 0.46 + stride * 0.07 - kick * 0.56;
+        rig.rightArmPivot.rotation.z = -0.07 - kick * 0.09;
+        rig.rightArmPivot.rotation.y = -0.05;
+
+        rig.gunGroup.position.set(0, -0.68 + kick * 0.095, 0.11);
+        rig.gunGroup.rotation.x = Math.PI * 0.46 - kick * 0.28;
+        rig.gunSlide.position.z = -this.gunSlideKick * 0.145;
+
+        // Full upper-body fallback recoil rock on firing + forward headwind lean in blizzard/ashstorm
+        rig.upperBody.rotation.x = traversalStrain * 0.16 - kick * 0.24;
+        rig.upperBody.rotation.z = -steerNorm * traversalStrain * 0.2;
+        rig.upperBody.position.z = -kick * 0.19;
+
+        const flashFrac = this.gunFlashTimer / 0.072;
+        rig.gunMuzzleFlash.visible = flashFrac > 0;
+        if (flashFrac > 0) {
+          rig.gunMuzzleFlash.scale.setScalar(0.72 + flashFrac * 0.68);
+          rig.gunMuzzleLight.intensity = 7.5 * flashFrac;
+        } else {
+          rig.gunMuzzleLight.intensity = 0;
+        }
+        rig.gunCoreMat.emissiveIntensity = 1.25 + kick * 2.8;
+      } else {
+        rig.rightArmPivot.rotation.x = stride * 0.58;
+        rig.rightArmPivot.rotation.z = -0.14 - Math.sin(t * 2.5) * 0.04;
+        rig.rightArmPivot.rotation.y = 0;
+        rig.upperBody.rotation.x = traversalStrain * 0.16;
+        rig.upperBody.rotation.z = -steerNorm * traversalStrain * 0.2;
+        rig.upperBody.position.z = 0;
+        rig.gunMuzzleFlash.visible = false;
+        rig.gunMuzzleLight.intensity = 0;
+      }
 
       // Skin color shifts from emerald-tinted scaled Naga to warm Human skin!
       _color.setHex(stage.humanFaceBlend > 0.65 ? 0xe6b992 : 0x74b898);
@@ -2462,10 +4093,18 @@ export class WorldEngine {
         rig.humanHeadGroup.rotation.y = Math.sin(t * 1.4) * 0.06;
       }
 
-      // Cloak appears on Naga & Human forms and billows back with speed
+      // Cloak appears on Naga & Human forms and billows back with speed + storm gusts
       rig.cloak.visible = stage.nagaTorsoBlend >= 0.8;
       if (rig.cloak.visible) {
-        rig.cloak.rotation.x = 0.18 + snake.speedRatio * 0.28 + Math.sin(t * 7.5) * 0.08;
+        rig.cloak.rotation.x =
+          0.18 +
+          snake.speedRatio * 0.28 +
+          traversalStrain * 0.22 +
+          Math.sin(t * (7.5 + traversalStrain * 5.0)) * (0.08 + traversalStrain * 0.09);
+        rig.cloak.rotation.z =
+          traversalStrain > 0.02
+            ? Math.sin(t * 11.2) * 0.14 * traversalStrain - steerNorm * 0.16 * traversalStrain
+            : 0;
       }
 
       // Drake Wings flap at Lv 6-9
@@ -2606,12 +4245,36 @@ export class WorldEngine {
       const emergeScale = beast.state === 'emerging' ? 0.55 + beast.emergeProgress * 0.45 : 1.0;
       rig.group.scale.setScalar(beast.scale * emergeScale);
 
-      // Articulated gait / wing flap / ghostly hover / emerging rise
+      // Articulated gait / wing flap / ghostly hover / emerging rise + real duel body telegraphs
       const speedNorm = Math.min(1.6, Math.hypot(beast.vx, beast.vz) / Math.max(1, beast.speed));
+      rig.bodyGroup.position.z =
+        beast.state === 'windup'
+          ? -0.34
+          : beast.state === 'lunge'
+            ? 0.42
+            : beast.state === 'stagger'
+              ? -0.28
+              : 0;
+      rig.bodyGroup.rotation.z =
+        beast.state === 'stagger'
+          ? Math.sin(t * 26 + beast.id) * 0.24
+          : beast.state === 'circle'
+            ? beast.flankDir * 0.14
+            : 0;
+      rig.bodyGroup.rotation.x =
+        beast.state === 'windup'
+          ? -0.18
+          : beast.state === 'lunge'
+            ? 0.16
+            : beast.state === 'stagger'
+              ? -0.22
+              : 0;
+
       if (beast.kind === 'eagle') {
         const hoverY = 1.65 + Math.sin(beast.animPhase * 1.4) * 0.32;
-        rig.bodyGroup.position.y = beast.state === 'lunge' ? hoverY - 0.7 : hoverY;
-        const flap = Math.sin(beast.animPhase * 2.8) * (beast.state === 'windup' ? 0.65 : 0.42);
+        rig.bodyGroup.position.y =
+          beast.state === 'lunge' ? hoverY - 0.72 : beast.state === 'stagger' ? hoverY - 0.35 : hoverY;
+        const flap = Math.sin(beast.animPhase * 2.8) * (beast.state === 'windup' ? 0.68 : 0.42);
         if (rig.wings[0]) rig.wings[0].rotation.z = flap;
         if (rig.wings[1]) rig.wings[1].rotation.z = -flap;
       } else if (beast.kind === 'wraith' || beast.kind === 'soul_elder') {
@@ -2621,33 +4284,42 @@ export class WorldEngine {
         for (let l = 0; l < rig.limbs.length; l++) {
           const sign = l % 2 === 0 ? 1 : -1;
           rig.limbs[l].rotation.x =
-            beast.state === 'windup' ? -0.85 : armWave * sign - 0.25;
+            beast.state === 'windup'
+              ? -0.95
+              : beast.state === 'stagger'
+                ? 0.55
+                : armWave * sign - 0.25;
         }
         if (rig.accentObj) {
-          rig.accentObj.rotation.z = t * (beast.state === 'windup' ? 5.2 : 2.1);
+          rig.accentObj.rotation.z = t * (beast.state === 'windup' ? 5.6 : beast.state === 'stagger' ? 0.5 : 2.1);
           rig.accentObj.rotation.y = t * 1.4;
         }
       } else {
         const stride = Math.sin(beast.animPhase * 2.2) * 0.62 * Math.max(0.12, speedNorm);
         for (let l = 0; l < rig.limbs.length; l++) {
           const sign = l % 2 === 0 ? 1 : -1;
-          rig.limbs[l].rotation.x = stride * sign;
+          rig.limbs[l].rotation.x = beast.state === 'stagger' ? -0.32 * sign : stride * sign;
         }
         rig.bodyGroup.position.y =
           beast.state === 'windup'
-            ? 0.1 + Math.sin(t * 28) * 0.06
-            : Math.abs(Math.cos(beast.animPhase * 2.2)) * 0.08 * speedNorm;
+            ? 0.14 + Math.sin(t * 28) * 0.07
+            : beast.state === 'stagger'
+              ? 0.04
+              : Math.abs(Math.cos(beast.animPhase * 2.2)) * 0.08 * speedNorm;
         if (beast.kind === 'guardian' && rig.accentObj) {
-          rig.accentObj.rotation.z = t * (beast.state === 'windup' ? 4.2 : 1.5);
+          rig.accentObj.rotation.z = t * (beast.state === 'windup' ? 4.6 : beast.state === 'stagger' ? 0.4 : 1.5);
         } else if (beast.kind === 'wolf' && rig.accentObj) {
           rig.accentObj.rotation.y = Math.sin(beast.animPhase * 2.6) * 0.35;
         }
       }
 
-      // Hit-flash white/crimson emissive pulse or attack windup / emergence glow
+      // Hit-flash white emissive, posture-break gold stagger, or clear crimson/violet attack windup telegraph
       if (beast.hitFlash > 0) {
         rig.primaryMat.emissive.setHex(0xffffff);
         rig.primaryMat.emissiveIntensity = Math.min(1.4, beast.hitFlash * 5.5);
+      } else if (beast.state === 'stagger') {
+        rig.primaryMat.emissive.setHex(0xfacc15);
+        rig.primaryMat.emissiveIntensity = 0.65 + Math.sin(t * 18) * 0.28;
       } else if (beast.state === 'emerging') {
         rig.primaryMat.emissive.setHex(beast.kind === 'soul_elder' ? 0xd946ef : 0x22e8a8);
         rig.primaryMat.emissiveIntensity = 0.75 + Math.sin(t * 22) * 0.35;
@@ -2657,14 +4329,15 @@ export class WorldEngine {
             ? 0x3ef5b8
             : beast.kind === 'guardian'
               ? 0xc084fc
-              : 0xff5a2a,
+              : 0xff3b2f,
         );
-        rig.primaryMat.emissiveIntensity = 0.55 + Math.sin(t * 26) * 0.35;
+        rig.primaryMat.emissiveIntensity = 0.85 + Math.sin(t * 28) * 0.42;
       } else {
         rig.primaryMat.emissive.setHex(0x000000);
         rig.primaryMat.emissiveIntensity = 0;
       }
-      rig.glowMat.emissiveIntensity = beast.state === 'windup' || beast.state === 'emerging' ? 2.8 : 1.6;
+      rig.glowMat.emissiveIntensity =
+        beast.state === 'windup' || beast.state === 'emerging' || beast.state === 'stagger' ? 3.0 : 1.6;
 
       // Overhead billboarded HP bar when damaged or actively aggroed
       const showHp = beast.hp < beast.maxHp || beast.state !== 'patrol';
@@ -2711,13 +4384,20 @@ export class WorldEngine {
       }
       slot.group.visible = true;
       slot.group.position.set(p.x, p.y, p.z);
-      const styleScale = p.style === 'lotus' ? 2.85 : p.style === 'soul_chain' ? 2.3 : 2.1;
-      slot.group.scale.setScalar(p.radius * styleScale);
-      slot.group.rotation.set(t * 7.5 + p.id, t * 9.4, p.style === 'lotus' ? t * 6.0 : 0);
-      slot.coreMat.color.setHex(p.colorHex);
-      slot.haloMat.color.setHex(
-        p.style === 'lotus' ? 0xffe48f : p.style === 'soul_chain' ? 0x3ef5b8 : p.fromPlayer ? 0xffffff : p.colorHex,
-      );
+      if (p.style === 'bullet') {
+        slot.group.scale.set(p.radius * 0.72, p.radius * 0.72, p.radius * 3.8);
+        slot.group.rotation.set(0, Math.atan2(p.vx, p.vz), 0);
+        slot.coreMat.color.setHex(0xfff3c4);
+        slot.haloMat.color.setHex(p.colorHex);
+      } else {
+        const styleScale = p.style === 'lotus' ? 2.85 : p.style === 'soul_chain' ? 2.3 : 2.1;
+        slot.group.scale.setScalar(p.radius * styleScale);
+        slot.group.rotation.set(t * 7.5 + p.id, t * 9.4, p.style === 'lotus' ? t * 6.0 : 0);
+        slot.coreMat.color.setHex(p.colorHex);
+        slot.haloMat.color.setHex(
+          p.style === 'lotus' ? 0xffe48f : p.style === 'soul_chain' ? 0x3ef5b8 : p.fromPlayer ? 0xffffff : p.colorHex,
+        );
+      }
     }
 
     // 4d. Sync & Animate Expanding Arcane Shockwave Rings
@@ -2846,7 +4526,8 @@ export class WorldEngine {
       }
     }
 
-    // 8b. Update Celebratory Evolution Tier-Up Particle Explosion
+    // 8b. Update Soul Clan Skill 3D Vortex Particles & Celebratory Evolution Explosion
+    this.updateSoulSkillEffect(dt);
     this.updateEvolutionExplosion(dt);
 
     // 9. Smooth Terrain-Aware GTA / Ant Camera + Cascaded Shadow Map Update
@@ -2989,9 +4670,16 @@ export class WorldEngine {
     this.currentLookAt.y = THREE.MathUtils.damp(this.currentLookAt.y, this.cameraLookAt.y, dampLambda + 1.8, dt);
     this.currentLookAt.z = THREE.MathUtils.damp(this.currentLookAt.z, this.cameraLookAt.z, dampLambda + 1.8, dt);
 
-    if (this.shakeIntensity > 0.004) {
-      const sx = (Math.random() - 0.5) * this.shakeIntensity;
-      const sy = (Math.random() - 0.5) * this.shakeIntensity * 0.7;
+    const kickY = this.gunCamKick > 0.002 ? this.gunCamKick * 1.15 : 0;
+    if (this.gunCamKick > 0.002) {
+      this.gunCamKick = THREE.MathUtils.damp(this.gunCamKick, 0, 14, dt);
+    } else {
+      this.gunCamKick = 0;
+    }
+
+    if (this.shakeIntensity > 0.004 || kickY > 0) {
+      const sx = this.shakeIntensity > 0.004 ? (Math.random() - 0.5) * this.shakeIntensity : 0;
+      const sy = (this.shakeIntensity > 0.004 ? (Math.random() - 0.5) * this.shakeIntensity * 0.7 : 0) + kickY;
       _vec3B.copy(this.currentLookAt).add(_vec3A.set(sx, sy, 0));
       this.camera.lookAt(_vec3B);
       this.shakeIntensity = THREE.MathUtils.damp(this.shakeIntensity, 0, 11, dt);
@@ -3052,6 +4740,33 @@ export class WorldEngine {
     }
   }
 
+  private renderFrame(): void {
+    if (this.xrActive) {
+      this.renderer.autoClear = true;
+      this.renderer.render(this.scene, this.camera);
+      return;
+    }
+    this.renderer.autoClear = false;
+    this.renderer.clear();
+    this.renderer.render(this.scene, this.camera);
+    this.renderer.clearDepth();
+    this.renderer.render(this.overlayScene, this.overlayCamera);
+
+    // Shader-based Screen Frost Edge-Blur pass (only runs while blizzard frost is visible)
+    const frostIntensity = this.frostOverlayMat.uniforms.uFrostIntensity.value as number;
+    if (frostIntensity > 0.004) {
+      if (!this.isSoftwareGl) {
+        const sceneTex = this.ensureFrostFrameTexture();
+        this.renderer.copyFramebufferToTexture(sceneTex);
+        this.frostOverlayMat.uniforms.tScene.value = sceneTex;
+        this.frostOverlayMat.uniforms.uHasSceneTex.value = 1.0;
+      } else {
+        this.frostOverlayMat.uniforms.uHasSceneTex.value = 0.0;
+      }
+      this.renderer.render(this.frostOverlayScene, this.overlayCamera);
+    }
+  }
+
   private tickHardware = (): void => {
     if (!this.running) return;
     const now = performance.now();
@@ -3060,7 +4775,7 @@ export class WorldEngine {
     const dt = Math.min(Math.max(rawDt, 0.001), 0.05);
 
     this.onFrameCallback?.(dt);
-    this.renderer.render(this.scene, this.camera);
+    this.renderFrame();
   };
 
   private afterDraw(cb: () => void): void {
@@ -3095,17 +4810,23 @@ export class WorldEngine {
     const dt = Math.min(Math.max(rawDt, 0.001), 0.05);
 
     this.onFrameCallback?.(dt);
-    this.renderer.render(this.scene, this.camera);
+    this.renderFrame();
     this.afterDraw(this.tickSoftware);
   };
 
   private handleResize = (): void => {
     const w = this.container.clientWidth || window.innerWidth;
-    const h = this.container.clientHeight || window.innerHeight;
+    const h = Math.max(1, this.container.clientHeight || window.innerHeight);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(w, h);
     this.renderer.setPixelRatio(this.isSoftwareGl ? 1 : Math.min(window.devicePixelRatio, 2));
+    if (this.weatherOverlayMat) {
+      this.weatherOverlayMat.uniforms.uAspect.value = w / h;
+    }
+    if (this.frostOverlayMat) {
+      this.frostOverlayMat.uniforms.uAspect.value = w / h;
+    }
     this.csm?.updateFrustums();
   };
 
@@ -3140,6 +4861,40 @@ export class WorldEngine {
     }
   }
 
+  /**
+   * Projects a 3D world point directly above the serpent's head or half-human crown
+   * into viewport pixel coordinates so floating combat taunt bubbles track the player in 3D.
+   */
+  public getSerpentBubbleScreenPosition(
+    evolutionLevel = this.activeEvolutionLevel,
+  ): { x: number; y: number; visible: boolean } {
+    const heightOffset = evolutionLevel >= 10 ? 2.55 : evolutionLevel >= 8 ? 2.2 : 1.65;
+    _vec3A.set(
+      this.lastSnakeHeadPos.x,
+      this.lastSnakeHeadPos.y + heightOffset,
+      this.lastSnakeHeadPos.z,
+    );
+    _vec3A.project(this.camera);
+
+    const width = this.container.clientWidth || window.innerWidth || 1280;
+    const height = this.container.clientHeight || window.innerHeight || 720;
+
+    // Behind camera frustum check
+    if (_vec3A.z > 1.0 || _vec3A.z < -1.0) {
+      return { x: width * 0.5, y: height * 0.38, visible: false };
+    }
+
+    const rawX = (_vec3A.x * 0.5 + 0.5) * width;
+    const rawY = (-_vec3A.y * 0.5 + 0.5) * height;
+    const padX = Math.min(180, width * 0.2);
+    const padTop = 76;
+    const padBottom = 110;
+
+    const x = Math.max(padX, Math.min(width - padX, rawX));
+    const y = Math.max(padTop, Math.min(height - padBottom, rawY));
+    return { x, y, visible: true };
+  }
+
   public dispose(): void {
     this.running = false;
     this.renderer.setAnimationLoop(null);
@@ -3169,6 +4924,17 @@ export class WorldEngine {
     this.rainMat?.dispose();
     this.splashInstanced?.geometry.dispose();
     this.splashMat?.dispose();
+    this.climateParticles?.geometry.dispose();
+    this.climateParticleMat?.dispose();
+    this.weatherOverlayMesh?.geometry.dispose();
+    this.weatherOverlayMat?.dispose();
+    this.frostOverlayMesh?.geometry.dispose();
+    this.frostOverlayMat?.dispose();
+    this.frostFrameTexture?.dispose();
+    this.soulVortexPoints?.geometry.dispose();
+    this.soulVortexMat?.dispose();
+    this.soulVortexRingMesh?.geometry.dispose();
+    this.soulVortexRingMat?.dispose();
     this.renderer.dispose();
   }
 }

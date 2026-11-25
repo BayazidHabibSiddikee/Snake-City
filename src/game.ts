@@ -1,5 +1,13 @@
 import { SoundEngine } from './audio';
 import {
+  ComplimentEventKind,
+  ComplimentNotice,
+  FloatingTauntNotice,
+  SerpentComplimentOracle,
+  SerpentTauntOracle,
+  TauntMoment,
+} from './compliments';
+import {
   BESTIARY_CATALOG,
   BestiarySnapshot,
   buildBestiarySnapshot,
@@ -17,8 +25,10 @@ import {
   MAX_EVOLUTION_LEVEL,
   MilestoneKind,
   clearJourneyProgress,
+  computeAutonomousDifficulty,
   computeEvolutionLevel,
   computeHumanityMetrics,
+  computeScaledEnemyStats,
   createEmptyLifetimeStats,
   getLevelEnvironment,
   getMagicTierForLevel,
@@ -50,6 +60,7 @@ import {
 } from './terrain';
 import {
   BeastKind,
+  BeastState,
   BestiaryEntryId,
   BestiaryRecord,
   BiomeId,
@@ -87,31 +98,291 @@ interface PathSample {
   cumDist: number;
 }
 
-const SPEED_CONFIG: Record<
-  SpeedPreset,
-  { baseSpeed: number; turnRate: number; boulderCount: number; grazeThreshold: number; climate: WeatherMode }
-> = {
-  chill: { baseSpeed: 5.8, turnRate: 2.38, boulderCount: 10, grazeThreshold: 0.72, climate: 'clear' },
-  classic: { baseSpeed: 7.6, turnRate: 2.68, boulderCount: 14, grazeThreshold: 0.56, climate: 'mist' },
-  turbo: { baseSpeed: 10.2, turnRate: 2.98, boulderCount: 18, grazeThreshold: 0.42, climate: 'rain' },
+export const FIXED_ENEMY_HP = 200;
+
+export const WEATHER_ORDER: WeatherMode[] = [
+  'clear',
+  'mist',
+  'fog',
+  'rain',
+  'storm',
+  'blizzard',
+  'ashstorm',
+];
+
+export const WEATHER_LABELS: Record<WeatherMode, string> = {
+  clear: 'Clear Mountain Skies',
+  mist: 'Chilling Mountain Mist',
+  fog: 'Suffocating Valley Fog',
+  rain: 'Driving Mountain Rain',
+  storm: 'Thunder Tempest',
+  blizzard: 'Whiteout Blizzard',
+  ashstorm: 'Volcanic Ash Storm',
 };
 
-const CLIMATE_EFFECTS: Record<
+export const SPEED_CONFIG: Record<
+  SpeedPreset,
+  {
+    baseSpeed: number;
+    turnRate: number;
+    boulderCount: number;
+    grazeThreshold: number;
+    climate: WeatherMode;
+    shiftMinSec: number;
+    shiftMaxSec: number;
+  }
+> = {
+  chill: {
+    baseSpeed: 3.7,
+    turnRate: 1.72,
+    boulderCount: 9,
+    grazeThreshold: 0.72,
+    climate: 'mist',
+    shiftMinSec: 36,
+    shiftMaxSec: 50,
+  },
+  classic: {
+    baseSpeed: 4.5,
+    turnRate: 1.88,
+    boulderCount: 12,
+    grazeThreshold: 0.56,
+    climate: 'rain',
+    shiftMinSec: 26,
+    shiftMaxSec: 38,
+  },
+  turbo: {
+    baseSpeed: 5.4,
+    turnRate: 2.02,
+    boulderCount: 15,
+    grazeThreshold: 0.42,
+    climate: 'storm',
+    shiftMinSec: 20,
+    shiftMaxSec: 32,
+  },
+};
+
+export const CLIMATE_EFFECTS: Record<
   WeatherMode,
   { speedMult: number; hpDrainPerSec: number; realmDrainMult: number }
 > = {
   clear: { speedMult: 1.04, hpDrainPerSec: 0, realmDrainMult: 0.85 },
-  mist: { speedMult: 0.97, hpDrainPerSec: 0, realmDrainMult: 1.0 },
-  fog: { speedMult: 0.9, hpDrainPerSec: 0.45, realmDrainMult: 1.15 },
-  rain: { speedMult: 0.93, hpDrainPerSec: 0.85, realmDrainMult: 1.25 },
+  mist: { speedMult: 0.96, hpDrainPerSec: 0.3, realmDrainMult: 1.05 },
+  fog: { speedMult: 0.87, hpDrainPerSec: 1.0, realmDrainMult: 1.25 },
+  rain: { speedMult: 0.85, hpDrainPerSec: 1.6, realmDrainMult: 1.38 },
+  storm: { speedMult: 0.79, hpDrainPerSec: 2.5, realmDrainMult: 1.55 },
+  blizzard: { speedMult: 0.73, hpDrainPerSec: 3.3, realmDrainMult: 1.72 },
+  ashstorm: { speedMult: 0.77, hpDrainPerSec: 4.1, realmDrainMult: 1.88 },
 };
+
+export interface ClimateTraversalModifier {
+  weather: WeatherMode;
+  isDifficultTraversal: boolean;
+  speedDragMult: number;
+  turnAgilityMult: number;
+  steerInertiaMult: number;
+  traversalStrain01: number;
+  wakeColorHex: number;
+  accentColorHex: number;
+}
+
+/**
+ * Pure traversal modifier for extreme climates ('blizzard' & 'ashstorm').
+ * Adjusts movement speed and turning agility slightly to simulate deep snowdrift
+ * or volcanic ash-mire resistance, while driving the 3D traversal wake VFX.
+ */
+export function computeClimateTraversalModifier(
+  weather: WeatherMode,
+  isSheltered = false,
+): ClimateTraversalModifier {
+  if (weather === 'blizzard') {
+    return {
+      weather,
+      isDifficultTraversal: true,
+      speedDragMult: isSheltered ? 0.97 : 0.91,
+      turnAgilityMult: isSheltered ? 0.94 : 0.82,
+      steerInertiaMult: isSheltered ? 0.88 : 0.68,
+      traversalStrain01: isSheltered ? 0.26 : 0.9,
+      wakeColorHex: 0xbae6fd,
+      accentColorHex: 0x38bdf8,
+    };
+  }
+  if (weather === 'ashstorm') {
+    return {
+      weather,
+      isDifficultTraversal: true,
+      speedDragMult: isSheltered ? 0.97 : 0.92,
+      turnAgilityMult: isSheltered ? 0.95 : 0.85,
+      steerInertiaMult: isSheltered ? 0.9 : 0.72,
+      traversalStrain01: isSheltered ? 0.24 : 0.85,
+      wakeColorHex: 0xfb923c,
+      accentColorHex: 0xfacc15,
+    };
+  }
+  return {
+    weather,
+    isDifficultTraversal: false,
+    speedDragMult: 1.0,
+    turnAgilityMult: 1.0,
+    steerInertiaMult: 1.0,
+    traversalStrain01: 0,
+    wakeColorHex: 0xffffff,
+    accentColorHex: 0xffffff,
+  };
+}
+
+export type ClimateLogSeverity = 'calm' | 'caution' | 'harsh' | 'extreme';
+
+export interface ClimateLogNotice {
+  weather: WeatherMode;
+  label: string;
+  message: string;
+  effectNote: string;
+  severity: ClimateLogSeverity;
+}
+
+export const CLIMATE_LOG_MESSAGES: Record<WeatherMode, readonly string[]> = {
+  clear: [
+    'The storm clouds part, revealing crisp alpine light across the peaks.',
+    'Warm mountain currents steady the ridge and clear the skies.',
+    'Sunlight breaks through the canopy as the highland air settles.',
+  ],
+  mist: [
+    'Cool highland mist drifts down from the crags, dampening the trail.',
+    'Pale ribbons of mountain vapor coil silently around the slopes.',
+    'A quiet chill gathers as drifting mist blankets the valley ridges.',
+  ],
+  fog: [
+    'Dense valley fog closes in, swallowing the distant ridges.',
+    'A suffocating wall of gray mist settles heavily over the paths.',
+    'Visibility fades as thick mountain fog rolls across the highlands.',
+  ],
+  rain: [
+    'Dark clouds break overhead as driving mountain rain lashes the slopes.',
+    'Cold downpours sweep the crags, turning every ridge slick underfoot.',
+    'Steady rain hammers the canopy and chills the surrounding air.',
+  ],
+  storm: [
+    'Thunder fractures the upper peaks as a violent tempest descends.',
+    'Lightning forks above the ridge while gale winds tear across the pass.',
+    'The sky blackens and roaring storm squalls engulf the mountain.',
+  ],
+  blizzard: [
+    'The air grows heavy with impending frost...',
+    'Biting glacial gales surge across the peaks in a blinding whiteout.',
+    'Ice needles whip through the pass as bitter frost creeps inward.',
+  ],
+  ashstorm: [
+    'Scorching embers drift down as a volcanic ash storm engulfs the range.',
+    'The horizon burns crimson beneath choking waves of cinders and soot.',
+    'Superheated ash sweeps across the highlands, searing every breath.',
+  ],
+};
+
+export function createClimateLogNotice(
+  weather: WeatherMode,
+  variantIndex = 0,
+): ClimateLogNotice {
+  const lines = CLIMATE_LOG_MESSAGES[weather];
+  const safeIdx = ((Math.floor(variantIndex) % lines.length) + lines.length) % lines.length;
+  const effect = CLIMATE_EFFECTS[weather];
+  const pacePct = Math.round(effect.speedMult * 100);
+  const effectNote =
+    effect.hpDrainPerSec > 0
+      ? `-${effect.hpDrainPerSec.toFixed(1)} HP/s · ${pacePct}% pace`
+      : `Safe Climate · ${pacePct}% pace`;
+  const severity: ClimateLogSeverity =
+    weather === 'blizzard' || weather === 'ashstorm'
+      ? 'extreme'
+      : weather === 'rain' || weather === 'storm'
+        ? 'harsh'
+        : weather === 'mist' || weather === 'fog'
+          ? 'caution'
+          : 'calm';
+
+  return {
+    weather,
+    label: WEATHER_LABELS[weather],
+    message: lines[safeIdx],
+    effectNote,
+    severity,
+  };
+}
+
+export interface CombatStrikeResolution {
+  damage: number;
+  triggeredParry: boolean;
+  triggeredStaggerBonus: boolean;
+}
+
+/**
+ * Pure tactical duel resolver: interrupting an enemy's windup or lunge with a
+ * melee/shockwave/dash strike triggers a Counter-Parry Clash (1.55x dmg + stagger),
+ * while striking an already staggered enemy deals 1.5x posture-break damage.
+ */
+export function resolveCombatStrike(
+  baseDamage: number,
+  enemyState: BeastState,
+  canCounterParry: boolean,
+): CombatStrikeResolution {
+  if (canCounterParry && (enemyState === 'windup' || enemyState === 'lunge')) {
+    return {
+      damage: Math.round(baseDamage * 1.55),
+      triggeredParry: true,
+      triggeredStaggerBonus: false,
+    };
+  }
+  if (enemyState === 'stagger') {
+    return {
+      damage: Math.round(baseDamage * 1.5),
+      triggeredParry: false,
+      triggeredStaggerBonus: true,
+    };
+  }
+  return {
+    damage: Math.round(baseDamage),
+    triggeredParry: false,
+    triggeredStaggerBonus: false,
+  };
+}
+
+export interface GunRecoilPhysics {
+  fallbackVel: number;
+  speedDrop: number;
+  visualStrength: number;
+  bulletSpeedMult: number;
+  knockbackForce: number;
+}
+
+/**
+ * Half-human stages (Level 8 Naga Initiate through Level 12 Ascended Human)
+ * wield the runic hand cannon in the right hand.
+ */
+export function hasHalfHumanGun(level: number): boolean {
+  return level >= 8;
+}
+
+/**
+ * Pure recoil & ballistic scaling for the half-human hand cannon.
+ * Produces real physical backward fallback velocity, forward momentum check,
+ * animation/camera kick intensity, and enemy stopping knockback.
+ */
+export function computeGunRecoilPhysics(level: number): GunRecoilPhysics {
+  const tier = Math.max(0, Math.min(4, Math.floor(level) - 8));
+  return {
+    fallbackVel: Number((7.6 + tier * 0.65).toFixed(2)),
+    speedDrop: Number((2.2 + tier * 0.25).toFixed(2)),
+    visualStrength: Number((0.95 + tier * 0.08).toFixed(2)),
+    bulletSpeedMult: Number((1.48 + tier * 0.06).toFixed(2)),
+    knockbackForce: Number((7.6 + tier * 0.75).toFixed(2)),
+  };
+}
 
 const SEGMENT_SPACING = 0.72;
 const INITIAL_LENGTH = 8;
 const MAX_LENGTH = 115;
 const TARGET_ORBS = 36;
 const GOLDEN_ORB_COUNT = 12;
-const COMBO_WINDOW = 8.5;
+const COMBO_WINDOW = 9.5;
 const OBSTACLE_CELL = 12;
 
 export class SnakeGameController {
@@ -122,6 +393,22 @@ export class SnakeGameController {
   private onMinimapUpdate: (snapshot: MinimapSnapshot) => void;
   private onToast: (msg: string) => void;
   private onLevelUp?: (summary: EvolutionUnlockSummary) => void;
+  private onClimateNotice?: (notice: ClimateLogNotice) => void;
+  private onCompliment?: (notice: ComplimentNotice) => void;
+  private onCombatTaunt?: (notice: FloatingTauntNotice) => void;
+  private onTauntAnchorUpdate?: (pos: { x: number; y: number; visible: boolean }) => void;
+  private climateMessageSeq: Partial<Record<WeatherMode, number>> = {};
+  private readonly complimentOracle = new SerpentComplimentOracle();
+  private readonly tauntOracle = new SerpentTauntOracle();
+  private complimentTimer = 14;
+  private combatTauntCooldown = 0;
+  private lastTauntedBeastId: number | null = null;
+  private currentSteerRate = 0;
+  private currentTraversalStrain = 0;
+  private traversalWakeAccum = 0;
+  private recoilVelX = 0;
+  private recoilVelZ = 0;
+  private hitstopTimer = 0;
 
   private mode: GameMode = 'title';
   private cameraMode: CameraMode = 'ant';
@@ -199,6 +486,7 @@ export class SnakeGameController {
   // Harsh environment & Vice-City Soul Clan Ambush state
   private isSheltered = false;
   private currentEnvDrainPerSec = 0;
+  private weatherShiftTimer = 24;
   private clanHeatValue = 0; // 0..100 -> 0..5 Skulls
   private ghostAmbushTimer = 11;
   private ambushBannerTimer = 0;
@@ -242,11 +530,19 @@ export class SnakeGameController {
     onMinimapUpdate: (snapshot: MinimapSnapshot) => void,
     onToast: (msg: string) => void,
     onLevelUp?: (summary: EvolutionUnlockSummary) => void,
+    onClimateNotice?: (notice: ClimateLogNotice) => void,
+    onCompliment?: (notice: ComplimentNotice) => void,
+    onCombatTaunt?: (notice: FloatingTauntNotice) => void,
+    onTauntAnchorUpdate?: (pos: { x: number; y: number; visible: boolean }) => void,
   ) {
     this.onHudUpdate = onHudUpdate;
     this.onMinimapUpdate = onMinimapUpdate;
     this.onToast = onToast;
     this.onLevelUp = onLevelUp;
+    this.onClimateNotice = onClimateNotice;
+    this.onCompliment = onCompliment;
+    this.onCombatTaunt = onCombatTaunt;
+    this.onTauntAnchorUpdate = onTauntAnchorUpdate;
 
     this.sound = new SoundEngine();
     this.world = new WorldEngine(container);
@@ -274,10 +570,12 @@ export class SnakeGameController {
     this.milestones = saved.milestones;
     this.bestiaryRecords = saved.bestiary ? { ...saved.bestiary } : {};
     this.ensureOriginMilestone();
+    this.syncAutonomousDifficulty();
 
     this.applyFormationToWorld(true);
     this.world.setWeather(this.weather);
     this.sound.setWeather(this.weather);
+    this.sound.setWeatherAudioCueListener((cue) => this.world.triggerWeatherAudioCue(cue));
     this.sound.setEvolutionTier(this.level, false);
     this.resetRunState(false);
 
@@ -381,46 +679,116 @@ export class SnakeGameController {
     this.emitHud();
   }
 
-  public setSpeedPreset(preset: SpeedPreset): void {
-    this.speedPreset = preset;
-    const targetWeather = SPEED_CONFIG[preset].climate;
-    if (this.weather !== targetWeather) {
-      this.weather = targetWeather;
-      this.world.setWeather(targetWeather);
-      this.sound.setWeather(targetWeather);
-    }
-    this.spawnRollingBoulders();
-    this.spawnInitialBeasts();
-    this.sound.playClick();
-    this.emitHud();
+  private syncAutonomousDifficulty(): void {
+    this.speedPreset = computeAutonomousDifficulty(this.level);
   }
 
   public getWeather(): WeatherMode {
     return this.weather;
   }
 
-  public setWeather(weather: WeatherMode): void {
-    if (this.weather === weather) return;
-    this.weather = weather;
-    this.world.setWeather(weather);
-    this.sound.setWeather(weather);
-    this.sound.playClick();
-    const labels: Record<WeatherMode, string> = {
-      clear: 'Clear Mountain Skies',
-      mist: 'Light Mountain Mist',
-      fog: 'Dense Valley Fog',
-      rain: 'Occasional Light Rain',
-    };
-    this.onToast(`Weather: ${labels[weather]}`);
+  private rollNextShiftDelay(): number {
+    const cfg = SPEED_CONFIG[this.speedPreset];
+    return cfg.shiftMinSec + Math.random() * (cfg.shiftMaxSec - cfg.shiftMinSec);
+  }
+
+  private pickNextDynamicWeather(): WeatherMode {
+    // Weighted toward harsh/severe climates based on difficulty & progression,
+    // guaranteed to pick a different climate every time.
+    const pool: WeatherMode[] =
+      this.speedPreset === 'chill'
+        ? ['mist', 'fog', 'rain', 'storm', 'blizzard', 'clear']
+        : this.speedPreset === 'turbo'
+          ? ['rain', 'storm', 'blizzard', 'ashstorm', 'storm', 'blizzard', 'ashstorm', 'fog']
+          : ['fog', 'rain', 'storm', 'blizzard', 'ashstorm', 'mist', 'storm', 'blizzard'];
+    const candidates = pool.filter((w) => w !== this.weather);
+    return candidates[Math.floor(Math.random() * candidates.length)] ?? 'storm';
+  }
+
+  private shiftClimateDynamically(announce: boolean): void {
+    const next = this.pickNextDynamicWeather();
+    this.weather = next;
+    this.world.setWeather(next);
+    this.sound.setWeather(next);
+    this.weatherShiftTimer = this.rollNextShiftDelay();
+    if (announce) {
+      const seq = this.climateMessageSeq[next] ?? 0;
+      this.climateMessageSeq[next] = seq + 1;
+      const notice = createClimateLogNotice(next, seq);
+      if (this.onClimateNotice) {
+        this.onClimateNotice(notice);
+      } else {
+        this.onToast(`${notice.label} — ${notice.message}`);
+      }
+      if (this.mode === 'playing' && (next === 'storm' || next === 'blizzard' || next === 'ashstorm')) {
+        this.triggerCompliment('climate_endured', 'normal');
+      }
+    }
     this.emitHud();
   }
 
-  public cycleWeather(): WeatherMode {
-    const order: WeatherMode[] = ['clear', 'mist', 'fog', 'rain'];
-    const idx = order.indexOf(this.weather);
-    const next = order[(idx + 1) % order.length];
-    this.setWeather(next);
-    return next;
+  private triggerCompliment(
+    event: ComplimentEventKind,
+    priority: 'normal' | 'high' = 'normal',
+    enemyName?: string,
+  ): void {
+    if (!this.onCompliment) return;
+    if (this.mode !== 'playing' && event !== 'evolution') return;
+    const stage = getStageForLevel(this.level);
+    const magic = getMagicTierForLevel(this.level);
+    void this.complimentOracle
+      .requestCompliment(
+        {
+          event,
+          stageTitle: stage.title,
+          level: this.level,
+          realmName: magic.realmName,
+          weather: this.weather,
+          enemyName,
+          combo: this.combo,
+          peaksVisited: this.visitedLandmarks.size,
+        },
+        priority,
+      )
+      .then((notice) => {
+        if (notice && (this.mode === 'playing' || this.mode === 'paused' || event === 'evolution')) {
+          this.onCompliment?.(notice);
+        }
+      });
+  }
+
+  private triggerCombatTaunt(
+    beast: WildBeast,
+    moment: TauntMoment,
+    priority: 'normal' | 'high' = 'normal',
+  ): void {
+    if (!this.onCombatTaunt) return;
+    if (this.mode !== 'playing') return;
+    const stage = getStageForLevel(this.level);
+    const magic = getMagicTierForLevel(this.level);
+    this.lastTauntedBeastId = beast.id;
+    this.combatTauntCooldown = priority === 'high' ? 4.5 : 8.5;
+    void this.tauntOracle
+      .requestTaunt(
+        {
+          enemyKind: beast.kind,
+          enemyName: beast.name,
+          enemyFaction: beast.faction,
+          isBoss: beast.isBoss,
+          moment,
+          stageTitle: stage.title,
+          level: this.level,
+          realmName: magic.realmName,
+          hasGun: hasHalfHumanGun(this.level),
+          weather: this.weather,
+        },
+        priority,
+      )
+      .then((notice) => {
+        if (notice && this.mode === 'playing') {
+          this.onCombatTaunt?.(notice);
+        }
+      });
   }
 
   public cycleCameraMode(): CameraMode {
@@ -548,6 +916,7 @@ export class SnakeGameController {
     clearJourneyProgress();
     this.xp = 0;
     this.level = 1;
+    this.syncAutonomousDifficulty();
     this.sound.setEvolutionTier(1, false);
     this.visitedLandmarks.clear();
     this.lastCheckpointId = null;
@@ -799,45 +1168,95 @@ export class SnakeGameController {
     }
 
     const count = magic.boltCount;
+    const usingGun = hasHalfHumanGun(this.level);
+    const recoil = usingGun ? computeGunRecoilPhysics(this.level) : null;
     const baseY = this.headY + (this.level >= 10 ? 1.35 : 0.9);
-    const boltStyle = this.level >= 5 ? 'flame' : 'bolt';
+    const muzzlePos = usingGun ? this.world.getGunMuzzleWorldPosition() : null;
+    const boltStyle = usingGun ? 'bullet' : this.level >= 5 ? 'flame' : 'bolt';
+    const shotColor = usingGun ? 0xffc857 : magic.manaColorHex;
+    const shotDamage = usingGun ? Math.round(magic.boltDamage * 1.08) : magic.boltDamage;
+
     for (let i = 0; i < count; i++) {
       const offsetFrac = count === 1 ? 0 : i / (count - 1) - 0.5;
-      const shotAngle = aimHeading + offsetFrac * magic.boltSpreadRad * 2;
+      const spreadScale = usingGun ? magic.boltSpreadRad * 1.15 : magic.boltSpreadRad * 2;
+      const shotAngle = aimHeading + offsetFrac * spreadScale;
       const dx = Math.sin(shotAngle);
       const dz = Math.cos(shotAngle);
+
+      const projSpeed = usingGun && recoil
+        ? magic.boltSpeed * recoil.bulletSpeedMult
+        : magic.boltSpeed * 0.72;
+      const spawnX = muzzlePos
+        ? muzzlePos.x + dx * 0.18
+        : this.headX + dx * 1.15 + (usingGun ? Math.cos(aimHeading) * 0.34 : 0);
+      const spawnY = muzzlePos ? muzzlePos.y : baseY;
+      const spawnZ = muzzlePos
+        ? muzzlePos.z + dz * 0.18
+        : this.headZ + dz * 1.15 - (usingGun ? Math.sin(aimHeading) * 0.34 : 0);
 
       this.projectiles.push({
         id: this.nextProjectileId++,
         fromPlayer: true,
-        x: this.headX + dx * 1.15,
-        y: baseY,
-        z: this.headZ + dz * 1.15,
-        vx: dx * magic.boltSpeed,
+        x: spawnX,
+        y: spawnY,
+        z: spawnZ,
+        vx: dx * projSpeed,
         vy: 0,
-        vz: dz * magic.boltSpeed,
-        radius: 0.42 + (this.level >= 9 ? 0.12 : 0),
-        damage: magic.boltDamage,
-        colorHex: magic.manaColorHex,
-        life: 1.65,
-        maxLife: 1.65,
-        homing: magic.boltHoming,
+        vz: dz * projSpeed,
+        radius: usingGun ? 0.38 : 0.46 + (this.level >= 9 ? 0.12 : 0),
+        damage: shotDamage,
+        colorHex: shotColor,
+        life: usingGun ? 1.75 : 2.1,
+        maxLife: usingGun ? 1.75 : 2.1,
+        homing: usingGun ? false : magic.boltHoming,
         style: boltStyle,
       });
+    }
+
+    // Close-quarters Serpent Fang Strike: striking within melee range bites directly and can parry wind-ups!
+    for (let i = this.beasts.length - 1; i >= 0; i--) {
+      const b = this.beasts[i];
+      if (b.state === 'emerging' && b.emergeProgress < 0.45) continue;
+      const bdx = b.x - this.headX;
+      const bdz = b.z - this.headZ;
+      const bDist = Math.hypot(bdx, bdz);
+      if (bDist <= b.radius + 4.4) {
+        const angToB = Math.atan2(bdx, bdz);
+        const angDiff = Math.abs(((angToB - this.heading + Math.PI * 3) % (Math.PI * 2)) - Math.PI);
+        if (angDiff <= 1.18) {
+          const nx = bDist > 0.01 ? bdx / bDist : Math.sin(this.heading);
+          const nz = bDist > 0.01 ? bdz / bDist : Math.cos(this.heading);
+          this.applyDuelHitToBeast(b, magic.boltDamage * 0.92, nx, nz, b.isBoss ? 4.2 : 7.5, true);
+        }
+      }
     }
 
     if (this.projectiles.length > 52) {
       this.projectiles.splice(0, this.projectiles.length - 52);
     }
 
-    this.sound.playCastSpell(this.level);
-    this.world.spawnBurst(
-      this.headX + Math.sin(this.heading) * 1.1,
-      baseY,
-      this.headZ + Math.cos(this.heading) * 1.1,
-      magic.manaColorHex,
-      8 + Math.min(8, this.level),
-    );
+    if (usingGun && recoil) {
+      // Real physical fallback recoil shoves the half-human character backward opposite the shot
+      const kickDirX = Math.sin(aimHeading);
+      const kickDirZ = Math.cos(aimHeading);
+      this.recoilVelX -= kickDirX * recoil.fallbackVel;
+      this.recoilVelZ -= kickDirZ * recoil.fallbackVel;
+      this.currentSpeed = Math.max(0.45, this.currentSpeed - recoil.speedDrop);
+
+      this.world.triggerGunRecoil(recoil.visualStrength);
+      this.sound.playGunshot(this.level);
+    } else {
+      this.sound.playCastSpell(this.level);
+      const castX = this.headX + Math.sin(this.heading) * 1.1;
+      const castZ = this.headZ + Math.cos(this.heading) * 1.1;
+      this.world.spawnBurst(castX, baseY, castZ, magic.manaColorHex, 8 + Math.min(8, this.level));
+      this.world.triggerSoulSkillEffect(
+        castX,
+        baseY - 0.35,
+        castZ,
+        0.34 + Math.min(0.24, this.level * 0.02),
+      );
+    }
   }
 
   public castShockwave(): void {
@@ -857,14 +1276,14 @@ export class SnakeGameController {
       radius: 0.8,
       maxRadius: magic.shockwaveRadius,
       age: 0,
-      life: 0.52,
+      life: 0.56,
       colorHex: magic.manaColorHex,
     });
     if (this.shockwaves.length > 12) {
       this.shockwaves.shift();
     }
 
-    // Immediate shockwave impact: blast back beasts & ghosts, dispel hostile spells, shatter boulders at Lv 4+
+    // Immediate shockwave impact: clash-parry wind-ups, stagger foes, dispel hostile spells, shatter boulders at Lv 4+
     for (let i = this.beasts.length - 1; i >= 0; i--) {
       const b = this.beasts[i];
       if (b.state === 'emerging' && b.emergeProgress < 0.35) continue;
@@ -874,12 +1293,8 @@ export class SnakeGameController {
       if (dist <= magic.shockwaveRadius + b.radius) {
         const nx = dist > 0.01 ? dx / dist : Math.sin(this.heading);
         const nz = dist > 0.01 ? dz / dist : Math.cos(this.heading);
-        const push = b.isBoss ? 6.2 : 11.0;
-        b.vx = nx * push;
-        b.vz = nz * push;
-        b.state = 'recover';
-        b.stateTimer = 0.85;
-        this.damageBeast(b, magic.shockwaveDamage);
+        const push = b.isBoss ? 5.8 : 10.2;
+        this.applyDuelHitToBeast(b, magic.shockwaveDamage, nx, nz, push, true);
       }
     }
 
@@ -914,6 +1329,7 @@ export class SnakeGameController {
       magic.manaColorHex,
       18 + this.level * 2,
     );
+    this.world.triggerSoulSkillEffect(this.headX, this.headY + 0.6, this.headZ, 0.74);
   }
 
   /**
@@ -933,9 +1349,9 @@ export class SnakeGameController {
     this.qi = Math.max(0, this.qi - magic.dashQiCost);
     this.dashMaxCd = magic.dashCooldown;
     this.dashCd = magic.dashCooldown;
-    this.dashActiveTimer = 0.4;
+    this.dashActiveTimer = 0.48;
     this.dashHitIds.clear();
-    this.invulnTimer = Math.max(this.invulnTimer, 0.5);
+    this.invulnTimer = Math.max(this.invulnTimer, 0.56);
     this.boostPadTimer = Math.max(this.boostPadTimer, 0.55);
 
     this.shockwaves.push({
@@ -961,6 +1377,7 @@ export class SnakeGameController {
       magic.manaColorHex,
       24,
     );
+    this.world.triggerSoulSkillEffect(this.headX, this.headY + 0.7, this.headZ, 0.84);
     this.emitHud();
   }
 
@@ -1070,6 +1487,7 @@ export class SnakeGameController {
     this.world.triggerShake(0.58);
     this.world.spawnBurst(this.headX, this.headY + 1.4, this.headZ, 0xff9f43, 44);
     this.world.spawnBurst(this.headX, this.headY + 1.8, this.headZ, magic.manaColorHex, 32);
+    this.world.triggerSoulSkillEffect(this.headX, this.headY + 0.9, this.headZ, 1.0);
     this.onToast(`${magic.ultimateSkillName}!`);
     this.emitHud();
   }
@@ -1218,12 +1636,19 @@ export class SnakeGameController {
       }
     }
 
+    this.syncAutonomousDifficulty();
     const stage = getStageForLevel(this.level);
     const magic = getMagicTierForLevel(this.level);
     this.headX = spawnX;
     this.headZ = spawnZ;
     this.headY = terrainHeightAt(this.headX, this.headZ, this.formation.biome);
     this.heading = spawnHeading;
+    this.currentSteerRate = 0;
+    this.currentTraversalStrain = 0;
+    this.traversalWakeAccum = 0;
+    this.recoilVelX = 0;
+    this.recoilVelZ = 0;
+    this.hitstopTimer = 0;
     this.currentSpeed = SPEED_CONFIG[this.speedPreset].baseSpeed * stage.speedBonus;
     this.snakeLength = Math.min(MAX_LENGTH, INITIAL_LENGTH + (this.level - 1) * 3);
     this.stamina = 1.0;
@@ -1251,8 +1676,16 @@ export class SnakeGameController {
     this.fissures = [];
     this.isSheltered = false;
     this.currentEnvDrainPerSec = 0;
+    this.weatherShiftTimer = this.rollNextShiftDelay();
+    this.complimentTimer = 18;
+    if (this.mode === 'playing') {
+      // Shift to a fresh climate every run/respawn so every expedition starts under new skies
+      this.shiftClimateDynamically(true);
+      this.complimentOracle.resetSession();
+      this.triggerCompliment('expedition_start', 'high');
+    }
     this.clanHeatValue = Math.min(60, Math.max(0, (this.level - 1) * 7));
-    this.ghostAmbushTimer = 11.5;
+    this.ghostAmbushTimer = 10.0;
     this.ambushBannerTimer = 0;
 
     this.boostPadTimer = 0;
@@ -1458,6 +1891,7 @@ export class SnakeGameController {
 
     const prevLevel = this.level;
     this.level = targetLevel;
+    this.syncAutonomousDifficulty();
     const stage = getStageForLevel(this.level);
     const isHuman = this.level >= MAX_EVOLUTION_LEVEL;
 
@@ -1491,11 +1925,12 @@ export class SnakeGameController {
     this.clanHeatValue = Math.min(100, Math.max(this.clanHeatValue, (this.level - 1) * 8));
     this.invulnTimer = Math.max(this.invulnTimer, 2.4);
 
-    // Sync avalanche intensity for higher tiers
+    // Sync avalanche intensity & rescale active enemies for the new cultivation stage
     const targetBoulders = this.getTargetBoulderCount();
     while (this.rollingBoulders.length < targetBoulders) {
       this.rollingBoulders.push(this.createRollingBoulderInstance());
     }
+    this.rescaleActiveBeastsForStage();
 
     this.sound.playLevelUp(this.level, isHuman);
     this.sound.setEvolutionTier(this.level, true);
@@ -1522,11 +1957,12 @@ export class SnakeGameController {
 
     this.persistJourney();
     const summary = this.getEvolutionSummary(prevLevel, latestMilestoneId);
+    const stageScale = computeScaledEnemyStats(FIXED_ENEMY_HP, this.level, this.speedPreset, false);
 
     this.onToast(
       isHuman
-        ? 'FINAL ASCENSION · TIER 12 ASCENDED HUMAN!'
-        : `EVOLUTION TIER ${this.level} · ${stage.title}!`,
+        ? `FINAL ASCENSION · DOU DI! (${stageScale.tierLabel}: ${stageScale.hpMultiplier.toFixed(1)}x HP · ${stageScale.damageMultiplier.toFixed(1)}x DMG)`
+        : `EVOLUTION TIER ${this.level} · ${stage.title}! (Foes ${stageScale.hpMultiplier.toFixed(1)}x HP · ${stageScale.damageMultiplier.toFixed(1)}x DMG)`,
     );
 
     if (this.onLevelUp) {
@@ -1586,7 +2022,12 @@ export class SnakeGameController {
 
   private tick(dt: number): void {
     if (this.mode === 'playing' && !this.modalFreeze) {
-      this.updatePlaying(dt);
+      let simDt = dt;
+      if (this.hitstopTimer > 0) {
+        this.hitstopTimer = Math.max(0, this.hitstopTimer - dt);
+        simDt = dt * 0.18;
+      }
+      this.updatePlaying(simDt);
     } else if (this.mode === 'title') {
       this.updateTitleAutopilot(dt);
     } else if (
@@ -1621,10 +2062,16 @@ export class SnakeGameController {
     );
 
     const altNorm = Math.max(0, Math.min(1, (this.headY - 2) / 52));
+    this.world.setWeatherContext(altNorm, this.isSheltered);
     this.sound.setAltitudeFactor(altNorm);
     this.sound.setRainIntensity(this.world.getLiveRainIntensity());
+    const lightningStrike = this.world.consumeLightningStrike();
+    if (lightningStrike > 0) {
+      this.sound.playLightningThunder(lightningStrike);
+    }
 
     if (this.mode === 'playing') {
+      this.onTauntAnchorUpdate?.(this.world.getSerpentBubbleScreenPosition(this.level));
       this.hudEmitAccum += dt;
       if (this.hudEmitAccum >= 0.08) {
         this.hudEmitAccum = 0;
@@ -1640,12 +2087,12 @@ export class SnakeGameController {
 
   private updateTitleAutopilot(dt: number): void {
     this.demoPhase += dt;
-    const targetX = Math.sin(this.demoPhase * 0.2) * 38;
-    const targetZ = Math.cos(this.demoPhase * 0.15) * 34 - 16;
+    const targetX = Math.sin(this.demoPhase * 0.14) * 38;
+    const targetZ = Math.cos(this.demoPhase * 0.11) * 34 - 16;
     const desiredHeading = Math.atan2(targetX - this.headX, targetZ - this.headZ);
     const diff = ((desiredHeading - this.heading + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
-    this.heading += Math.max(-1.6 * dt, Math.min(1.6 * dt, diff));
-    this.advanceSnakeAlongTerrain(dt, 6.4);
+    this.heading += Math.max(-1.25 * dt, Math.min(1.25 * dt, diff));
+    this.advanceSnakeAlongTerrain(dt, 4.1);
     this.updateRollingBoulders(dt, false);
     this.updateBeasts(dt, false, false);
   }
@@ -1669,6 +2116,7 @@ export class SnakeGameController {
     if (this.dashCd > 0) this.dashCd = Math.max(0, this.dashCd - dt);
     if (this.ultimateCd > 0) this.ultimateCd = Math.max(0, this.ultimateCd - dt);
     if (this.ambushBannerTimer > 0) this.ambushBannerTimer = Math.max(0, this.ambushBannerTimer - dt);
+    if (this.combatTauntCooldown > 0) this.combatTauntCooldown = Math.max(0, this.combatTauntCooldown - dt);
     if (this.lastEngagedTimer > 0) {
       this.lastEngagedTimer = Math.max(0, this.lastEngagedTimer - dt);
       if (this.lastEngagedTimer === 0) this.lastEngagedBeastId = null;
@@ -1689,6 +2137,12 @@ export class SnakeGameController {
     }
     this.isSheltered = sheltered;
 
+    // Dynamic Climate Shifting — weather continuously shifts into harsher storms during play
+    this.weatherShiftTimer -= dt;
+    if (this.weatherShiftTimer <= 0) {
+      this.shiftClimateDynamically(true);
+    }
+
     // Level-driven Realm Environment + Climate Vitality Drain vs. Shrine Sanctuary / Safe Out-of-Combat Regen
     const env = getLevelEnvironment(this.level);
     const climate = CLIMATE_EFFECTS[this.weather];
@@ -1704,8 +2158,11 @@ export class SnakeGameController {
       if (this.invulnTimer <= 0) {
         this.hp = Math.max(0, this.hp - effectiveDrain * dt);
         if (this.hp <= 0) {
-          const source = env.hpDrainPerSec > 0 ? env.envName : `${this.weather} climate`;
-          this.triggerGameOver(`Vitality drained by the harsh ${source}!`);
+          const source =
+            climate.hpDrainPerSec >= env.hpDrainPerSec
+              ? WEATHER_LABELS[this.weather]
+              : env.envName;
+          this.triggerGameOver(`Vitality drained by the brutal ${source}!`);
           return;
         }
       }
@@ -1733,23 +2190,38 @@ export class SnakeGameController {
       this.ghostAmbushTimer = Math.max(11.5, 25 - heatLvl * 2.5);
     }
 
-    // 1. Smooth 360° analog steering
+    // Continuous Gemini mountain spirit encouragement so the serpent always receives compliments
+    this.complimentTimer -= dt;
+    if (this.complimentTimer <= 0) {
+      this.complimentTimer = 22 + Math.random() * 8;
+      this.triggerCompliment('roaming', 'normal');
+    }
+
+    // 1. Weighted 360° analog steering with realistic serpent turning inertia & blizzard/ashstorm traversal resistance
+    const traversal = computeClimateTraversalModifier(this.weather, this.isSheltered);
+    this.currentTraversalStrain +=
+      (traversal.traversalStrain01 - this.currentTraversalStrain) * (1 - Math.exp(-3.8 * dt));
+
     let steerInput = this.touchSteerAxis;
     if (this.steerLeftHeld) steerInput += 1;
     if (this.steerRightHeld) steerInput -= 1;
     steerInput = Math.max(-1, Math.min(1, steerInput));
-    this.heading += steerInput * cfg.turnRate * dt;
+    const targetSteerRate = steerInput * cfg.turnRate * traversal.turnAgilityMult;
+    const steerLambda = 7.5 * traversal.steerInertiaMult;
+    this.currentSteerRate +=
+      (targetSteerRate - this.currentSteerRate) * (1 - Math.exp(-steerLambda * dt));
+    this.heading += this.currentSteerRate * dt;
 
     // 2. Stamina & boost calculation
     const usingManualBoost = this.boostHeld && this.stamina > 0.04;
     if (usingManualBoost) {
-      this.stamina = Math.max(0, this.stamina - (dt * 0.24) / stage.staminaBonus);
+      this.stamina = Math.max(0, this.stamina - (dt * 0.21) / stage.staminaBonus);
     } else {
-      this.stamina = Math.min(1, this.stamina + dt * 0.19 * stage.staminaBonus);
+      this.stamina = Math.min(1, this.stamina + dt * 0.18 * stage.staminaBonus);
     }
     const boostActive = usingManualBoost || this.boostPadTimer > 0 || this.dashActiveTimer > 0;
 
-    // 3. Mountain slope gravity physics
+    // 3. Realistic mountain slope gravity & momentum physics
     const dirX = Math.sin(this.heading);
     const dirZ = Math.cos(this.heading);
     const hNow = terrainHeightAt(this.headX, this.headZ, this.formation.biome);
@@ -1758,33 +2230,87 @@ export class SnakeGameController {
 
     let slopeMultiplier = 1.0;
     if (slope > 0) {
-      slopeMultiplier = Math.max(boostActive ? 0.85 : 0.65, 1 - slope * (boostActive ? 0.24 : 0.44));
+      slopeMultiplier = Math.max(boostActive ? 0.78 : 0.56, 1 - slope * (boostActive ? 0.30 : 0.52));
     } else {
-      slopeMultiplier = Math.min(1.44, 1 + Math.abs(slope) * 0.42);
+      slopeMultiplier = Math.min(1.28, 1 + Math.abs(slope) * 0.30);
     }
 
-    let targetSpeed = cfg.baseSpeed * stage.speedBonus * slopeMultiplier * climate.speedMult;
+    // Gently compress stage speed bonus so late-game movement still feels grounded & lifelike
+    const groundedStageBonus = 1 + (stage.speedBonus - 1) * 0.55;
+    let targetSpeed =
+      cfg.baseSpeed *
+      groundedStageBonus *
+      slopeMultiplier *
+      climate.speedMult *
+      traversal.speedDragMult;
     if (this.dashActiveTimer > 0) {
-      targetSpeed *= 2.38;
+      targetSpeed *= 1.88;
       this.dashActiveTimer = Math.max(0, this.dashActiveTimer - dt);
       this.dashSparkAccum += dt;
-      if (this.dashSparkAccum >= 0.05) {
+      if (this.dashSparkAccum >= 0.055) {
         this.dashSparkAccum = 0;
         const magic = getMagicTierForLevel(this.level);
         this.world.spawnBurst(this.headX, this.headY + 0.8, this.headZ, magic.manaColorHex, 6);
       }
     } else if (this.boostPadTimer > 0) {
-      targetSpeed *= 1.62;
+      targetSpeed *= 1.44;
     } else if (usingManualBoost) {
-      targetSpeed *= 1.46;
+      targetSpeed *= 1.34;
     } else if (this.brakeHeld) {
-      targetSpeed *= 0.55;
+      targetSpeed *= 0.46;
     }
 
-    this.currentSpeed += (targetSpeed - this.currentSpeed) * (1 - Math.exp(-9.0 * dt));
+    this.currentSpeed += (targetSpeed - this.currentSpeed) * (1 - Math.exp(-4.2 * dt));
 
-    // 4. Advance serpent/human smoothly over 3D mountain terrain & update lifetime stats
+    // Emit ground-churn snow-spray / ash-cinder wake particles during difficult traversal
+    if (traversal.isDifficultTraversal && this.currentTraversalStrain > 0.15) {
+      const turnEffort = Math.min(1, Math.abs(this.currentSteerRate) / Math.max(0.1, cfg.turnRate));
+      this.traversalWakeAccum += dt * (1.0 + turnEffort * 1.65);
+      if (this.traversalWakeAccum >= 0.16) {
+        this.traversalWakeAccum = 0;
+        const rightX = Math.cos(this.heading);
+        const rightZ = -Math.sin(this.heading);
+        const flankSide =
+          Math.abs(this.currentSteerRate) > 0.15
+            ? this.currentSteerRate > 0
+              ? 1
+              : -1
+            : Math.random() < 0.5
+              ? 1
+              : -1;
+        const wakeX = this.headX - dirX * 0.35 + rightX * flankSide * (0.45 + turnEffort * 0.35);
+        const wakeZ = this.headZ - dirZ * 0.35 + rightZ * flankSide * (0.45 + turnEffort * 0.35);
+        const burstColor =
+          Math.random() < 0.65 ? traversal.wakeColorHex : traversal.accentColorHex;
+        this.world.spawnBurst(wakeX, this.headY + 0.22, wakeZ, burstColor, turnEffort > 0.35 ? 4 : 2);
+      }
+    }
+
+    // 4. Advance serpent/human smoothly over 3D mountain terrain & integrate gun fallback recoil
     const stepDist = this.advanceSnakeAlongTerrain(dt, this.currentSpeed);
+    const recoilSpeed = Math.hypot(this.recoilVelX, this.recoilVelZ);
+    if (recoilSpeed > 0.04) {
+      const candX = this.headX + this.recoilVelX * dt;
+      const candZ = this.headZ + this.recoilVelZ * dt;
+      if (
+        isInWorldBounds(candX, candZ) &&
+        !isDeepWater(candX, candZ, this.formation.biome) &&
+        !this.hasObstacleNear(candX, candZ, 0.95)
+      ) {
+        this.headX = candX;
+        this.headZ = candZ;
+        this.headY = terrainHeightAt(this.headX, this.headZ, this.formation.biome);
+      } else {
+        this.recoilVelX *= 0.3;
+        this.recoilVelZ *= 0.3;
+      }
+      const damp = Math.exp(-8.2 * dt);
+      this.recoilVelX *= damp;
+      this.recoilVelZ *= damp;
+    } else {
+      this.recoilVelX = 0;
+      this.recoilVelZ = 0;
+    }
     this.lifetimeStats.timePlayedSeconds += dt;
     this.lifetimeStats.distanceMeters += stepDist * 1.4;
     const altMeters = Math.max(0, Math.round((this.headY - WATER_LEVEL) * 14));
@@ -2001,16 +2527,16 @@ export class SnakeGameController {
 
   private updateRollingBoulders(dt: number, checkCollision: boolean): boolean {
     const biome = this.formation.biome;
-    const levelSpeedBonus = 1 + (this.level - 1) * 0.032;
-    const maxSpd = (this.speedPreset === 'turbo' ? 18.5 : 14.0) * levelSpeedBonus;
+    const levelSpeedBonus = 1 + (this.level - 1) * 0.022;
+    const maxSpd = (this.speedPreset === 'turbo' ? 11.8 : 9.4) * levelSpeedBonus;
 
     for (let i = 0; i < this.rollingBoulders.length; i++) {
       const b = this.rollingBoulders[i];
       b.life -= dt;
 
       const grad = terrainDownhillGradient(b.x, b.z, biome);
-      b.vx += grad.gx * 16.5 * levelSpeedBonus * dt;
-      b.vz += grad.gz * 16.5 * levelSpeedBonus * dt;
+      b.vx += grad.gx * 10.5 * levelSpeedBonus * dt;
+      b.vz += grad.gz * 10.5 * levelSpeedBonus * dt;
 
       const drag = Math.exp(-0.55 * dt);
       b.vx *= drag;
@@ -2054,8 +2580,8 @@ export class SnakeGameController {
   // ==================== WILD MOUNTAIN BEASTS & MAGICAL RESISTANCE ====================
 
   private getTargetBeastCount(): number {
-    const base = this.speedPreset === 'chill' ? 8 : this.speedPreset === 'turbo' ? 12 : 10;
-    return Math.min(14, base + Math.floor((this.level - 1) / 4));
+    const base = this.speedPreset === 'chill' ? 10 : this.speedPreset === 'turbo' ? 15 : 13;
+    return Math.min(18, base + Math.floor((this.level - 1) / 3));
   }
 
   private spawnInitialBeasts(): void {
@@ -2185,8 +2711,7 @@ export class SnakeGameController {
     const groundY = terrainHeightAt(x, z, biome);
     if (groundY < WATER_LEVEL + 0.6) return null;
 
-    const lvlScale = 1 + (this.level - 1) * 0.14;
-    const speedFactor = this.speedPreset === 'chill' ? 0.86 : this.speedPreset === 'turbo' ? 1.16 : 1.0;
+    const speedFactor = this.speedPreset === 'chill' ? 0.96 : this.speedPreset === 'turbo' ? 1.28 : 1.14;
 
     const defs: Record<
       BeastKind,
@@ -2205,72 +2730,73 @@ export class SnakeGameController {
       wolf: {
         name: biome === 'jungle' ? 'Shadow Panther-Wolf' : 'Dire Ridge Wolf',
         faction: 'beast',
-        hp: Math.round(46 * lvlScale),
-        speed: 7.4 * speedFactor,
+        hp: FIXED_ENEMY_HP,
+        speed: 5.5 * speedFactor,
         radius: 1.05,
         scale: 1.08,
-        aggro: 32,
-        xp: 75,
+        aggro: 42,
+        xp: 115,
         boss: false,
       },
       boar: {
         name: biome === 'jungle' ? 'Ember-Tusk Ravager' : 'Ironhorn Boar',
         faction: 'beast',
-        hp: Math.round(74 * lvlScale),
-        speed: 6.5 * speedFactor,
+        hp: FIXED_ENEMY_HP,
+        speed: 4.9 * speedFactor,
         radius: 1.35,
         scale: 1.16,
-        aggro: 30,
-        xp: 120,
+        aggro: 38,
+        xp: 155,
         boss: false,
       },
       eagle: {
         name: biome === 'jungle' ? 'Tempest Canopy Hawk' : 'Storm Talon Griffin',
         faction: 'beast',
-        hp: Math.round(68 * lvlScale),
-        speed: 8.6 * speedFactor,
+        hp: FIXED_ENEMY_HP,
+        speed: 6.3 * speedFactor,
         radius: 1.25,
         scale: 1.12,
-        aggro: 40,
-        xp: 165,
+        aggro: 52,
+        xp: 205,
         boss: false,
       },
       guardian: {
         name: biome === 'jungle' ? 'Ancient Spirit Stag' : 'Mythic Peak Guardian',
         faction: 'beast',
-        hp: Math.round(175 * lvlScale),
-        speed: 6.0 * speedFactor,
+        hp: FIXED_ENEMY_HP,
+        speed: 4.6 * speedFactor,
         radius: 1.75,
         scale: 1.18,
-        aggro: 44,
-        xp: 310,
+        aggro: 56,
+        xp: 340,
         boss: true,
       },
       wraith: {
         name: 'Nether Earth Wraith',
         faction: 'ghost_clan',
-        hp: Math.round(84 * lvlScale),
-        speed: 8.2 * speedFactor,
+        hp: FIXED_ENEMY_HP,
+        speed: 5.9 * speedFactor,
         radius: 1.18,
         scale: 1.12,
-        aggro: 52,
-        xp: 185,
+        aggro: 62,
+        xp: 225,
         boss: false,
       },
       soul_elder: {
         name: 'Soul Hall Reaper',
         faction: 'ghost_clan',
-        hp: Math.round(215 * lvlScale),
-        speed: 7.2 * speedFactor,
+        hp: FIXED_ENEMY_HP,
+        speed: 5.2 * speedFactor,
         radius: 1.62,
         scale: 1.22,
-        aggro: 58,
-        xp: 390,
+        aggro: 68,
+        xp: 420,
         boss: true,
       },
     };
 
     const d = defs[kind];
+    const scaled = computeScaledEnemyStats(FIXED_ENEMY_HP, this.level, this.speedPreset, d.boss);
     const startEmerging = emergeFromGround || d.faction === 'ghost_clan';
     return {
       id: this.nextBeastId++,
@@ -2290,19 +2816,37 @@ export class SnakeGameController {
       landmarkId,
       radius: d.radius,
       scale: d.scale,
-      hp: d.hp,
-      maxHp: d.hp,
-      speed: d.speed,
+      hp: scaled.maxHp,
+      maxHp: scaled.maxHp,
+      speed: d.speed * scaled.speedMultiplier,
+      baseSpeed: d.speed,
       aggroRadius: d.aggro,
       state: startEmerging ? 'emerging' : 'patrol',
-      stateTimer: startEmerging ? 1.25 : 1.5 + Math.random() * 2.5,
+      stateTimer: startEmerging ? 1.1 : 1.4 + Math.random() * 1.8,
+      flankDir: Math.random() < 0.5 ? 1 : -1,
       emergeProgress: startEmerging ? 0 : 1,
-      attackCooldown: startEmerging ? 1.4 : 1.0 + Math.random() * 1.2,
+      attackCooldown: startEmerging ? 1.1 : 0.9 + Math.random() * 0.8,
       hitFlash: 0,
       animPhase: Math.random() * Math.PI * 2,
-      xpReward: d.xp,
+      xpReward: Math.round(d.xp * (1 + (scaled.hpMultiplier - 1) * 0.25)),
+      baseXpReward: d.xp,
       isBoss: d.boss,
     };
+  }
+
+  /**
+   * Rescales all currently active enemies when the player advances to a higher
+   * cultivation stage, preserving each enemy's current HP percentage.
+   */
+  private rescaleActiveBeastsForStage(): void {
+    for (const b of this.beasts) {
+      const ratio = b.maxHp > 0 ? Math.max(0.05, Math.min(1, b.hp / b.maxHp)) : 1;
+      const scaled = computeScaledEnemyStats(FIXED_ENEMY_HP, this.level, this.speedPreset, b.isBoss);
+      b.maxHp = scaled.maxHp;
+      b.hp = Math.max(1, Math.round(scaled.maxHp * ratio));
+      b.speed = b.baseSpeed * scaled.speedMultiplier;
+      b.xpReward = Math.round(b.baseXpReward * (1 + (scaled.hpMultiplier - 1) * 0.25));
+    }
   }
 
   private spawnBeastNearPlayer(closer = false): WildBeast | null {
@@ -2335,6 +2879,63 @@ export class SnakeGameController {
     return null;
   }
 
+  /**
+   * Executes a tactile duel hit against a beast: handles Counter-Parry Clash
+   * when catching an enemy mid-windup or lunge, posture-break stagger bonuses,
+   * knockback recoil, hitstop, and sparks.
+   */
+  private applyDuelHitToBeast(
+    beast: WildBeast,
+    baseDamage: number,
+    pushNx: number,
+    pushNz: number,
+    pushForce: number,
+    canCounterParry: boolean,
+  ): void {
+    const res = resolveCombatStrike(baseDamage, beast.state, canCounterParry);
+    beast.vx = pushNx * (res.triggeredParry ? pushForce * 1.25 : pushForce);
+    beast.vz = pushNz * (res.triggeredParry ? pushForce * 1.25 : pushForce);
+
+    if (res.triggeredParry) {
+      beast.state = 'stagger';
+      beast.stateTimer = beast.isBoss ? 1.15 : 1.45;
+      beast.attackCooldown = Math.max(beast.attackCooldown, 1.8);
+      this.hitstopTimer = Math.max(this.hitstopTimer, 0.075);
+      this.hp = Math.min(this.maxHp, this.hp + 8);
+      this.qi = Math.min(this.maxQi, this.qi + 18);
+      this.world.triggerShake(0.32);
+      this.world.spawnBurst(beast.x, beast.y + 1.35, beast.z, 0xfde047, 26);
+      this.shockwaves.push({
+        id: this.nextShockwaveId++,
+        fromPlayer: true,
+        x: beast.x,
+        y: beast.y + 0.15,
+        z: beast.z,
+        radius: 0.5,
+        maxRadius: 4.2,
+        age: 0,
+        life: 0.32,
+        colorHex: 0xfde047,
+      });
+      if (this.shockwaves.length > 12) this.shockwaves.shift();
+      this.sound.playShockwave(this.level);
+      this.onToast(`COUNTER CLASH! Staggered ${beast.name} (+18 Qi · 1.55× DMG)`);
+      this.triggerCompliment('combat_parry', 'high', beast.name);
+      this.triggerCombatTaunt(beast, 'parry', 'high');
+    } else if (res.triggeredStaggerBonus) {
+      this.hitstopTimer = Math.max(this.hitstopTimer, 0.045);
+      this.world.spawnBurst(beast.x, beast.y + 1.2, beast.z, 0xffd24d, 14);
+      if (this.combatTauntCooldown <= 0) {
+        this.triggerCombatTaunt(beast, 'stagger', 'normal');
+      }
+    } else if (beast.state !== 'stagger') {
+      beast.state = 'recover';
+      beast.stateTimer = Math.max(beast.stateTimer, beast.isBoss ? 0.45 : 0.68);
+    }
+
+    this.damageBeast(beast, res.damage);
+  }
+
   private damageBeast(beast: WildBeast, amount: number): void {
     beast.hp -= amount;
     beast.hitFlash = 0.24;
@@ -2346,6 +2947,7 @@ export class SnakeGameController {
       const idx = this.beasts.indexOf(beast);
       if (idx >= 0) this.beasts.splice(idx, 1);
 
+      this.hitstopTimer = Math.max(this.hitstopTimer, beast.isBoss ? 0.095 : 0.055);
       this.lifetimeStats.beastsDefeated++;
       if (beast.faction === 'ghost_clan') {
         this.lifetimeStats.ghostsDefeated++;
@@ -2356,11 +2958,11 @@ export class SnakeGameController {
       this.clanHeatValue = Math.min(100, this.clanHeatValue + heatGain);
 
       // Combat siphon: defeating enemies restores HP, Dou Qi & Stamina (crucial in harsh climates!)
-      const hpRestore = beast.isBoss ? 45 : 16;
-      const qiRestore = beast.isBoss ? 65 : 28;
+      const hpRestore = beast.isBoss ? 45 : 18;
+      const qiRestore = beast.isBoss ? 65 : 30;
       this.hp = Math.min(this.maxHp, this.hp + hpRestore);
       this.qi = Math.min(this.maxQi, this.qi + qiRestore);
-      this.stamina = Math.min(1, this.stamina + (beast.isBoss ? 0.65 : 0.3));
+      this.stamina = Math.min(1, this.stamina + (beast.isBoss ? 0.65 : 0.34));
 
       const discovery = this.recordBeastDefeat(beast);
       const pts = beast.isBoss ? 520 : beast.faction === 'ghost_clan' ? 240 : 180;
@@ -2380,7 +2982,7 @@ export class SnakeGameController {
                   : 0xffc24d;
       this.world.spawnBurst(beast.x, beast.y + 1.4, beast.z, burstColor, beast.isBoss ? 48 : 28);
       this.sound.playBeastDefeat(beast.isBoss);
-      this.world.triggerShake(beast.isBoss ? 0.38 : 0.16);
+      this.world.triggerShake(beast.isBoss ? 0.38 : 0.18);
 
       // Record combat historical milestones
       this.recordMilestone(
@@ -2424,12 +3026,19 @@ export class SnakeGameController {
         } else {
           this.onToast(`Vanquished ${beast.name}! +${beast.xpReward} XP · +${hpRestore} HP`);
         }
+        this.triggerCompliment('combat_victory', 'high', beast.name);
+      } else {
+        this.triggerCompliment('evolution', 'high');
       }
+      this.triggerCombatTaunt(beast, 'execute', 'high');
     } else {
       this.sound.playBeastHit();
       this.world.spawnBurst(beast.x, beast.y + 1.1, beast.z, 0xffe4b5, 10);
       if (beast.state === 'patrol') {
         beast.state = 'chase';
+      }
+      if (this.lastTauntedBeastId !== beast.id || this.combatTauntCooldown <= 0) {
+        this.triggerCombatTaunt(beast, 'engage', 'normal');
       }
     }
   }
@@ -2544,7 +3153,9 @@ export class SnakeGameController {
       }
     }
 
-    const dmgScale = 1 + (this.level - 1) * 0.08;
+    const stageCombat = computeScaledEnemyStats(FIXED_ENEMY_HP, this.level, this.speedPreset, false);
+    const dmgScale = stageCombat.damageMultiplier;
+    const projSpeedScale = 1 + (stageCombat.speedMultiplier - 1) * 0.65;
 
     for (let i = this.beasts.length - 1; i >= 0; i--) {
       const b = this.beasts[i];
@@ -2559,11 +3170,11 @@ export class SnakeGameController {
       // Handle subterranean Ghost Clan vertical emergence out of the earth!
       if (b.state === 'emerging') {
         b.heading = angleToPlayer;
-        b.emergeProgress = Math.min(1, b.emergeProgress + dt / 1.25);
+        b.emergeProgress = Math.min(1, b.emergeProgress + dt / 0.95);
         const easeOut = 1 - Math.pow(1 - b.emergeProgress, 3);
         b.groundY = terrainHeightAt(b.x, b.z, biome);
         b.y = b.groundY - (1 - easeOut) * 3.4;
-        b.animPhase += dt * 4.2;
+        b.animPhase += dt * 4.8;
         if (Math.random() < dt * 7) {
           this.world.spawnBurst(
             b.x,
@@ -2580,6 +3191,9 @@ export class SnakeGameController {
           this.lastEngagedTimer = 5.0;
           this.recordBeastEncounter(b.speciesId);
           this.sound.playBeastGrowl(b.kind);
+          if (this.combatTauntCooldown <= 0) {
+            this.triggerCombatTaunt(b, 'engage', 'normal');
+          }
         }
         continue;
       }
@@ -2593,33 +3207,61 @@ export class SnakeGameController {
           this.lastEngagedTimer = 4.5;
           this.recordBeastEncounter(b.speciesId);
           this.sound.playBeastGrowl(b.kind);
+          if (this.combatTauntCooldown <= 0) {
+            this.triggerCombatTaunt(b, 'engage', 'normal');
+          }
         }
-      } else if (b.state === 'chase') {
-        if (b.faction === 'beast' && dist > b.aggroRadius * 1.55) {
+      } else if (b.state === 'chase' || b.state === 'circle') {
+        if (b.faction === 'beast' && dist > b.aggroRadius * 1.75) {
           b.state = 'patrol';
         } else {
           const triggerDist =
             b.kind === 'soul_elder'
-              ? 27
+              ? 28
               : b.kind === 'guardian'
-                ? 24
+                ? 25
                 : b.kind === 'wraith'
-                  ? 21
+                  ? 22
                   : b.kind === 'eagle'
-                    ? 22
+                    ? 23
                     : b.kind === 'boar'
-                      ? 12.5
-                      : 8.8;
+                      ? 13.5
+                      : 10.5;
           if (dist < triggerDist && b.attackCooldown <= 0) {
             b.state = 'windup';
+            // Clear, readable telegraph wind-up windows so the player can dodge or counter-parry!
             b.stateTimer =
               b.kind === 'soul_elder' || b.kind === 'guardian'
-                ? 0.62
+                ? 0.92
                 : b.kind === 'boar'
-                  ? 0.54
-                  : 0.42;
+                  ? 0.82
+                  : 0.68;
             b.heading = angleToPlayer;
             this.sound.playBeastGrowl(b.kind);
+            // Emit a visible ground telegraph warning ring at enemy feet
+            this.shockwaves.push({
+              id: this.nextShockwaveId++,
+              fromPlayer: false,
+              x: b.x,
+              y: b.y + 0.08,
+              z: b.z,
+              radius: 0.4,
+              maxRadius: b.radius + 2.4,
+              age: 0,
+              life: b.stateTimer * 0.85,
+              colorHex:
+                b.faction === 'ghost_clan'
+                  ? 0x3ef5b8
+                  : b.isBoss
+                    ? 0xc084fc
+                    : 0xff4b3e,
+            });
+            if (this.shockwaves.length > 14) this.shockwaves.shift();
+          } else if (b.state === 'chase' && dist < triggerDist * 1.15 && b.attackCooldown > 0.25) {
+            // Stalk & circle around the serpent like a real predator waiting for an opening
+            b.state = 'circle';
+            b.stateTimer = 0.8 + Math.random() * 0.9;
+            b.flankDir = Math.random() < 0.5 ? 1 : -1;
           }
         }
       }
@@ -2628,15 +3270,15 @@ export class SnakeGameController {
       if (b.state === 'patrol') {
         b.stateTimer -= dt;
         if (b.stateTimer <= 0) {
-          b.stateTimer = 2.0 + Math.random() * 2.5;
+          b.stateTimer = 1.8 + Math.random() * 2.2;
           const homeDx = b.homeX - b.x;
           const homeDz = b.homeZ - b.z;
           b.heading =
             Math.hypot(homeDx, homeDz) > 16
               ? Math.atan2(homeDx, homeDz)
-              : b.heading + (Math.random() - 0.5) * 1.8;
+              : b.heading + (Math.random() - 0.5) * 1.6;
         }
-        moveSpeed = b.speed * 0.42;
+        moveSpeed = b.speed * 0.46;
         b.vx = Math.sin(b.heading) * moveSpeed;
         b.vz = Math.cos(b.heading) * moveSpeed;
       } else if (b.state === 'chase') {
@@ -2644,43 +3286,56 @@ export class SnakeGameController {
         b.heading += Math.max(-3.6 * dt, Math.min(3.6 * dt, diff));
         const preferredDist =
           b.kind === 'eagle'
-            ? 12
+            ? 10.5
             : b.kind === 'guardian' || b.kind === 'soul_elder'
-              ? 11
+              ? 9.5
               : b.kind === 'wraith'
-                ? 8.5
-                : 0;
-        moveSpeed = dist > preferredDist ? b.speed : b.speed * 0.42;
+                ? 7.5
+                : 4.5;
+        moveSpeed = dist > preferredDist ? b.speed : b.speed * 0.52;
         b.vx = Math.sin(b.heading) * moveSpeed;
         b.vz = Math.cos(b.heading) * moveSpeed;
+      } else if (b.state === 'circle') {
+        // Predator flanking orbit: keeps eyes locked on the serpent while strafing sideways
+        const diff = ((angleToPlayer - b.heading + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
+        b.heading += Math.max(-4.2 * dt, Math.min(4.2 * dt, diff));
+        const orbitAngle = angleToPlayer + b.flankDir * (Math.PI * 0.44);
+        const radialAdjust = dist < 5.5 ? -0.35 : dist > 11.5 ? 0.35 : 0;
+        const strafeSpd = b.speed * 0.72;
+        b.vx = Math.sin(orbitAngle) * strafeSpd + Math.sin(angleToPlayer) * (b.speed * radialAdjust);
+        b.vz = Math.cos(orbitAngle) * strafeSpd + Math.cos(angleToPlayer) * (b.speed * radialAdjust);
+        b.stateTimer -= dt;
+        if (b.stateTimer <= 0 || dist > b.aggroRadius * 1.1) {
+          b.state = 'chase';
+        }
       } else if (b.state === 'windup') {
-        b.heading = angleToPlayer;
+        const diff = ((angleToPlayer - b.heading + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
+        b.heading += Math.max(-2.6 * dt, Math.min(2.6 * dt, diff));
         b.vx *= Math.exp(-8 * dt);
         b.vz *= Math.exp(-8 * dt);
         b.stateTimer -= dt;
         if (b.stateTimer <= 0) {
           if (b.kind === 'eagle') {
-            this.fireBeastProjectile(b, 22, 0x58e8ff, Math.round(15 * dmgScale));
+            this.fireBeastProjectile(b, 17.5 * projSpeedScale, 0x58e8ff, Math.round(18 * dmgScale), true);
             b.state = 'lunge';
-            b.stateTimer = 0.52;
-            b.attackCooldown = 2.6;
-            b.vx = Math.sin(b.heading) * (b.speed * 1.55);
-            b.vz = Math.cos(b.heading) * (b.speed * 1.55);
+            b.stateTimer = 0.54;
+            b.attackCooldown = 2.1;
+            b.vx = Math.sin(b.heading) * (b.speed * 1.65);
+            b.vz = Math.cos(b.heading) * (b.speed * 1.65);
           } else if (b.kind === 'wraith') {
-            // Nether Earth Wraith fires a tracking Soul-Chain bolt & darts sideways/forward
-            this.fireBeastProjectile(b, 21, 0x38f2a8, Math.round(17 * dmgScale), true, 'soul_chain');
+            this.fireBeastProjectile(b, 16.5 * projSpeedScale, 0x38f2a8, Math.round(20 * dmgScale), true, 'soul_chain');
             b.state = 'lunge';
-            b.stateTimer = 0.48;
-            b.attackCooldown = 2.35;
-            const flankAngle = b.heading + (Math.random() < 0.5 ? 0.45 : -0.45);
-            b.vx = Math.sin(flankAngle) * (b.speed * 1.65);
-            b.vz = Math.cos(flankAngle) * (b.speed * 1.65);
-            this.world.spawnBurst(b.x, b.y + 1.2, b.z, 0x38f2a8, 10);
+            b.stateTimer = 0.5;
+            b.attackCooldown = 2.0;
+            const flankAngle = b.heading + (Math.random() < 0.5 ? 0.42 : -0.42);
+            b.vx = Math.sin(flankAngle) * (b.speed * 1.7);
+            b.vz = Math.cos(flankAngle) * (b.speed * 1.7);
+            this.world.spawnBurst(b.x, b.y + 1.2, b.z, 0x38f2a8, 12);
           } else if (b.kind === 'soul_elder' || b.kind === 'guardian') {
             const isReaper = b.kind === 'soul_elder';
             const ringHex = isReaper ? 0xd946ef : 0xc084fc;
-            const bossDmg = Math.round((isReaper ? 27 : 23) * dmgScale);
-            if (dist < 10.5) {
+            const bossDmg = Math.round((isReaper ? 28 : 24) * dmgScale);
+            if (dist < 11.5) {
               this.shockwaves.push({
                 id: this.nextShockwaveId++,
                 fromPlayer: false,
@@ -2688,18 +3343,18 @@ export class SnakeGameController {
                 y: b.y,
                 z: b.z,
                 radius: 0.9,
-                maxRadius: isReaper ? 12.5 : 11.5,
+                maxRadius: isReaper ? 13.0 : 11.8,
                 age: 0,
-                life: 0.58,
+                life: 0.62,
                 colorHex: ringHex,
               });
-              this.world.spawnBurst(b.x, b.y + 1.2, b.z, ringHex, 24);
+              this.world.spawnBurst(b.x, b.y + 1.2, b.z, ringHex, 28);
               const fatal = this.applyPlayerDamage(bossDmg, b.name, this.headX - b.x, this.headZ - b.z);
               if (fatal) return true;
             } else {
-              for (const spread of [-0.24, 0, 0.24]) {
+              for (const spread of [-0.36, -0.18, 0, 0.18, 0.36]) {
                 const shotAng = angleToPlayer + spread;
-                const spd = isReaper ? 22 : 21;
+                const spd = (isReaper ? 17.5 : 16.0) * projSpeedScale;
                 this.projectiles.push({
                   id: this.nextProjectileId++,
                   fromPlayer: false,
@@ -2707,26 +3362,26 @@ export class SnakeGameController {
                   y: b.y + 2.4,
                   z: b.z + Math.cos(shotAng) * 2.1,
                   vx: Math.sin(shotAng) * spd,
-                  vy: ((this.headY + 1.0) - (b.y + 2.4)) / Math.max(0.4, dist / spd),
+                  vy: ((this.headY + 1.0) - (b.y + 2.4)) / Math.max(0.45, dist / spd),
                   vz: Math.cos(shotAng) * spd,
-                  radius: 0.5,
-                  damage: Math.round(bossDmg * 0.8),
+                  radius: 0.52,
+                  damage: Math.round(bossDmg * 0.82),
                   colorHex: ringHex,
-                  life: 2.6,
-                  maxLife: 2.6,
-                  homing: isReaper && spread === 0,
+                  life: 3.4,
+                  maxLife: 3.4,
+                  homing: isReaper && Math.abs(spread) <= 0.18,
                   style: isReaper ? 'soul_chain' : 'bolt',
                 });
               }
             }
             b.state = 'recover';
-            b.stateTimer = 0.92;
-            b.attackCooldown = isReaper ? 2.75 : 3.0;
+            b.stateTimer = 0.78;
+            b.attackCooldown = isReaper ? 2.25 : 2.45;
           } else {
             b.state = 'lunge';
-            b.stateTimer = b.kind === 'boar' ? 0.72 : 0.48;
-            b.attackCooldown = b.kind === 'boar' ? 2.5 : 2.0;
-            const chargeMult = b.kind === 'boar' ? 2.25 : 2.0;
+            b.stateTimer = b.kind === 'boar' ? 0.76 : 0.56;
+            b.attackCooldown = b.kind === 'boar' ? 2.15 : 1.85;
+            const chargeMult = b.kind === 'boar' ? 2.15 : 1.95;
             b.vx = Math.sin(b.heading) * (b.speed * chargeMult);
             b.vz = Math.cos(b.heading) * (b.speed * chargeMult);
             this.world.spawnBurst(b.x, b.y + 0.6, b.z, b.kind === 'boar' ? 0xff7b3d : 0xdbeafe, 10);
@@ -2736,14 +3391,24 @@ export class SnakeGameController {
         b.stateTimer -= dt;
         if (b.stateTimer <= 0) {
           b.state = 'recover';
-          b.stateTimer = 0.72;
+          b.stateTimer = 0.62;
         }
-      } else if (b.state === 'recover') {
-        b.vx *= Math.exp(-5.5 * dt);
-        b.vz *= Math.exp(-5.5 * dt);
+      } else if (b.state === 'stagger') {
+        b.vx *= Math.exp(-5.2 * dt);
+        b.vz *= Math.exp(-5.2 * dt);
         b.stateTimer -= dt;
         if (b.stateTimer <= 0) {
-          b.state = b.faction === 'ghost_clan' || dist < b.aggroRadius * 1.3 ? 'chase' : 'patrol';
+          b.state = 'circle';
+          b.stateTimer = 0.75;
+          b.flankDir = -b.flankDir;
+        }
+      } else if (b.state === 'recover') {
+        b.vx *= Math.exp(-6.0 * dt);
+        b.vz *= Math.exp(-6.0 * dt);
+        b.stateTimer -= dt;
+        if (b.stateTimer <= 0) {
+          b.state = b.faction === 'ghost_clan' || dist < b.aggroRadius * 1.4 ? 'circle' : 'patrol';
+          b.stateTimer = 0.9 + Math.random() * 0.7;
         }
       }
 
@@ -2760,57 +3425,53 @@ export class SnakeGameController {
       }
       b.groundY = terrainHeightAt(b.x, b.z, biome);
       b.y = b.groundY;
-      b.animPhase += dt * (2.6 + Math.hypot(b.vx, b.vz) * 0.35);
+      b.animPhase += dt * (2.2 + Math.hypot(b.vx, b.vz) * 0.34);
 
-      // Melee / Dash-Strike / Ram Collision Check between Snake and Enemy
+      // Melee / Dash-Strike / Counter-Clash Collision Check between Snake and Enemy
       if (combatEnabled) {
         const cdx = this.headX - b.x;
         const cdz = this.headZ - b.z;
         const cDist = Math.hypot(cdx, cdz);
 
-        // Skill 3 Dash Strike pierces enemies in a generous hitbox without taking damage!
-        if (this.dashActiveTimer > 0 && cDist < b.radius + 1.85 && Math.abs(this.headY - b.y) < 3.4) {
+        // Skill 3 Dash Strike pierces enemies and triggers Counter-Parry Clash against wind-ups/lunges!
+        if (this.dashActiveTimer > 0 && cDist < b.radius + 1.95 && Math.abs(this.headY - b.y) < 3.4) {
           if (!this.dashHitIds.has(b.id)) {
             this.dashHitIds.add(b.id);
             const nx = cDist > 0.01 ? -cdx / cDist : Math.sin(this.heading);
             const nz = cDist > 0.01 ? -cdz / cDist : Math.cos(this.heading);
-            b.vx = nx * 13;
-            b.vz = nz * 13;
-            b.state = 'recover';
-            b.stateTimer = 1.05;
             this.world.triggerShake(0.24);
             this.world.spawnBurst(b.x, b.y + 1.3, b.z, 0xffe066, 20);
-            this.damageBeast(b, magic.dashDamage);
+            this.applyDuelHitToBeast(b, magic.dashDamage, nx, nz, 10.5, true);
           }
           continue;
         }
 
-        if (cDist < b.radius + 0.85 && Math.abs(this.headY - b.y) < 2.8) {
-          if (playerBoosting && b.state !== 'lunge') {
-            const ramDmg = Math.round(magic.boltDamage * 1.15);
-            const nx = cDist > 0.01 ? -cdx / cDist : Math.sin(this.heading);
-            const nz = cDist > 0.01 ? -cdz / cDist : Math.cos(this.heading);
-            b.vx = nx * 10;
-            b.vz = nz * 10;
-            b.state = 'recover';
-            b.stateTimer = 0.9;
-            this.damageBeast(b, ramDmg);
-          } else {
+        if (cDist < b.radius + 0.92 && Math.abs(this.headY - b.y) < 2.8) {
+          const nx = cDist > 0.01 ? -cdx / cDist : Math.sin(this.heading);
+          const nz = cDist > 0.01 ? -cdz / cDist : Math.cos(this.heading);
+          if (playerBoosting && (b.state === 'windup' || b.state === 'stagger' || (b.state !== 'lunge' && !b.isBoss))) {
+            // Boosted Fang Ram: interrupts wind-ups for a real melee clash or punishes staggered foes!
+            const ramDmg = Math.round(magic.boltDamage * 1.0);
+            this.applyDuelHitToBeast(b, ramDmg, nx, nz, 8.2, true);
+          } else if (b.state !== 'stagger') {
             const meleeDmg = Math.round(
               (b.kind === 'soul_elder'
-                ? 26
+                ? 28
                 : b.kind === 'guardian'
-                  ? 22
+                  ? 24
                   : b.kind === 'boar'
-                    ? 18
+                    ? 20
                     : b.kind === 'wraith'
-                      ? 16
-                      : 14) * dmgScale,
+                      ? 19
+                      : 17) * dmgScale,
             );
             const fatal = this.applyPlayerDamage(meleeDmg, b.name, cdx, cdz);
             if (fatal) return true;
+            this.hitstopTimer = Math.max(this.hitstopTimer, 0.045);
+            b.vx = nx * 4.5;
+            b.vz = nz * 4.5;
             b.state = 'recover';
-            b.stateTimer = 0.85;
+            b.stateTimer = 0.72;
           }
         }
       }
@@ -2907,7 +3568,20 @@ export class SnakeGameController {
             if (p.style !== 'lotus') {
               this.qi = Math.min(this.maxQi, this.qi + 4);
             }
-            this.damageBeast(b, p.damage);
+            const strike = resolveCombatStrike(p.damage, b.state, false);
+            if (p.style === 'bullet') {
+              const bSpd = Math.hypot(p.vx, p.vz) || 1;
+              const recoilCfg = computeGunRecoilPhysics(this.level);
+              const push = b.isBoss ? recoilCfg.knockbackForce * 0.48 : recoilCfg.knockbackForce;
+              b.vx += (p.vx / bSpd) * push;
+              b.vz += (p.vz / bSpd) * push;
+              this.hitstopTimer = Math.max(this.hitstopTimer, 0.022);
+              this.world.spawnBurst(p.x, p.y, p.z, 0xffd166, 12);
+            }
+            if (strike.triggeredStaggerBonus) {
+              this.world.spawnBurst(b.x, b.y + 1.25, b.z, 0xfde047, 12);
+            }
+            this.damageBeast(b, strike.damage);
             this.projectiles.splice(i, 1);
             hit = true;
             break;
@@ -3034,6 +3708,9 @@ export class SnakeGameController {
           } else {
             this.onToast(`Tier ${lm.tier} Conquered: ${lm.name}! Checkpoint saved (+${lm.xpReward} XP)`);
           }
+          this.triggerCompliment('peak_conquered', 'high');
+        } else {
+          this.triggerCompliment('evolution', 'high');
         }
         this.emitHud();
         if (this.mode !== 'playing') return;
@@ -3104,6 +3781,11 @@ export class SnakeGameController {
   private buildRenderSnakeState(): RenderSnakeState {
     const n = terrainNormalAt(this.headX, this.headZ, this.formation.biome);
     const boostActive = (this.boostHeld && this.stamina > 0.04) || this.boostPadTimer > 0;
+    const cfg = SPEED_CONFIG[this.speedPreset];
+    const steerRateNorm = Math.max(
+      -1,
+      Math.min(1, this.currentSteerRate / Math.max(0.1, cfg.turnRate)),
+    );
     return {
       head: {
         x: this.headX,
@@ -3116,7 +3798,10 @@ export class SnakeGameController {
       },
       segments: this.sampleBodySegments(),
       boostActive,
-      speedRatio: this.currentSpeed / SPEED_CONFIG[this.speedPreset].baseSpeed,
+      speedRatio: this.currentSpeed / cfg.baseSpeed,
+      traversalStrain: this.currentTraversalStrain,
+      steerRateNorm,
+      traversalClimate: this.weather,
     };
   }
 
@@ -3178,15 +3863,32 @@ export class SnakeGameController {
       soulPresenceState = 'stirring';
     }
 
-    // Find active/closest hostile beast or ghost for clean combat telemetry
+    // Find active/closest hostile beast or ghost (prioritizing nearby Bosses & high-tier foes for Boss Mode HUD)
     let engagedBeast: WildBeast | null = null;
     if (this.lastEngagedBeastId !== null) {
       engagedBeast = this.beasts.find((b) => b.id === this.lastEngagedBeastId) ?? null;
     }
-    if (!engagedBeast) {
-      let bestDist = 38;
+    // Always let a nearby active Boss take focus if we aren't actively damaging a different Boss
+    if (!engagedBeast || !engagedBeast.isBoss) {
+      let bestBossDist = 54;
+      let nearestBoss: WildBeast | null = null;
       for (const b of this.beasts) {
-        if (b.state === 'patrol' && b.hp >= b.maxHp) continue;
+        if (!b.isBoss) continue;
+        const d = Math.hypot(b.x - this.headX, b.z - this.headZ);
+        if (d < bestBossDist) {
+          bestBossDist = d;
+          nearestBoss = b;
+        }
+      }
+      if (nearestBoss) {
+        engagedBeast = nearestBoss;
+      }
+    }
+    if (!engagedBeast) {
+      let bestDist = 42;
+      for (const b of this.beasts) {
+        const isHighTierCandidate = b.isBoss || this.level >= 5 || b.maxHp >= 420;
+        if (!isHighTierCandidate && b.state === 'patrol' && b.hp >= b.maxHp) continue;
         const d = Math.hypot(b.x - this.headX, b.z - this.headZ);
         if (d < bestDist) {
           bestDist = d;
@@ -3195,10 +3897,23 @@ export class SnakeGameController {
       }
     }
 
+    const stageDiff = computeScaledEnemyStats(FIXED_ENEMY_HP, this.level, this.speedPreset, false);
+    const hostileDiff = engagedBeast
+      ? computeScaledEnemyStats(FIXED_ENEMY_HP, this.level, this.speedPreset, engagedBeast.isBoss)
+      : stageDiff;
+    const nearbyHostileIsHighTier = Boolean(
+      engagedBeast &&
+        (engagedBeast.isBoss ||
+          engagedBeast.faction === 'ghost_clan' && this.level >= 4 ||
+          this.level >= 5 ||
+          engagedBeast.maxHp >= 420),
+    );
+
     this.onHudUpdate({
       mode: this.mode,
       biome: this.formation.biome,
       weather: this.weather,
+      weatherLabel: WEATHER_LABELS[this.weather],
       score: this.score,
       bestScore: this.bestScore,
       length: this.snakeLength,
@@ -3241,7 +3956,11 @@ export class SnakeGameController {
       qi: this.qi,
       maxQi: this.maxQi,
       magicTierName: magic.magicTitle,
-      primarySpellName: magic.primarySpell,
+      primarySpellName: hasHalfHumanGun(this.level)
+        ? this.level >= 11
+          ? 'Ascended Hand Cannon'
+          : 'Runic Hand Cannon'
+        : magic.primarySpell,
       shockwaveName: magic.shockwaveSpell,
       dashSkillName: magic.dashSkillName,
       ultimateSkillName: magic.ultimateSkillName,
@@ -3266,11 +3985,18 @@ export class SnakeGameController {
       ghostsDefeated: this.lifetimeStats.ghostsDefeated,
       beastsDefeated: this.lifetimeStats.beastsDefeated,
       recentHurtPulse: this.recentHurtPulse,
+      nearbyHostileId: engagedBeast ? engagedBeast.id : null,
+      nearbyHostileKind: engagedBeast ? engagedBeast.kind : null,
       nearbyHostileName: engagedBeast ? engagedBeast.name : null,
       nearbyHostileHp: engagedBeast ? Math.max(0, Math.ceil(engagedBeast.hp)) : 0,
       nearbyHostileMaxHp: engagedBeast ? engagedBeast.maxHp : 0,
       nearbyHostileBoss: engagedBeast ? engagedBeast.isBoss : false,
+      nearbyHostileIsHighTier,
+      nearbyHostileHpMult: hostileDiff.hpMultiplier,
       nearbyHostileFaction: engagedBeast ? engagedBeast.faction : null,
+      difficultyHpMult: stageDiff.hpMultiplier,
+      difficultyDamageMult: stageDiff.damageMultiplier,
+      difficultyTierLabel: stageDiff.tierLabel,
     });
   }
 

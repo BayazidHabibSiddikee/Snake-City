@@ -1,5 +1,5 @@
 import { sanitizeBestiaryRecords } from './bestiary';
-import { BestiaryEntryId, BestiaryRecord, EnvHazardSeverity } from './types';
+import { BestiaryEntryId, BestiaryRecord, EnvHazardSeverity, SpeedPreset } from './types';
 
 export interface EvolutionStage {
   level: number;
@@ -122,7 +122,129 @@ export interface EvolutionUnlockSummary {
   latestMilestoneId: string | null;
 }
 
+export interface CultivationDifficultyProfile {
+  level: number;
+  realmName: string;
+  tierLabel: string;
+  enemyHpMultiplier: number;
+  enemyDamageMultiplier: number;
+  enemySpeedMultiplier: number;
+  bossHpBonus: number;
+}
+
+export interface ScaledEnemyStats {
+  maxHp: number;
+  hpMultiplier: number;
+  damageMultiplier: number;
+  speedMultiplier: number;
+  tierLabel: string;
+}
+
 export const MAX_EVOLUTION_LEVEL = 12;
+
+/**
+ * Escalating cultivation-stage difficulty multipliers (Stages 1..12).
+ * Scales enemy health, damage, and speed steeply in higher realms so late-stage
+ * Dou Huang -> Dou Di encounters remain formidable against high-tier Dou Qi skills.
+ */
+export const CULTIVATION_DIFFICULTY_PROFILES: readonly CultivationDifficultyProfile[] = [
+  { level: 1,  realmName: 'Dou Zhi Qi', tierLabel: 'Mortal Trial',         enemyHpMultiplier: 1.0,  enemyDamageMultiplier: 1.0,  enemySpeedMultiplier: 1.0,  bossHpBonus: 1.0  },
+  { level: 2,  realmName: 'Dou Zhe',    tierLabel: 'Mortal Trial',         enemyHpMultiplier: 1.2,  enemyDamageMultiplier: 1.15, enemySpeedMultiplier: 1.03, bossHpBonus: 1.08 },
+  { level: 3,  realmName: 'Dou Shi',    tierLabel: 'Awakened Peril',       enemyHpMultiplier: 1.45, enemyDamageMultiplier: 1.32, enemySpeedMultiplier: 1.06, bossHpBonus: 1.15 },
+  { level: 4,  realmName: 'Da Dou Shi', tierLabel: 'Awakened Peril',       enemyHpMultiplier: 1.75, enemyDamageMultiplier: 1.5,  enemySpeedMultiplier: 1.09, bossHpBonus: 1.22 },
+  { level: 5,  realmName: 'Dou Ling',   tierLabel: 'Spirit Calamity',      enemyHpMultiplier: 2.15, enemyDamageMultiplier: 1.72, enemySpeedMultiplier: 1.13, bossHpBonus: 1.3  },
+  { level: 6,  realmName: 'Dou Wang',   tierLabel: 'Spirit Calamity',      enemyHpMultiplier: 2.65, enemyDamageMultiplier: 1.98, enemySpeedMultiplier: 1.17, bossHpBonus: 1.38 },
+  { level: 7,  realmName: 'Dou Huang',  tierLabel: 'Sovereign Crucible',   enemyHpMultiplier: 3.25, enemyDamageMultiplier: 2.28, enemySpeedMultiplier: 1.21, bossHpBonus: 1.46 },
+  { level: 8,  realmName: 'Dou Zong',   tierLabel: 'Sovereign Crucible',   enemyHpMultiplier: 3.95, enemyDamageMultiplier: 2.62, enemySpeedMultiplier: 1.25, bossHpBonus: 1.54 },
+  { level: 9,  realmName: 'Dou Zun',    tierLabel: 'Venerate Tribulation', enemyHpMultiplier: 4.75, enemyDamageMultiplier: 3.0,  enemySpeedMultiplier: 1.29, bossHpBonus: 1.62 },
+  { level: 10, realmName: 'Ban Sheng',  tierLabel: 'Saint Tribulation',    enemyHpMultiplier: 5.65, enemyDamageMultiplier: 3.42, enemySpeedMultiplier: 1.33, bossHpBonus: 1.72 },
+  { level: 11, realmName: 'Dou Sheng',  tierLabel: 'Saint Tribulation',    enemyHpMultiplier: 6.7,  enemyDamageMultiplier: 3.9,  enemySpeedMultiplier: 1.37, bossHpBonus: 1.82 },
+  { level: 12, realmName: 'Dou Di',     tierLabel: 'Heavenly Cataclysm',   enemyHpMultiplier: 8.0,  enemyDamageMultiplier: 4.5,  enemySpeedMultiplier: 1.42, bossHpBonus: 2.0  },
+];
+
+export const SPEED_PRESET_COMBAT_MULT: Record<SpeedPreset, { hp: number; damage: number }> = {
+  chill: { hp: 0.85, damage: 0.85 },
+  classic: { hp: 1.0, damage: 1.0 },
+  turbo: { hp: 1.25, damage: 1.25 },
+};
+
+/**
+ * Autonomously determines the active difficulty tier from the player's
+ * current cultivation stage so difficulty escalates naturally with progression.
+ */
+export function computeAutonomousDifficulty(level: number): SpeedPreset {
+  if (level >= 8) return 'turbo';
+  if (level >= 4) return 'classic';
+  return 'chill';
+}
+
+export function getCultivationDifficulty(level: number): CultivationDifficultyProfile {
+  const idx = Math.max(0, Math.min(CULTIVATION_DIFFICULTY_PROFILES.length - 1, Math.round(level) - 1));
+  return CULTIVATION_DIFFICULTY_PROFILES[idx];
+}
+
+export function computeScaledEnemyStats(
+  baseHp: number,
+  level: number,
+  speedPreset: SpeedPreset,
+  isBoss: boolean,
+): ScaledEnemyStats {
+  const profile = getCultivationDifficulty(level);
+  const presetMult = SPEED_PRESET_COMBAT_MULT[speedPreset];
+  const hpMultiplier = profile.enemyHpMultiplier * presetMult.hp * (isBoss ? profile.bossHpBonus : 1.0);
+  const damageMultiplier = profile.enemyDamageMultiplier * presetMult.damage;
+  return {
+    maxHp: Math.max(1, Math.round(baseHp * hpMultiplier)),
+    hpMultiplier,
+    damageMultiplier,
+    speedMultiplier: profile.enemySpeedMultiplier,
+    tierLabel: profile.tierLabel,
+  };
+}
+
+export interface BossBarSegmentMetrics {
+  segmentCount: number;
+  hpPerSegment: number;
+  activeSegments: number;
+  segmentFills: number[];
+}
+
+/**
+ * Computes the segmented Boss Mode HP bar layout scaled to the enemy's difficulty
+ * and total health (4..16 discrete segments, each filling from 0..1).
+ */
+export function computeBossBarSegments(
+  maxHp: number,
+  hp: number,
+  difficultyHpMult: number,
+  isBoss: boolean,
+): BossBarSegmentMetrics {
+  const safeMax = Math.max(1, maxHp);
+  const safeHp = Math.max(0, Math.min(safeMax, hp));
+  const rawSegments =
+    3 +
+    Math.sqrt(Math.max(1, safeMax / 35)) +
+    (difficultyHpMult >= 2 ? Math.min(3, (difficultyHpMult - 1.5) * 0.45) : 0) +
+    (isBoss ? 1 : 0);
+  const segmentCount = Math.max(4, Math.min(16, Math.round(rawSegments)));
+  const hpPerSegment = safeMax / segmentCount;
+  const segmentFills: number[] = [];
+  let activeSegments = 0;
+
+  for (let i = 0; i < segmentCount; i++) {
+    const segStart = i * hpPerSegment;
+    const fill = Math.max(0, Math.min(1, (safeHp - segStart) / hpPerSegment));
+    segmentFills.push(fill);
+    if (fill > 0.001) activeSegments++;
+  }
+
+  return {
+    segmentCount,
+    hpPerSegment,
+    activeSegments,
+    segmentFills,
+  };
+}
 
 export const LEVEL_ENVIRONMENTS: RealmEnvironmentProfile[] = [
   {

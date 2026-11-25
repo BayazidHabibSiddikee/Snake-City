@@ -1,5 +1,19 @@
 import { BiomeId, WeatherMode } from './types';
 
+export type WeatherAudioCueKind =
+  | 'rain_splash'
+  | 'thunder_jolt'
+  | 'blizzard_gust'
+  | 'ash_cinder'
+  | 'wind_surge';
+
+export interface WeatherAudioCueEvent {
+  kind: WeatherAudioCueKind;
+  intensity: number;
+  /** Stereo pan in [-1, 1] (-1 = left, +1 = right) so screen-space VFX bias matches audio direction */
+  pan: number;
+}
+
 type TierTriggerKind =
   | 'cicadaPulse'
   | 'bambooClack'
@@ -13,6 +27,208 @@ type TierTriggerKind =
   | 'crystalChimes'
   | 'etherealChoir'
   | 'solarAscensionChime';
+
+export interface WeatherSoundscapeMix {
+  toneCutoffHz: number;
+  windGainMul: number;
+  windFreqOffset: number;
+  windQ: number;
+  windLfoHz: number;
+  howlGain: number;
+  howlFreqA: number;
+  howlFreqB: number;
+  howlQ: number;
+  howlLfoHz: number;
+  leafGainMul: number;
+  leafFreqOffset: number;
+  leafLfoHz: number;
+  rainBaseLevel: number;
+  rainBodyMul: number;
+  rainHighMul: number;
+  rainWashMul: number;
+  streamGainMul: number;
+  mistHushGain: number;
+  sleetHissGain: number;
+  ashRumbleGain: number;
+  wildlifeGain: number;
+}
+
+/**
+ * Weather-adaptive ambient soundscape stem mix table.
+ * Each weather setting smoothly crossfades across 6 continuous stems:
+ * wind bed, dual stereo howling wind, 3-band rainfall, rustling leaves/canopy,
+ * valley stream + mist hush, and blizzard sleet / volcanic ash rumble.
+ */
+export const WEATHER_SOUNDSCAPE_MIX: Record<WeatherMode, WeatherSoundscapeMix> = {
+  clear: {
+    toneCutoffHz: 14500,
+    windGainMul: 0.92,
+    windFreqOffset: 0,
+    windQ: 2.2,
+    windLfoHz: 0.095,
+    howlGain: 0.0001,
+    howlFreqA: 560,
+    howlFreqB: 840,
+    howlQ: 8.0,
+    howlLfoHz: 0.08,
+    leafGainMul: 1.18,
+    leafFreqOffset: 140,
+    leafLfoHz: 0.22,
+    rainBaseLevel: 0,
+    rainBodyMul: 0,
+    rainHighMul: 0,
+    rainWashMul: 0,
+    streamGainMul: 1.12,
+    mistHushGain: 0.0001,
+    sleetHissGain: 0.0001,
+    ashRumbleGain: 0.0001,
+    wildlifeGain: 0.95,
+  },
+  mist: {
+    toneCutoffHz: 6800,
+    windGainMul: 0.82,
+    windFreqOffset: -55,
+    windQ: 1.9,
+    windLfoHz: 0.085,
+    howlGain: 0.004,
+    howlFreqA: 510,
+    howlFreqB: 760,
+    howlQ: 7.5,
+    howlLfoHz: 0.075,
+    leafGainMul: 0.84,
+    leafFreqOffset: -180,
+    leafLfoHz: 0.17,
+    rainBaseLevel: 0,
+    rainBodyMul: 0,
+    rainHighMul: 0,
+    rainWashMul: 0,
+    streamGainMul: 1.0,
+    mistHushGain: 0.055,
+    sleetHissGain: 0.0001,
+    ashRumbleGain: 0.0001,
+    wildlifeGain: 0.82,
+  },
+  fog: {
+    toneCutoffHz: 2450,
+    windGainMul: 0.66,
+    windFreqOffset: -135,
+    windQ: 1.6,
+    windLfoHz: 0.065,
+    howlGain: 0.012,
+    howlFreqA: 420,
+    howlFreqB: 630,
+    howlQ: 6.5,
+    howlLfoHz: 0.06,
+    leafGainMul: 0.38,
+    leafFreqOffset: -550,
+    leafLfoHz: 0.12,
+    rainBaseLevel: 0,
+    rainBodyMul: 0,
+    rainHighMul: 0,
+    rainWashMul: 0,
+    streamGainMul: 0.72,
+    mistHushGain: 0.098,
+    sleetHissGain: 0.0001,
+    ashRumbleGain: 0.015,
+    wildlifeGain: 0.52,
+  },
+  rain: {
+    toneCutoffHz: 9200,
+    windGainMul: 1.14,
+    windFreqOffset: 25,
+    windQ: 2.3,
+    windLfoHz: 0.145,
+    howlGain: 0.024,
+    howlFreqA: 540,
+    howlFreqB: 810,
+    howlQ: 8.5,
+    howlLfoHz: 0.11,
+    leafGainMul: 1.32,
+    leafFreqOffset: 220,
+    leafLfoHz: 0.34,
+    rainBaseLevel: 0.74,
+    rainBodyMul: 1.0,
+    rainHighMul: 1.05,
+    rainWashMul: 0.55,
+    streamGainMul: 1.18,
+    mistHushGain: 0.025,
+    sleetHissGain: 0.0001,
+    ashRumbleGain: 0.008,
+    wildlifeGain: 0.45,
+  },
+  storm: {
+    toneCutoffHz: 8100,
+    windGainMul: 1.54,
+    windFreqOffset: 115,
+    windQ: 3.0,
+    windLfoHz: 0.21,
+    howlGain: 0.145,
+    howlFreqA: 640,
+    howlFreqB: 980,
+    howlQ: 11.0,
+    howlLfoHz: 0.16,
+    leafGainMul: 1.58,
+    leafFreqOffset: 420,
+    leafLfoHz: 0.48,
+    rainBaseLevel: 0.94,
+    rainBodyMul: 1.38,
+    rainHighMul: 1.42,
+    rainWashMul: 1.32,
+    streamGainMul: 0.85,
+    mistHushGain: 0.02,
+    sleetHissGain: 0.018,
+    ashRumbleGain: 0.052,
+    wildlifeGain: 0.62,
+  },
+  blizzard: {
+    toneCutoffHz: 5100,
+    windGainMul: 1.72,
+    windFreqOffset: 250,
+    windQ: 4.1,
+    windLfoHz: 0.25,
+    howlGain: 0.22,
+    howlFreqA: 760,
+    howlFreqB: 1180,
+    howlQ: 13.5,
+    howlLfoHz: 0.19,
+    leafGainMul: 0.96,
+    leafFreqOffset: 680,
+    leafLfoHz: 0.42,
+    rainBaseLevel: 0,
+    rainBodyMul: 0,
+    rainHighMul: 0,
+    rainWashMul: 0,
+    streamGainMul: 0.35,
+    mistHushGain: 0.036,
+    sleetHissGain: 0.105,
+    ashRumbleGain: 0.024,
+    wildlifeGain: 0.48,
+  },
+  ashstorm: {
+    toneCutoffHz: 2250,
+    windGainMul: 1.46,
+    windFreqOffset: -175,
+    windQ: 1.75,
+    windLfoHz: 0.17,
+    howlGain: 0.088,
+    howlFreqA: 340,
+    howlFreqB: 520,
+    howlQ: 9.2,
+    howlLfoHz: 0.125,
+    leafGainMul: 0.68,
+    leafFreqOffset: -360,
+    leafLfoHz: 0.28,
+    rainBaseLevel: 0,
+    rainBodyMul: 0,
+    rainHighMul: 0,
+    rainWashMul: 0,
+    streamGainMul: 0.24,
+    mistHushGain: 0.044,
+    sleetHissGain: 0.038,
+    ashRumbleGain: 0.21,
+    wildlifeGain: 0.56,
+  },
+};
 
 interface EvolutionSoundscapeProfile {
   level: number;
@@ -285,17 +501,29 @@ export class SoundEngine {
   // Ambient soundscape graph nodes
   private ambientStarted = false;
   private pinkNoiseBuffer: AudioBuffer | null = null;
+  private whiteNoiseBuffer: AudioBuffer | null = null;
   private ambientMasterGain: GainNode | null = null;
   private weatherToneFilter: BiquadFilterNode | null = null;
   private windFilter: BiquadFilterNode | null = null;
   private windGain: GainNode | null = null;
+  private windLfo: OscillatorNode | null = null;
   private windLfoGain: GainNode | null = null;
+  private howlFilterA: BiquadFilterNode | null = null;
+  private howlFilterB: BiquadFilterNode | null = null;
+  private howlLfoA: OscillatorNode | null = null;
+  private howlLfoB: OscillatorNode | null = null;
+  private howlGain: GainNode | null = null;
   private leafFilter: BiquadFilterNode | null = null;
   private leafGain: GainNode | null = null;
+  private leafLfo: OscillatorNode | null = null;
   private streamFilter: BiquadFilterNode | null = null;
   private streamGain: GainNode | null = null;
+  private mistHushGain: GainNode | null = null;
   private rainBodyGain: GainNode | null = null;
   private rainHighGain: GainNode | null = null;
+  private rainWashGain: GainNode | null = null;
+  private sleetHissGain: GainNode | null = null;
+  private ashRumbleGain: GainNode | null = null;
   private birdBus: GainNode | null = null;
   private ambientTimer = 0;
 
@@ -311,6 +539,20 @@ export class SoundEngine {
   private tierTriggerBus: GainNode | null = null;
   private tierAmbientTimer = 0;
   private tierTransitionTimer = 0;
+  private onWeatherAudioCue: ((cue: WeatherAudioCueEvent) => void) | null = null;
+
+  public setWeatherAudioCueListener(fn: ((cue: WeatherAudioCueEvent) => void) | null): void {
+    this.onWeatherAudioCue = fn;
+  }
+
+  private emitWeatherCue(kind: WeatherAudioCueKind, intensity: number, pan: number): void {
+    if (!this.onWeatherAudioCue) return;
+    this.onWeatherAudioCue({
+      kind,
+      intensity: Math.max(0.1, Math.min(1.2, intensity)),
+      pan: Math.max(-1, Math.min(1, pan)),
+    });
+  }
 
   private ensureContext(): AudioContext | null {
     if (!this.ctx) {
@@ -321,10 +563,23 @@ export class SoundEngine {
         this.ctx = new AudioCtx();
       }
     }
+    if (this.ctx && !this.sfxBus) {
+      const bus = this.ctx.createGain();
+      bus.gain.setValueAtTime(
+        this.muted ? 0.0001 : Math.max(0.0001, this.sfxVolume * this.masterVolume),
+        this.ctx.currentTime,
+      );
+      bus.connect(this.ctx.destination);
+      this.sfxBus = bus;
+    }
     if (this.ctx && this.ctx.state === 'suspended' && !this.muted) {
       this.ctx.resume().catch(() => {});
     }
     return this.ctx;
+  }
+
+  private getSfxDest(ctx: AudioContext): AudioNode {
+    return this.sfxBus ?? ctx.destination;
   }
 
   public isMuted(): boolean {
@@ -403,28 +658,103 @@ export class SoundEngine {
   }
 
   public setWeather(weather: WeatherMode): void {
+    const prev = this.weather;
+    const changed = prev !== weather;
     this.weather = weather;
-    if (weather !== 'rain') {
+    const mix = WEATHER_SOUNDSCAPE_MIX[weather];
+    if (mix.rainBaseLevel <= 0) {
       this.rainIntensity = 0;
-    } else if (this.rainIntensity < 0.2) {
-      this.rainIntensity = 0.65;
+    } else if (weather === 'storm') {
+      this.rainIntensity = Math.max(this.rainIntensity, mix.rainBaseLevel);
+    } else if (this.rainIntensity < 0.25) {
+      this.rainIntensity = mix.rainBaseLevel;
     }
     if (!this.ctx || !this.ambientStarted) return;
-    this.applyBiomeParams(this.ctx, true);
+
+    // Smooth ~1.15s exponential crossfade across all ambient soundscape stems
+    this.applyBiomeParams(this.ctx, true, 1.15);
+
+    if (changed && !this.muted && !this.tabHidden && this.ctx.state === 'running') {
+      this.playWeatherTransitionFront(this.ctx, prev, weather);
+      this.scheduleNextWildlifeEvent(850 + Math.random() * 650);
+    }
   }
 
   public setRainIntensity(intensity01: number): void {
     const clamped = Math.max(0, Math.min(1, intensity01));
-    if (Math.abs(clamped - this.rainIntensity) < 0.03) return;
+    if (Math.abs(clamped - this.rainIntensity) < 0.025) return;
     this.rainIntensity = clamped;
     if (!this.ctx || !this.ambientStarted) return;
     const now = this.ctx.currentTime;
-    const active = this.weather === 'rain' ? clamped : 0;
+    const mix = WEATHER_SOUNDSCAPE_MIX[this.weather];
+    const active = mix.rainBaseLevel > 0 ? clamped : 0;
     if (this.rainBodyGain) {
-      this.rainBodyGain.gain.setTargetAtTime(active * 0.24, now, 0.55);
+      this.rainBodyGain.gain.setTargetAtTime(Math.max(0.0001, active * 0.24 * mix.rainBodyMul), now, 0.65);
     }
     if (this.rainHighGain) {
-      this.rainHighGain.gain.setTargetAtTime(active * 0.11, now, 0.55);
+      this.rainHighGain.gain.setTargetAtTime(Math.max(0.0001, active * 0.115 * mix.rainHighMul), now, 0.65);
+    }
+    if (this.rainWashGain) {
+      this.rainWashGain.gain.setTargetAtTime(Math.max(0.0001, active * 0.13 * mix.rainWashMul), now, 0.75);
+    }
+  }
+
+  /**
+   * Plays a stereo thunder crack + delayed valley rolling rumble synchronized
+   * with visual storm lightning flashes in the 3D world.
+   */
+  public playLightningThunder(intensity = 1): void {
+    if (this.muted || this.tabHidden || !this.ctx || !this.ambientStarted || this.ctx.state !== 'running') {
+      return;
+    }
+    const ctx = this.ctx;
+    const dest = this.ambientMasterGain ?? ctx.destination;
+    const now = ctx.currentTime;
+    const amp = Math.max(0.45, Math.min(1.25, intensity));
+    const pan = (Math.random() - 0.5) * 1.4;
+    const out = this.createPanner(ctx, dest, pan);
+    this.emitWeatherCue('thunder_jolt', amp, pan);
+
+    // 1. High-altitude crisp electric crack (short burst of bandpass white noise)
+    if (this.whiteNoiseBuffer) {
+      const crackSrc = ctx.createBufferSource();
+      crackSrc.buffer = this.whiteNoiseBuffer;
+      const crackBp = ctx.createBiquadFilter();
+      crackBp.type = 'bandpass';
+      crackBp.frequency.setValueAtTime(1650 + Math.random() * 550, now);
+      crackBp.frequency.exponentialRampToValueAtTime(320, now + 0.28);
+      crackBp.Q.value = 1.2;
+      const crackGain = ctx.createGain();
+      crackGain.gain.setValueAtTime(0.0001, now);
+      crackGain.gain.linearRampToValueAtTime(0.14 * amp, now + 0.018);
+      crackGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.34);
+      crackSrc.connect(crackBp);
+      crackBp.connect(crackGain);
+      crackGain.connect(out);
+      crackSrc.start(now, Math.random() * 2.5, 0.38);
+    }
+
+    // 2. Deep echoing valley thunder roll (delayed slightly for realistic distance)
+    if (this.pinkNoiseBuffer) {
+      const delayOffset = 0.14 + Math.random() * 0.24;
+      const dur = 2.8 + Math.random() * 1.8;
+      const rollSrc = ctx.createBufferSource();
+      rollSrc.buffer = this.pinkNoiseBuffer;
+      rollSrc.loop = true;
+      const lp = ctx.createBiquadFilter();
+      lp.type = 'lowpass';
+      lp.frequency.setValueAtTime(220, now + delayOffset);
+      lp.frequency.exponentialRampToValueAtTime(52, now + delayOffset + dur);
+      const rollGain = ctx.createGain();
+      rollGain.gain.setValueAtTime(0.0001, now + delayOffset);
+      rollGain.gain.linearRampToValueAtTime(0.28 * amp, now + delayOffset + 0.22);
+      rollGain.gain.exponentialRampToValueAtTime(0.09 * amp, now + delayOffset + dur * 0.45);
+      rollGain.gain.linearRampToValueAtTime(0.14 * amp, now + delayOffset + dur * 0.58);
+      rollGain.gain.exponentialRampToValueAtTime(0.0001, now + delayOffset + dur);
+      rollSrc.connect(lp);
+      lp.connect(rollGain);
+      rollGain.connect(out);
+      rollSrc.start(now + delayOffset, Math.random() * 4.5, dur + 0.1);
     }
   }
 
@@ -500,17 +830,37 @@ export class SoundEngine {
     return buffer;
   }
 
+  private createWhiteNoiseBuffer(ctx: AudioContext, seconds = 4): AudioBuffer {
+    const length = Math.floor(ctx.sampleRate * seconds);
+    const buffer = ctx.createBuffer(2, length, ctx.sampleRate);
+    for (let ch = 0; ch < 2; ch++) {
+      const data = buffer.getChannelData(ch);
+      for (let i = 0; i < length; i++) {
+        data[i] = (Math.random() * 2 - 1) * 0.36;
+      }
+      const fadeSamples = Math.floor(ctx.sampleRate * 0.12);
+      for (let i = 0; i < fadeSamples; i++) {
+        const t = i / fadeSamples;
+        const endIdx = length - fadeSamples + i;
+        data[endIdx] = data[endIdx] * (1 - t) + data[i] * t;
+      }
+    }
+    return buffer;
+  }
+
   private startAmbientLayers(ctx: AudioContext): void {
     this.ambientStarted = true;
     const noiseBuffer = this.createPinkNoiseBuffer(ctx, 6);
+    const whiteBuffer = this.createWhiteNoiseBuffer(ctx, 4);
     this.pinkNoiseBuffer = noiseBuffer;
+    this.whiteNoiseBuffer = whiteBuffer;
 
     const master = ctx.createGain();
     master.gain.setValueAtTime(0.0001, ctx.currentTime);
     master.connect(ctx.destination);
     this.ambientMasterGain = master;
 
-    // Weather acoustic shaper (bright in clear air, softly damped in mist, muffled in dense fog)
+    // Weather acoustic shaper (bright in clear air, softly damped in mist, muffled in dense fog/ash)
     const weatherTone = ctx.createBiquadFilter();
     weatherTone.type = 'lowpass';
     weatherTone.frequency.value = 9500;
@@ -557,7 +907,62 @@ export class SoundEngine {
 
     this.windFilter = windFilter;
     this.windGain = windGain;
+    this.windLfo = windLfo;
     this.windLfoGain = windLfoGain;
+
+    // 1B. Dedicated Stereo Howling Wind Stem (dual high-Q resonant pitch-swept gales for storm/blizzard/ash)
+    const howlBus = ctx.createGain();
+    howlBus.gain.value = 0.0001;
+    howlBus.connect(master);
+
+    const howlSrcA = ctx.createBufferSource();
+    howlSrcA.buffer = noiseBuffer;
+    howlSrcA.loop = true;
+    const howlFilterA = ctx.createBiquadFilter();
+    howlFilterA.type = 'bandpass';
+    howlFilterA.frequency.value = 640;
+    howlFilterA.Q.value = 10.5;
+    const howlLfoA = ctx.createOscillator();
+    howlLfoA.type = 'sine';
+    howlLfoA.frequency.value = 0.14;
+    const howlLfoGainA = ctx.createGain();
+    howlLfoGainA.gain.value = 190;
+    howlLfoA.connect(howlLfoGainA);
+    howlLfoGainA.connect(howlFilterA.frequency);
+    const howlPanA = this.createPanner(ctx, howlBus, -0.55);
+    howlSrcA.connect(howlFilterA);
+    howlFilterA.connect(howlPanA);
+    howlSrcA.start(ctx.currentTime, 0.7);
+    howlLfoA.start(ctx.currentTime);
+
+    const howlSrcB = ctx.createBufferSource();
+    howlSrcB.buffer = noiseBuffer;
+    howlSrcB.loop = true;
+    const howlFilterB = ctx.createBiquadFilter();
+    howlFilterB.type = 'bandpass';
+    howlFilterB.frequency.value = 980;
+    howlFilterB.Q.value = 12.0;
+    const howlLfoB = ctx.createOscillator();
+    howlLfoB.type = 'sine';
+    howlLfoB.frequency.value = 0.095;
+    const howlLfoGainB = ctx.createGain();
+    howlLfoGainB.gain.value = 260;
+    howlLfoB.connect(howlLfoGainB);
+    howlLfoGainB.connect(howlFilterB.frequency);
+    const howlGainB = ctx.createGain();
+    howlGainB.gain.value = 0.72;
+    const howlPanB = this.createPanner(ctx, howlBus, 0.55);
+    howlSrcB.connect(howlFilterB);
+    howlFilterB.connect(howlGainB);
+    howlGainB.connect(howlPanB);
+    howlSrcB.start(ctx.currentTime, 3.1);
+    howlLfoB.start(ctx.currentTime);
+
+    this.howlFilterA = howlFilterA;
+    this.howlFilterB = howlFilterB;
+    this.howlLfoA = howlLfoA;
+    this.howlLfoB = howlLfoB;
+    this.howlGain = howlBus;
 
     // 2. Looping Rustling Leaves / Pine Needles Layer (offset start so no phasing)
     const leafSrc = ctx.createBufferSource();
@@ -589,8 +994,9 @@ export class SoundEngine {
 
     this.leafFilter = leafFilter;
     this.leafGain = leafGain;
+    this.leafLfo = leafLfo;
 
-    // 3. Distant Jungle River / Alpine Ridge Air Shimmer
+    // 3. Distant Jungle River / Alpine Ridge Air Shimmer + Mist/Fog Hush Bed
     const streamSrc = ctx.createBufferSource();
     streamSrc.buffer = noiseBuffer;
     streamSrc.loop = true;
@@ -611,7 +1017,23 @@ export class SoundEngine {
     this.streamFilter = streamFilter;
     this.streamGain = streamGain;
 
-    // 4. Procedural Dual-Band Light Rain Patter Layer (body rainfall + sparkling needle hiss)
+    // 3B. Soft Atmospheric Mist / Fog Hush Bed (low-mid veiled valley pressure)
+    const mistSrc = ctx.createBufferSource();
+    mistSrc.buffer = noiseBuffer;
+    mistSrc.loop = true;
+    const mistFilter = ctx.createBiquadFilter();
+    mistFilter.type = 'bandpass';
+    mistFilter.frequency.value = 260;
+    mistFilter.Q.value = 0.9;
+    const mistHushGain = ctx.createGain();
+    mistHushGain.gain.value = 0.0001;
+    mistSrc.connect(mistFilter);
+    mistFilter.connect(mistHushGain);
+    mistHushGain.connect(master);
+    mistSrc.start(ctx.currentTime, 5.05);
+    this.mistHushGain = mistHushGain;
+
+    // 4. Procedural 3-Band Rainfall Layer (warm body patter + crisp droplet hiss + downpour wash)
     const rainBodySrc = ctx.createBufferSource();
     rainBodySrc.buffer = noiseBuffer;
     rainBodySrc.loop = true;
@@ -628,18 +1050,79 @@ export class SoundEngine {
     this.rainBodyGain = rainBodyGain;
 
     const rainHighSrc = ctx.createBufferSource();
-    rainHighSrc.buffer = noiseBuffer;
+    rainHighSrc.buffer = whiteBuffer;
     rainHighSrc.loop = true;
     const rainHighFilter = ctx.createBiquadFilter();
     rainHighFilter.type = 'highpass';
-    rainHighFilter.frequency.value = 4600;
+    rainHighFilter.frequency.value = 4800;
     const rainHighGain = ctx.createGain();
     rainHighGain.gain.value = 0.0001;
     rainHighSrc.connect(rainHighFilter);
     rainHighFilter.connect(rainHighGain);
     rainHighGain.connect(master);
-    rainHighSrc.start(ctx.currentTime, 3.45);
+    rainHighSrc.start(ctx.currentTime, 0.85);
     this.rainHighGain = rainHighGain;
+
+    const rainWashSrc = ctx.createBufferSource();
+    rainWashSrc.buffer = noiseBuffer;
+    rainWashSrc.loop = true;
+    const rainWashFilter = ctx.createBiquadFilter();
+    rainWashFilter.type = 'lowpass';
+    rainWashFilter.frequency.value = 680;
+    const rainWashGain = ctx.createGain();
+    rainWashGain.gain.value = 0.0001;
+    rainWashSrc.connect(rainWashFilter);
+    rainWashFilter.connect(rainWashGain);
+    rainWashGain.connect(master);
+    rainWashSrc.start(ctx.currentTime, 3.8);
+    this.rainWashGain = rainWashGain;
+
+    // 4B. Blizzard Crystalline Sleet Hiss & Volcanic Ashstorm Deep Rumble Stems
+    const sleetSrc = ctx.createBufferSource();
+    sleetSrc.buffer = whiteBuffer;
+    sleetSrc.loop = true;
+    const sleetFilter = ctx.createBiquadFilter();
+    sleetFilter.type = 'bandpass';
+    sleetFilter.frequency.value = 6200;
+    sleetFilter.Q.value = 1.6;
+    const sleetLfo = ctx.createOscillator();
+    sleetLfo.type = 'sine';
+    sleetLfo.frequency.value = 0.29;
+    const sleetLfoGain = ctx.createGain();
+    sleetLfoGain.gain.value = 1200;
+    sleetLfo.connect(sleetLfoGain);
+    sleetLfoGain.connect(sleetFilter.frequency);
+    const sleetHissGain = ctx.createGain();
+    sleetHissGain.gain.value = 0.0001;
+    sleetSrc.connect(sleetFilter);
+    sleetFilter.connect(sleetHissGain);
+    sleetHissGain.connect(master);
+    sleetSrc.start(ctx.currentTime, 2.1);
+    sleetLfo.start(ctx.currentTime);
+    this.sleetHissGain = sleetHissGain;
+
+    const ashSrc = ctx.createBufferSource();
+    ashSrc.buffer = noiseBuffer;
+    ashSrc.loop = true;
+    const ashFilter = ctx.createBiquadFilter();
+    ashFilter.type = 'lowpass';
+    ashFilter.frequency.value = 145;
+    ashFilter.Q.value = 1.3;
+    const ashLfo = ctx.createOscillator();
+    ashLfo.type = 'sine';
+    ashLfo.frequency.value = 0.13;
+    const ashLfoGain = ctx.createGain();
+    ashLfoGain.gain.value = 38;
+    ashLfo.connect(ashLfoGain);
+    ashLfoGain.connect(ashFilter.frequency);
+    const ashRumbleGain = ctx.createGain();
+    ashRumbleGain.gain.value = 0.0001;
+    ashSrc.connect(ashFilter);
+    ashFilter.connect(ashRumbleGain);
+    ashRumbleGain.connect(master);
+    ashSrc.start(ctx.currentTime, 1.9);
+    ashLfo.start(ctx.currentTime);
+    this.ashRumbleGain = ashRumbleGain;
 
     // 5. Distant Birds & Natural Wildlife Bus (with subtle canyon/canopy slapback echo)
     const birdBus = ctx.createGain();
@@ -781,63 +1264,165 @@ export class SoundEngine {
     }
   }
 
-  private applyBiomeParams(ctx: AudioContext, smooth: boolean): void {
+  private applyBiomeParams(ctx: AudioContext, smooth: boolean, tauOverride?: number): void {
     const now = ctx.currentTime;
-    const tau = smooth ? 0.9 : 0.05;
+    const tau = smooth ? (tauOverride ?? 0.95) : 0.05;
     const isJungle = this.biome === 'jungle';
     const alt = this.altitudeFactor;
-    const w = this.weather;
+    const mix = WEATHER_SOUNDSCAPE_MIX[this.weather];
+    const tierProfile = this.getTierProfile();
 
-    // Acoustic brightness per weather (clear bright air -> misty softness -> muffled dense fog)
+    // 1. Master Weather Acoustic Brightness Shaper
     if (this.weatherToneFilter) {
-      const cutoff =
-        w === 'fog' ? 2600 : w === 'mist' ? 6800 : w === 'rain' ? 9200 : 14000;
-      this.weatherToneFilter.frequency.setTargetAtTime(cutoff, now, tau);
+      this.weatherToneFilter.frequency.setTargetAtTime(mix.toneCutoffHz, now, tau);
     }
 
-    const tierProfile = this.getTierProfile();
-    const windMult = w === 'fog' ? 0.72 : w === 'mist' ? 0.88 : w === 'rain' ? 1.1 : 1.0;
+    // 2. Wind Bed Stem (valley breeze -> gale)
     if (this.windFilter && this.windGain && this.windLfoGain) {
       const baseFreq = isJungle ? 310 : 520;
-      const freqShift = w === 'fog' ? -130 : w === 'mist' ? -55 : 0;
       this.windFilter.frequency.setTargetAtTime(
-        Math.max(180, baseFreq + alt * 260 + freqShift + tierProfile.windPitchBias),
+        Math.max(145, baseFreq + alt * 260 + mix.windFreqOffset + tierProfile.windPitchBias),
         now,
         tau,
       );
-      this.windFilter.Q.setTargetAtTime(isJungle ? 1.4 : (w === 'fog' ? 1.8 : 2.8 + alt * 1.1), now, tau);
-      this.windGain.gain.setTargetAtTime(((isJungle ? 0.22 : 0.3) + alt * 0.14) * windMult, now, tau);
-      this.windLfoGain.gain.setTargetAtTime(((isJungle ? 110 : 220) + alt * 90) * windMult, now, tau);
+      const qVal = isJungle ? Math.max(1.25, mix.windQ * 0.72) : mix.windQ + alt * 0.85;
+      this.windFilter.Q.setTargetAtTime(qVal, now, tau);
+      this.windGain.gain.setTargetAtTime(
+        Math.max(0.0001, ((isJungle ? 0.21 : 0.29) + alt * 0.14) * mix.windGainMul),
+        now,
+        tau,
+      );
+      this.windLfoGain.gain.setTargetAtTime(
+        ((isJungle ? 115 : 225) + alt * 95) * mix.windGainMul,
+        now,
+        tau,
+      );
+      if (this.windLfo) {
+        this.windLfo.frequency.setTargetAtTime(mix.windLfoHz + alt * 0.04, now, tau);
+      }
     }
 
+    // 3. Stereo Howling Wind Stem (crossfades smoothly into storm/blizzard/ashstorm + faint high-altitude alpine howl)
+    if (this.howlGain && this.howlFilterA && this.howlFilterB) {
+      const altitudeHowl = isJungle ? 0 : Math.max(0, alt - 0.55) * 0.045;
+      const targetHowl = Math.max(0.0001, mix.howlGain + altitudeHowl);
+      this.howlGain.gain.setTargetAtTime(targetHowl, now, tau * 1.15);
+      this.howlFilterA.frequency.setTargetAtTime(mix.howlFreqA + alt * 120, now, tau);
+      this.howlFilterB.frequency.setTargetAtTime(mix.howlFreqB + alt * 150, now, tau);
+      this.howlFilterA.Q.setTargetAtTime(mix.howlQ, now, tau);
+      this.howlFilterB.Q.setTargetAtTime(mix.howlQ * 1.12, now, tau);
+      if (this.howlLfoA) {
+        this.howlLfoA.frequency.setTargetAtTime(mix.howlLfoHz, now, tau);
+      }
+      if (this.howlLfoB) {
+        this.howlLfoB.frequency.setTargetAtTime(mix.howlLfoHz * 0.68, now, tau);
+      }
+    }
+
+    // 4. Rustling Leaves / Canopy Foliage Stem
     if (this.leafFilter && this.leafGain) {
-      const leafMult = w === 'fog' ? 0.45 : w === 'mist' ? 0.75 : w === 'rain' ? 1.2 : 1.0;
-      this.leafFilter.frequency.setTargetAtTime(isJungle ? 2750 : 4100, now, tau);
-      this.leafFilter.Q.setTargetAtTime(isJungle ? 1.0 : 1.7, now, tau);
-      this.leafGain.gain.setTargetAtTime((isJungle ? 0.14 : 0.085) * leafMult, now, tau);
+      const baseLeafHz = isJungle ? 2750 : 4050;
+      this.leafFilter.frequency.setTargetAtTime(
+        Math.max(1200, baseLeafHz + mix.leafFreqOffset),
+        now,
+        tau,
+      );
+      this.leafFilter.Q.setTargetAtTime(isJungle ? 1.0 : 1.65, now, tau);
+      this.leafGain.gain.setTargetAtTime(
+        Math.max(0.0001, (isJungle ? 0.145 : 0.088) * mix.leafGainMul),
+        now,
+        tau,
+      );
+      if (this.leafLfo) {
+        this.leafLfo.frequency.setTargetAtTime(mix.leafLfoHz, now, tau);
+      }
     }
 
+    // 5. Distant Jungle River / Alpine Ridge Stream & Mist/Fog Hush Stems
     if (this.streamFilter && this.streamGain) {
       this.streamFilter.frequency.setTargetAtTime(isJungle ? 980 : 1450, now, tau);
       this.streamGain.gain.setTargetAtTime(
-        (isJungle ? 0.095 : 0.055) * (1 - alt * 0.45),
+        Math.max(0.0001, (isJungle ? 0.095 : 0.055) * (1 - alt * 0.45) * mix.streamGainMul),
         now,
         tau,
       );
     }
-
-    if (this.birdBus) {
-      const wildlifeLevel = w === 'rain' ? 0.42 : w === 'fog' ? 0.55 : w === 'mist' ? 0.8 : 0.92;
-      this.birdBus.gain.setTargetAtTime(wildlifeLevel, now, tau);
+    if (this.mistHushGain) {
+      this.mistHushGain.gain.setTargetAtTime(Math.max(0.0001, mix.mistHushGain), now, tau * 1.2);
     }
 
-    const activeRain = w === 'rain' ? this.rainIntensity : 0;
+    // 6. 3-Band Rainfall Stem (body patter, high droplet splash, downpour wash)
+    const activeRain = mix.rainBaseLevel > 0 ? Math.max(this.rainIntensity, mix.rainBaseLevel * 0.65) : 0;
     if (this.rainBodyGain) {
-      this.rainBodyGain.gain.setTargetAtTime(activeRain * 0.24, now, tau);
+      this.rainBodyGain.gain.setTargetAtTime(
+        Math.max(0.0001, activeRain * 0.24 * mix.rainBodyMul),
+        now,
+        tau,
+      );
     }
     if (this.rainHighGain) {
-      this.rainHighGain.gain.setTargetAtTime(activeRain * 0.11, now, tau);
+      this.rainHighGain.gain.setTargetAtTime(
+        Math.max(0.0001, activeRain * 0.115 * mix.rainHighMul),
+        now,
+        tau,
+      );
     }
+    if (this.rainWashGain) {
+      this.rainWashGain.gain.setTargetAtTime(
+        Math.max(0.0001, activeRain * 0.13 * mix.rainWashMul),
+        now,
+        tau * 1.15,
+      );
+    }
+
+    // 7. Blizzard Crystalline Sleet Hiss & Volcanic Ashstorm Deep Rumble Stems
+    if (this.sleetHissGain) {
+      this.sleetHissGain.gain.setTargetAtTime(Math.max(0.0001, mix.sleetHissGain), now, tau * 1.1);
+    }
+    if (this.ashRumbleGain) {
+      this.ashRumbleGain.gain.setTargetAtTime(Math.max(0.0001, mix.ashRumbleGain), now, tau * 1.25);
+    }
+
+    // 8. Wildlife & Weather Event Bus
+    if (this.birdBus) {
+      this.birdBus.gain.setTargetAtTime(Math.max(0.0001, mix.wildlifeGain), now, tau);
+    }
+  }
+
+  /**
+   * Subtle atmospheric front sweep played whenever the weather setting transitions,
+   * smoothly bridging the outgoing and incoming soundscapes.
+   */
+  private playWeatherTransitionFront(ctx: AudioContext, _from: WeatherMode, to: WeatherMode): void {
+    const dest = this.ambientMasterGain ?? ctx.destination;
+    if (!this.pinkNoiseBuffer) return;
+    const now = ctx.currentTime;
+    const isSevere = to === 'storm' || to === 'blizzard' || to === 'ashstorm';
+    const dur = isSevere ? 2.4 : 1.7;
+
+    const src = ctx.createBufferSource();
+    src.buffer = this.pinkNoiseBuffer;
+    src.loop = true;
+
+    const bp = ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.Q.value = to === 'blizzard' ? 4.8 : to === 'ashstorm' ? 1.8 : 2.2;
+    const startHz = to === 'ashstorm' ? 180 : to === 'blizzard' ? 480 : 320;
+    const peakHz = to === 'blizzard' ? 1650 : to === 'storm' ? 1150 : to === 'ashstorm' ? 420 : 960;
+    bp.frequency.setValueAtTime(startHz, now);
+    bp.frequency.exponentialRampToValueAtTime(peakHz, now + dur * 0.42);
+    bp.frequency.exponentialRampToValueAtTime(startHz * 1.2, now + dur);
+
+    const gain = ctx.createGain();
+    const peakGain = isSevere ? 0.16 : 0.085;
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.linearRampToValueAtTime(peakGain, now + dur * 0.36);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+
+    src.connect(bp);
+    bp.connect(gain);
+    gain.connect(dest);
+    src.start(now, Math.random() * 4.0, dur + 0.08);
   }
 
   private altitudeFactor = 0;
@@ -853,15 +1438,19 @@ export class SoundEngine {
   private updateAmbientGain(): void {
     if (!this.ctx || !this.ambientMasterGain) return;
     const now = this.ctx.currentTime;
-    let target = 0.52 * this.ambientVolume * this.masterVolume;
+    let target = 0.54 * this.ambientVolume * this.masterVolume;
     if (this.muted || this.tabHidden) {
       target = 0.0001;
     } else if (this.pausedDuck) {
-      target = 0.24 * this.ambientVolume * this.masterVolume;
+      target = 0.25 * this.ambientVolume * this.masterVolume;
     }
-    this.ambientMasterGain.gain.setTargetAtTime(target, now, 0.35);
+    this.ambientMasterGain.gain.setTargetAtTime(Math.max(0.0001, target), now, 0.35);
     if (this.sfxBus) {
-      this.sfxBus.gain.setTargetAtTime(this.muted ? 0.0001 : this.sfxVolume * this.masterVolume, now, 0.1);
+      this.sfxBus.gain.setTargetAtTime(
+        this.muted ? 0.0001 : Math.max(0.0001, this.sfxVolume * this.masterVolume),
+        now,
+        0.1,
+      );
     }
   }
 
@@ -869,41 +1458,72 @@ export class SoundEngine {
     window.clearTimeout(this.ambientTimer);
     const nextMs =
       delayMs ??
-      (this.weather === 'rain'
-        ? 1400 + Math.random() * 2400
-        : this.weather === 'fog'
-          ? 3400 + Math.random() * 4800
-          : this.biome === 'jungle'
-            ? 1900 + Math.random() * 3400
-            : 3100 + Math.random() * 4800);
+      (this.weather === 'storm'
+        ? 1100 + Math.random() * 1900
+        : this.weather === 'rain'
+          ? 1400 + Math.random() * 2300
+          : this.weather === 'blizzard'
+            ? 1700 + Math.random() * 2600
+            : this.weather === 'ashstorm'
+              ? 1800 + Math.random() * 2800
+              : this.weather === 'fog'
+                ? 3200 + Math.random() * 4600
+                : this.biome === 'jungle'
+                  ? 1800 + Math.random() * 3200
+                  : 2900 + Math.random() * 4500);
 
     this.ambientTimer = window.setTimeout(() => {
       if (this.ctx && this.birdBus && !this.muted && !this.tabHidden && this.ctx.state === 'running') {
-        if (this.weather === 'rain' && this.rainIntensity > 0.2) {
+        if (this.weather === 'storm') {
           const r = Math.random();
-          if (r < 0.62) {
+          if (r < 0.44) {
+            this.playDistantThunder(this.ctx, this.birdBus);
+          } else if (r < 0.74) {
             this.playRainDrip(this.ctx, this.birdBus);
-          } else if (r < 0.78) {
+          } else {
+            this.playLocalizedLeafRustle(this.ctx, this.birdBus, this.biome === 'jungle');
+          }
+        } else if (this.weather === 'ashstorm') {
+          const r = Math.random();
+          if (r < 0.48) {
+            this.playAshEmberCrackle(this.ctx, this.birdBus);
+          } else if (r < 0.82) {
+            this.playDistantThunder(this.ctx, this.birdBus);
+          } else {
+            this.playLocalizedLeafRustle(this.ctx, this.birdBus, false);
+          }
+        } else if (this.weather === 'blizzard') {
+          const r = Math.random();
+          if (r < 0.65) {
+            this.playBlizzardIceGust(this.ctx, this.birdBus);
+          } else {
+            this.playMountainWindWhistle(this.ctx, this.birdBus);
+          }
+        } else if (this.weather === 'rain' && this.rainIntensity > 0.2) {
+          const r = Math.random();
+          if (r < 0.56) {
+            this.playRainDrip(this.ctx, this.birdBus);
+          } else if (r < 0.76) {
             this.playDistantThunder(this.ctx, this.birdBus);
           } else {
             this.playLocalizedLeafRustle(this.ctx, this.birdBus, this.biome === 'jungle');
           }
         } else if (this.biome === 'jungle') {
           const roll = Math.random();
-          if (roll < 0.44) {
+          if (roll < 0.42) {
             this.playJungleSongbird(this.ctx, this.birdBus);
-          } else if (roll < 0.72) {
+          } else if (roll < 0.68) {
             this.playJungleChirpTrill(this.ctx, this.birdBus);
-          } else if (roll < 0.88) {
+          } else if (roll < 0.84) {
             this.playJungleDoveCoo(this.ctx, this.birdBus);
           } else {
             this.playLocalizedLeafRustle(this.ctx, this.birdBus, true);
           }
         } else {
           const roll = Math.random();
-          if (roll < 0.45) {
+          if (roll < 0.42) {
             this.playMountainWindWhistle(this.ctx, this.birdBus);
-          } else if (roll < 0.78) {
+          } else if (roll < 0.74) {
             this.playMountainHawkCall(this.ctx, this.birdBus);
           } else {
             this.playLocalizedLeafRustle(this.ctx, this.birdBus, false);
@@ -1396,7 +2016,13 @@ export class SoundEngine {
    */
   private playRainDrip(ctx: AudioContext, dest: AudioNode): void {
     const now = ctx.currentTime;
-    const out = this.createPanner(ctx, dest, (Math.random() - 0.5) * 1.7);
+    const pan = (Math.random() - 0.5) * 1.7;
+    const out = this.createPanner(ctx, dest, pan);
+    this.emitWeatherCue(
+      'rain_splash',
+      Math.max(0.35, this.rainIntensity * (this.weather === 'storm' ? 1.1 : 0.88)),
+      pan,
+    );
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
     osc.type = 'sine';
@@ -1413,31 +2039,134 @@ export class SoundEngine {
   }
 
   /**
-   * Very gentle distant mountain valley thunder roll during light rain showers.
+   * Very gentle distant mountain valley thunder roll during rain/storm/ashstorm.
+   * Reuses the cached pink noise buffer with zero per-event buffer allocation.
    */
   private playDistantThunder(ctx: AudioContext, dest: AudioNode): void {
+    if (!this.pinkNoiseBuffer) return;
     const now = ctx.currentTime;
     const dur = 2.6 + Math.random() * 1.6;
-    const out = this.createPanner(ctx, dest, (Math.random() - 0.5) * 1.2);
-    const buf = this.createPinkNoiseBuffer(ctx, Math.ceil(dur + 0.5));
+    const pan = (Math.random() - 0.5) * 1.2;
+    const out = this.createPanner(ctx, dest, pan);
+    this.emitWeatherCue(
+      'thunder_jolt',
+      this.weather === 'storm' ? 0.78 : 0.45,
+      pan,
+    );
     const src = ctx.createBufferSource();
-    src.buffer = buf;
+    src.buffer = this.pinkNoiseBuffer;
+    src.loop = true;
 
     const filter = ctx.createBiquadFilter();
     filter.type = 'lowpass';
-    filter.frequency.setValueAtTime(140, now);
-    filter.frequency.exponentialRampToValueAtTime(58, now + dur);
+    filter.frequency.setValueAtTime(155, now);
+    filter.frequency.exponentialRampToValueAtTime(54, now + dur);
 
     const gain = ctx.createGain();
     gain.gain.setValueAtTime(0.0001, now);
-    gain.gain.linearRampToValueAtTime(0.16, now + 0.45);
+    gain.gain.linearRampToValueAtTime(0.18, now + 0.42);
     gain.gain.exponentialRampToValueAtTime(0.0001, now + dur);
 
     src.connect(filter);
     filter.connect(gain);
     gain.connect(out);
-    src.start(now);
-    src.stop(now + dur + 0.1);
+    src.start(now, Math.random() * 4.5, dur + 0.08);
+  }
+
+  /**
+   * Stereo blizzard ice-squall gust: sweeping crystalline sleet spray + eerie high gale whistle.
+   */
+  private playBlizzardIceGust(ctx: AudioContext, dest: AudioNode): void {
+    const now = ctx.currentTime;
+    const dur = 1.6 + Math.random() * 1.3;
+    const pan = (Math.random() - 0.5) * 1.5;
+    const out = this.createPanner(ctx, dest, pan);
+    this.emitWeatherCue('blizzard_gust', 0.72 + Math.random() * 0.28, pan);
+
+    if (this.whiteNoiseBuffer) {
+      const src = ctx.createBufferSource();
+      src.buffer = this.whiteNoiseBuffer;
+      src.loop = true;
+      const bp = ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.Q.value = 3.2;
+      bp.frequency.setValueAtTime(2200 + Math.random() * 900, now);
+      bp.frequency.exponentialRampToValueAtTime(5400 + Math.random() * 1200, now + dur * 0.45);
+      bp.frequency.exponentialRampToValueAtTime(1800, now + dur);
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.linearRampToValueAtTime(0.075, now + dur * 0.35);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+      src.connect(bp);
+      bp.connect(gain);
+      gain.connect(out);
+      src.start(now, Math.random() * 2.5, dur + 0.06);
+    }
+
+    // Piercing high-altitude howl overtone
+    const osc = ctx.createOscillator();
+    osc.type = 'sine';
+    const f0 = 620 + Math.random() * 340;
+    osc.frequency.setValueAtTime(f0, now);
+    osc.frequency.linearRampToValueAtTime(f0 * 1.34, now + dur * 0.48);
+    osc.frequency.linearRampToValueAtTime(f0 * 0.82, now + dur);
+    const oGain = ctx.createGain();
+    oGain.gain.setValueAtTime(0.0001, now);
+    oGain.gain.linearRampToValueAtTime(0.026, now + dur * 0.38);
+    oGain.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+    osc.connect(oGain);
+    oGain.connect(out);
+    osc.start(now);
+    osc.stop(now + dur + 0.06);
+  }
+
+  /**
+   * Stereo volcanic ashstorm cinder crackles + muffled tectonic pressure groan.
+   */
+  private playAshEmberCrackle(ctx: AudioContext, dest: AudioNode): void {
+    const now = ctx.currentTime;
+    const pan = (Math.random() - 0.5) * 1.6;
+    const out = this.createPanner(ctx, dest, pan);
+    this.emitWeatherCue('ash_cinder', 0.65 + Math.random() * 0.35, pan);
+
+    if (this.whiteNoiseBuffer) {
+      const snaps = 3 + Math.floor(Math.random() * 4);
+      for (let i = 0; i < snaps; i++) {
+        const t = now + i * (0.065 + Math.random() * 0.09);
+        const src = ctx.createBufferSource();
+        src.buffer = this.whiteNoiseBuffer;
+        const hp = ctx.createBiquadFilter();
+        hp.type = 'bandpass';
+        hp.frequency.value = 3400 + Math.random() * 2800;
+        hp.Q.value = 4.5;
+        const gain = ctx.createGain();
+        gain.gain.setValueAtTime(0.0001, t);
+        gain.gain.linearRampToValueAtTime(0.065 + Math.random() * 0.04, t + 0.004);
+        gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.032);
+        src.connect(hp);
+        hp.connect(gain);
+        gain.connect(out);
+        src.start(t, Math.random() * 3.0, 0.045);
+      }
+    }
+
+    const groan = ctx.createOscillator();
+    groan.type = 'triangle';
+    const dur = 1.4 + Math.random() * 0.8;
+    groan.frequency.setValueAtTime(76 + Math.random() * 22, now);
+    groan.frequency.exponentialRampToValueAtTime(42, now + dur);
+    const lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = 180;
+    const gGain = ctx.createGain();
+    gGain.gain.setValueAtTime(0.0001, now);
+    gGain.gain.linearRampToValueAtTime(0.065, now + 0.35);
+    gGain.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+    groan.connect(lp);
+    lp.connect(gGain);
+    gGain.connect(out);
+    groan.start(now);
+    groan.stop(now + dur + 0.06);
   }
 
   private createPanner(ctx: AudioContext, dest: AudioNode, panVal: number): AudioNode {
@@ -1577,7 +2306,11 @@ export class SoundEngine {
    */
   private playMountainWindWhistle(ctx: AudioContext, dest: AudioNode): void {
     const now = ctx.currentTime;
-    const out = this.createPanner(ctx, dest, (Math.random() - 0.5) * 1.4);
+    const pan = (Math.random() - 0.5) * 1.4;
+    const out = this.createPanner(ctx, dest, pan);
+    if (this.weather === 'blizzard' || this.weather === 'storm' || this.weather === 'ashstorm') {
+      this.emitWeatherCue(this.weather === 'blizzard' ? 'blizzard_gust' : 'wind_surge', 0.48, pan);
+    }
     const dur = 1.8 + Math.random() * 1.2;
 
     const osc = ctx.createOscillator();
@@ -1600,15 +2333,17 @@ export class SoundEngine {
 
   /**
    * Localized stereo gust of rustling leaves or pine boughs.
+   * Reuses the cached pink noise buffer with zero per-event buffer allocation.
    */
   private playLocalizedLeafRustle(ctx: AudioContext, dest: AudioNode, isJungle: boolean): void {
+    if (!this.pinkNoiseBuffer) return;
     const now = ctx.currentTime;
     const dur = 0.75 + Math.random() * 0.7;
     const out = this.createPanner(ctx, dest, (Math.random() - 0.5) * 1.6);
 
-    const buf = this.createPinkNoiseBuffer(ctx, 1.6);
     const src = ctx.createBufferSource();
-    src.buffer = buf;
+    src.buffer = this.pinkNoiseBuffer;
+    src.loop = true;
 
     const filter = ctx.createBiquadFilter();
     filter.type = 'bandpass';
@@ -1618,14 +2353,13 @@ export class SoundEngine {
 
     const gain = ctx.createGain();
     gain.gain.setValueAtTime(0.0001, now);
-    gain.gain.linearRampToValueAtTime(isJungle ? 0.085 : 0.055, now + dur * 0.35);
+    gain.gain.linearRampToValueAtTime(isJungle ? 0.088 : 0.058, now + dur * 0.35);
     gain.gain.exponentialRampToValueAtTime(0.0001, now + dur);
 
     src.connect(filter);
     filter.connect(gain);
     gain.connect(out);
-    src.start(now);
-    src.stop(now + dur + 0.05);
+    src.start(now, Math.random() * 4.0, dur + 0.05);
   }
 
   // ==================== TACTILE GAMEPLAY SFX ====================
@@ -1643,7 +2377,7 @@ export class SoundEngine {
     gain.gain.setValueAtTime(0.08, now);
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.055);
     osc.connect(gain);
-    gain.connect(ctx.destination);
+    gain.connect(this.getSfxDest(ctx));
     osc.start(now);
     osc.stop(now + 0.06);
   }
@@ -1661,7 +2395,7 @@ export class SoundEngine {
     gain.gain.setValueAtTime(0.04, now);
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.04);
     osc.connect(gain);
-    gain.connect(ctx.destination);
+    gain.connect(this.getSfxDest(ctx));
     osc.start(now);
     osc.stop(now + 0.045);
   }
@@ -1685,7 +2419,7 @@ export class SoundEngine {
       gain.gain.setValueAtTime(0.14, start);
       gain.gain.exponentialRampToValueAtTime(0.001, start + 0.22);
       osc.connect(gain);
-      gain.connect(ctx.destination);
+      gain.connect(this.getSfxDest(ctx));
       osc.start(start);
       osc.stop(start + 0.24);
     });
@@ -1709,7 +2443,7 @@ export class SoundEngine {
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.22);
     osc.connect(gain);
     osc2.connect(gain);
-    gain.connect(ctx.destination);
+    gain.connect(this.getSfxDest(ctx));
     osc.start(now);
     osc2.start(now);
     osc.stop(now + 0.24);
@@ -1734,7 +2468,7 @@ export class SoundEngine {
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.22);
     osc.connect(filter);
     filter.connect(gain);
-    gain.connect(ctx.destination);
+    gain.connect(this.getSfxDest(ctx));
     osc.start(now);
     osc.stop(now + 0.24);
   }
@@ -1757,7 +2491,7 @@ export class SoundEngine {
     gain.gain.setValueAtTime(0.11, now);
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.09);
     osc.connect(gain);
-    gain.connect(ctx.destination);
+    gain.connect(this.getSfxDest(ctx));
     osc.start(now);
     osc.stop(now + 0.1);
   }
@@ -1782,7 +2516,7 @@ export class SoundEngine {
 
     osc.connect(filter);
     filter.connect(gain);
-    gain.connect(ctx.destination);
+    gain.connect(this.getSfxDest(ctx));
     osc.start(now);
     osc.stop(now + 0.36);
   }
@@ -1800,7 +2534,7 @@ export class SoundEngine {
     gain.gain.setValueAtTime(0.11, now);
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.12);
     osc.connect(gain);
-    gain.connect(ctx.destination);
+    gain.connect(this.getSfxDest(ctx));
     osc.start(now);
     osc.stop(now + 0.13);
   }
@@ -1820,7 +2554,7 @@ export class SoundEngine {
       gain.gain.setValueAtTime(0.13, start);
       gain.gain.exponentialRampToValueAtTime(0.001, start + 0.38);
       osc.connect(gain);
-      gain.connect(ctx.destination);
+      gain.connect(this.getSfxDest(ctx));
       osc.start(start);
       osc.stop(start + 0.4);
     });
@@ -1850,7 +2584,7 @@ export class SoundEngine {
 
       osc.connect(gain);
       shimmer.connect(gain);
-      gain.connect(ctx.destination);
+      gain.connect(this.getSfxDest(ctx));
       osc.start(start);
       shimmer.start(start);
       osc.stop(start + dur + 0.05);
@@ -1881,11 +2615,172 @@ export class SoundEngine {
 
     osc.connect(gain);
     shimmer.connect(gain);
-    gain.connect(ctx.destination);
+    gain.connect(this.getSfxDest(ctx));
     osc.start(now);
     shimmer.start(now);
     osc.stop(now + 0.2);
     shimmer.stop(now + 0.2);
+  }
+
+  private getGunSaturationCurve(): Float32Array<ArrayBuffer> {
+    const samples = 256;
+    const curve = new Float32Array(new ArrayBuffer(samples * 4));
+    for (let i = 0; i < samples; i++) {
+      const x = (i * 2) / samples - 1;
+      curve[i] = Math.tanh(x * 3.1);
+    }
+    return curve;
+  }
+
+  /**
+   * Realistic multi-layered procedural gunshot for Half-Human mounted hand cannon:
+   * 1) Supersonic muzzle crack, 2) Chest-punching sub-bass thump,
+   * 3) Saturated gunpowder blast body, 4) Metallic blowback slide cycle clack,
+   * 5) Stereo alpine canyon reflections, 6) Spent brass shell casing tinkle.
+   */
+  public playGunshot(level: number): void {
+    if (this.muted) return;
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    const dest = this.getSfxDest(ctx);
+    const noiseBuf = this.whiteNoiseBuffer ?? this.createWhiteNoiseBuffer(ctx, 1.2);
+    if (!this.whiteNoiseBuffer) {
+      this.whiteNoiseBuffer = noiseBuf;
+    }
+
+    const tierScale = 1 + Math.max(0, Math.min(4, level - 8)) * 0.06;
+    const randOffset = Math.random() * Math.max(0.05, noiseBuf.duration - 0.5);
+
+    // Layer 1: Supersonic muzzle crack (ultra-fast transient snap)
+    const crackSrc = ctx.createBufferSource();
+    crackSrc.buffer = noiseBuf;
+    const crackHp = ctx.createBiquadFilter();
+    crackHp.type = 'highpass';
+    crackHp.frequency.setValueAtTime(1900, now);
+    const crackGain = ctx.createGain();
+    crackGain.gain.setValueAtTime(0.001, now);
+    crackGain.gain.linearRampToValueAtTime(0.42 * tierScale, now + 0.002);
+    crackGain.gain.exponentialRampToValueAtTime(0.001, now + 0.036);
+    crackSrc.connect(crackHp);
+    crackHp.connect(crackGain);
+    crackGain.connect(dest);
+    crackSrc.start(now, randOffset, 0.045);
+
+    // Layer 2: Chest-punching low-end recoil thump
+    const thumpOsc = ctx.createOscillator();
+    const subOsc = ctx.createOscillator();
+    const thumpGain = ctx.createGain();
+    thumpOsc.type = 'triangle';
+    subOsc.type = 'sine';
+    thumpOsc.frequency.setValueAtTime(195 * tierScale, now);
+    thumpOsc.frequency.exponentialRampToValueAtTime(42, now + 0.115);
+    subOsc.frequency.setValueAtTime(118, now);
+    subOsc.frequency.exponentialRampToValueAtTime(34, now + 0.135);
+    thumpGain.gain.setValueAtTime(0.001, now);
+    thumpGain.gain.linearRampToValueAtTime(0.32 * tierScale, now + 0.004);
+    thumpGain.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
+    thumpOsc.connect(thumpGain);
+    subOsc.connect(thumpGain);
+    thumpGain.connect(dest);
+    thumpOsc.start(now);
+    subOsc.start(now);
+    thumpOsc.stop(now + 0.16);
+    subOsc.stop(now + 0.16);
+
+    // Layer 3: Saturated gunpowder blast body
+    const bodySrc = ctx.createBufferSource();
+    bodySrc.buffer = noiseBuf;
+    const bodyBp = ctx.createBiquadFilter();
+    bodyBp.type = 'bandpass';
+    bodyBp.frequency.setValueAtTime(640, now);
+    bodyBp.frequency.exponentialRampToValueAtTime(170, now + 0.16);
+    bodyBp.Q.value = 0.72;
+    const shaper = ctx.createWaveShaper();
+    shaper.curve = this.getGunSaturationCurve();
+    shaper.oversample = '2x';
+    const bodyGain = ctx.createGain();
+    bodyGain.gain.setValueAtTime(0.001, now);
+    bodyGain.gain.linearRampToValueAtTime(0.38 * tierScale, now + 0.004);
+    bodyGain.gain.exponentialRampToValueAtTime(0.001, now + 0.17);
+    bodySrc.connect(bodyBp);
+    bodyBp.connect(shaper);
+    shaper.connect(bodyGain);
+    bodyGain.connect(dest);
+    bodySrc.start(now, (randOffset + 0.23) % Math.max(0.1, noiseBuf.duration - 0.3), 0.2);
+
+    // Layer 4: Mechanical blowback slide cycle (rear stop + lock-in double-clack)
+    const slideHits = [
+      { delay: 0.052, freq: 3150, amp: 0.11, dur: 0.024 },
+      { delay: 0.116, freq: 2550, amp: 0.13, dur: 0.03 },
+    ];
+    for (const hit of slideHits) {
+      const t0 = now + hit.delay;
+      const clackSrc = ctx.createBufferSource();
+      clackSrc.buffer = noiseBuf;
+      const clackBp = ctx.createBiquadFilter();
+      clackBp.type = 'bandpass';
+      clackBp.frequency.setValueAtTime(hit.freq, t0);
+      clackBp.Q.value = 4.2;
+      const clackGain = ctx.createGain();
+      clackGain.gain.setValueAtTime(0.0008, t0);
+      clackGain.gain.linearRampToValueAtTime(hit.amp, t0 + 0.002);
+      clackGain.gain.exponentialRampToValueAtTime(0.0008, t0 + hit.dur);
+      clackSrc.connect(clackBp);
+      clackBp.connect(clackGain);
+      clackGain.connect(dest);
+      clackSrc.start(t0, (randOffset + hit.delay) % Math.max(0.1, noiseBuf.duration - 0.15), hit.dur + 0.01);
+    }
+
+    // Layer 5: Stereo alpine mountain canyon echoes
+    const echoes = [
+      { delay: 0.165, pan: -0.58, cutoff: 720, amp: 0.12, dur: 0.24 },
+      { delay: 0.315, pan: 0.56, cutoff: 520, amp: 0.075, dur: 0.3 },
+    ];
+    for (const echo of echoes) {
+      const t0 = now + echo.delay;
+      const eSrc = ctx.createBufferSource();
+      eSrc.buffer = noiseBuf;
+      const eLp = ctx.createBiquadFilter();
+      eLp.type = 'lowpass';
+      eLp.frequency.setValueAtTime(echo.cutoff, t0);
+      eLp.frequency.exponentialRampToValueAtTime(220, t0 + echo.dur);
+      const eGain = ctx.createGain();
+      eGain.gain.setValueAtTime(0.0008, t0);
+      eGain.gain.linearRampToValueAtTime(echo.amp, t0 + 0.018);
+      eGain.gain.exponentialRampToValueAtTime(0.0008, t0 + echo.dur);
+      eSrc.connect(eLp);
+      eLp.connect(eGain);
+      if (typeof ctx.createStereoPanner === 'function') {
+        const panner = ctx.createStereoPanner();
+        panner.pan.value = echo.pan;
+        eGain.connect(panner);
+        panner.connect(dest);
+      } else {
+        eGain.connect(dest);
+      }
+      eSrc.start(t0, (randOffset + echo.delay) % Math.max(0.1, noiseBuf.duration - 0.35), echo.dur + 0.02);
+    }
+
+    // Layer 6: Subtle spent brass casing tinkle on mountain rock
+    const brassHits = [
+      { delay: 0.275, freq: 5280, amp: 0.024 },
+      { delay: 0.365, freq: 6420, amp: 0.016 },
+    ];
+    for (const b of brassHits) {
+      const t0 = now + b.delay;
+      const ping = ctx.createOscillator();
+      const pGain = ctx.createGain();
+      ping.type = 'sine';
+      ping.frequency.setValueAtTime(b.freq + (Math.random() - 0.5) * 320, t0);
+      pGain.gain.setValueAtTime(0.0005, t0);
+      pGain.gain.linearRampToValueAtTime(b.amp, t0 + 0.003);
+      pGain.gain.exponentialRampToValueAtTime(0.0004, t0 + 0.055);
+      ping.connect(pGain);
+      pGain.connect(dest);
+      ping.start(t0);
+      ping.stop(t0 + 0.065);
+    }
   }
 
   public playShockwave(level: number): void {
@@ -1917,7 +2812,7 @@ export class SoundEngine {
     sub.connect(filter);
     chime.connect(filter);
     filter.connect(gain);
-    gain.connect(ctx.destination);
+    gain.connect(this.getSfxDest(ctx));
     sub.start(now);
     chime.start(now);
     sub.stop(now + 0.48);
@@ -1978,7 +2873,7 @@ export class SoundEngine {
 
     osc.connect(filter);
     filter.connect(gain);
-    gain.connect(ctx.destination);
+    gain.connect(this.getSfxDest(ctx));
     osc.start(now);
     osc.stop(now + 0.48);
   }
@@ -2014,7 +2909,7 @@ export class SoundEngine {
     osc.connect(filter);
     crack.connect(filter);
     filter.connect(gain);
-    gain.connect(ctx.destination);
+    gain.connect(this.getSfxDest(ctx));
     osc.start(now);
     crack.start(now);
     osc.stop(now + 0.3);
@@ -2037,7 +2932,7 @@ export class SoundEngine {
     subGain.gain.linearRampToValueAtTime(0.24, now + 0.03);
     subGain.gain.exponentialRampToValueAtTime(0.001, now + 0.8);
     sub.connect(subGain);
-    subGain.connect(ctx.destination);
+    subGain.connect(this.getSfxDest(ctx));
     sub.start(now);
     sub.stop(now + 0.84);
 
@@ -2059,7 +2954,7 @@ export class SoundEngine {
       gain.gain.exponentialRampToValueAtTime(0.001, start + 0.62);
       osc.connect(filter);
       filter.connect(gain);
-      gain.connect(ctx.destination);
+      gain.connect(this.getSfxDest(ctx));
       osc.start(start);
       osc.stop(start + 0.65);
     });
@@ -2085,7 +2980,7 @@ export class SoundEngine {
     rGain.gain.exponentialRampToValueAtTime(0.001, now + 0.72);
     rumble.connect(rFilter);
     rFilter.connect(rGain);
-    rGain.connect(ctx.destination);
+    rGain.connect(this.getSfxDest(ctx));
     rumble.start(now);
     rumble.stop(now + 0.76);
 
@@ -2102,7 +2997,7 @@ export class SoundEngine {
       gain.gain.linearRampToValueAtTime(0.055 - idx * 0.01, now + 0.28);
       gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.96);
       osc.connect(gain);
-      gain.connect(ctx.destination);
+      gain.connect(this.getSfxDest(ctx));
       osc.start(now + 0.08);
       osc.stop(now + 1.0);
     });
@@ -2124,7 +3019,7 @@ export class SoundEngine {
       gain.gain.linearRampToValueAtTime(0.1, start + 0.02);
       gain.gain.exponentialRampToValueAtTime(0.001, start + 0.34);
       osc.connect(gain);
-      gain.connect(ctx.destination);
+      gain.connect(this.getSfxDest(ctx));
       osc.start(start);
       osc.stop(start + 0.36);
     });
@@ -2143,7 +3038,7 @@ export class SoundEngine {
     gain.gain.setValueAtTime(0.11, now);
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.11);
     osc.connect(gain);
-    gain.connect(ctx.destination);
+    gain.connect(this.getSfxDest(ctx));
     osc.start(now);
     osc.stop(now + 0.12);
   }
@@ -2163,7 +3058,7 @@ export class SoundEngine {
       gain.gain.setValueAtTime(isBoss ? 0.13 : 0.1, start);
       gain.gain.exponentialRampToValueAtTime(0.001, start + (isBoss ? 0.42 : 0.26));
       osc.connect(gain);
-      gain.connect(ctx.destination);
+      gain.connect(this.getSfxDest(ctx));
       osc.start(start);
       osc.stop(start + (isBoss ? 0.45 : 0.28));
     });
@@ -2182,7 +3077,7 @@ export class SoundEngine {
     gain.gain.setValueAtTime(0.14, now);
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.22);
     osc.connect(gain);
-    gain.connect(ctx.destination);
+    gain.connect(this.getSfxDest(ctx));
     osc.start(now);
     osc.stop(now + 0.24);
   }
@@ -2203,7 +3098,7 @@ export class SoundEngine {
     master.gain.linearRampToValueAtTime(0.95, now + 0.03);
     master.gain.setValueAtTime(0.95, now + 1.45);
     master.gain.exponentialRampToValueAtTime(0.0001, now + 2.55);
-    master.connect(ctx.destination);
+    master.connect(this.getSfxDest(ctx));
 
     const delay = ctx.createDelay(0.5);
     delay.delayTime.value = 0.19;
@@ -2331,6 +3226,7 @@ export class SoundEngine {
     window.clearTimeout(this.tierTransitionTimer);
     this.ctx?.close().catch(() => {});
     this.ctx = null;
+    this.sfxBus = null;
     this.ambientStarted = false;
   }
 }

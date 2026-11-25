@@ -25,6 +25,18 @@ document.addEventListener('DOMContentLoaded', () => {
     (summary) => {
       ui?.showEvolutionSummaryModal(summary, summary.isHuman ? 'ascended' : 'unlock');
     },
+    (climateNotice) => {
+      ui?.pushClimateNotice(climateNotice);
+    },
+    (compliment) => {
+      ui?.showCompliment(compliment);
+    },
+    (combatTaunt) => {
+      ui?.showCombatTaunt(combatTaunt);
+    },
+    (anchorPos) => {
+      ui?.updateTauntBubblePosition(anchorPos);
+    },
   );
 
   ui = new GameUI(root, game);
@@ -117,11 +129,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (e.code === 'KeyC' && (mode === 'playing' || mode === 'paused')) {
       game.cycleCameraMode();
-      return;
-    }
-
-    if (e.code === 'KeyV') {
-      game.cycleWeather();
       return;
     }
 

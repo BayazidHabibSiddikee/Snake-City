@@ -1,6 +1,6 @@
 export type BiomeId = 'jungle' | 'mountain';
 
-export type WeatherMode = 'clear' | 'mist' | 'fog' | 'rain';
+export type WeatherMode = 'clear' | 'mist' | 'fog' | 'rain' | 'storm' | 'blizzard' | 'ashstorm';
 
 export type PropType = 'wall' | 'totem' | 'portalA' | 'portalB' | 'boost';
 
@@ -89,7 +89,15 @@ export interface BestiaryRecord {
   highestAltitudeMeters: number;
 }
 
-export type BeastState = 'emerging' | 'patrol' | 'chase' | 'windup' | 'lunge' | 'recover';
+export type BeastState =
+  | 'emerging'
+  | 'patrol'
+  | 'chase'
+  | 'circle'
+  | 'windup'
+  | 'lunge'
+  | 'stagger'
+  | 'recover';
 
 export interface WildBeast {
   id: number;
@@ -112,14 +120,17 @@ export interface WildBeast {
   hp: number;
   maxHp: number;
   speed: number;
+  baseSpeed: number;
   aggroRadius: number;
   state: BeastState;
   stateTimer: number;
+  flankDir: number;
   emergeProgress: number; // 0 = buried underground, 1 = fully risen
   attackCooldown: number;
   hitFlash: number;
   animPhase: number;
   xpReward: number;
+  baseXpReward: number;
   isBoss: boolean;
 }
 
@@ -150,7 +161,7 @@ export interface MagicProjectile {
   life: number;
   maxLife: number;
   homing: boolean;
-  style?: 'bolt' | 'lotus' | 'soul_chain' | 'flame';
+  style?: 'bolt' | 'lotus' | 'soul_chain' | 'flame' | 'bullet';
 }
 
 export interface ShockwaveEffect {
@@ -186,6 +197,7 @@ export interface HudSnapshot {
   mode: GameMode;
   biome: BiomeId;
   weather: WeatherMode;
+  weatherLabel: string;
   score: number;
   bestScore: number;
   length: number;
@@ -255,11 +267,18 @@ export interface HudSnapshot {
   ghostsDefeated: number;
   beastsDefeated: number;
   recentHurtPulse: number; // 0..1 screen edge flash
+  nearbyHostileId: number | null;
+  nearbyHostileKind: BeastKind | null;
   nearbyHostileName: string | null;
   nearbyHostileHp: number;
   nearbyHostileMaxHp: number;
   nearbyHostileBoss: boolean;
+  nearbyHostileIsHighTier: boolean;
+  nearbyHostileHpMult: number;
   nearbyHostileFaction: EnemyFaction | null;
+  difficultyHpMult: number;
+  difficultyDamageMult: number;
+  difficultyTierLabel: string;
 }
 
 export const WORLD_PLAY_RADIUS = 240;
