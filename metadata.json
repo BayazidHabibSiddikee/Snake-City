@@ -1,0 +1,5 @@
+{
+  "name": "Serpent Peaks",
+  "description": "3D mountain-climbing serpent-to-human cultivation game built with TypeScript, Three.js, D3, and Web Audio.",
+  "requestFramePermissions": []
+}
