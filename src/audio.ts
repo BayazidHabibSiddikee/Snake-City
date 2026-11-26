@@ -97,6 +97,127 @@ export function computePortalTemporalDroneParams(
   };
 }
 
+export type MirrorTabShimmerAction = 'orbit' | 'spin' | 'select' | 'enter' | 'spawn' | 'profile';
+
+export interface MirrorTabShimmerOptions {
+  /** Horizontal 3D mirror position in [-1, 1] (-1 = far left, +1 = far right) */
+  xNorm?: number;
+  /** Vertical 3D gallery elevation in [-1, 1] */
+  yNorm?: number;
+  /** Depth in the 360° Mirror House in [-1, 1] (+1 = closest front mirror, -1 = rear gallery) */
+  zDepth?: number;
+  /** Mirror-House gallery tier: -1 (Lower Reflection), 0 (Grand Rotunda), +1 (Upper Crown) */
+  tier?: -1 | 0 | 1;
+  /** Portal channel harmonic coloring */
+  portalVariant?: 'A' | 'B';
+  /** Zero-based tab index used to step across a crystalline Lydian pentatonic scale */
+  tabIndex?: number;
+  /** Navigation event intensity */
+  action?: MirrorTabShimmerAction;
+}
+
+export interface MirrorTabShimmerParams {
+  spatialX: number;
+  spatialY: number;
+  spatialZ: number;
+  stereoPan: number;
+  fundamentalHz: number;
+  harmonicFreqs: number[];
+  shimmerSweepStartHz: number;
+  shimmerSweepEndHz: number;
+  durationSec: number;
+  masterGain: number;
+  echoWet: number;
+  echoDelayLeftSec: number;
+  echoDelayRightSec: number;
+}
+
+// Crystalline Lydian / glass-harp intervals for Mirror-House tab navigation
+const MIRROR_SHIMMER_SCALE_A = [523.25, 587.33, 659.25, 739.99, 783.99, 987.77, 1046.5, 1174.66];
+const MIRROR_SHIMMER_SCALE_B = [493.88, 554.37, 659.25, 739.99, 830.61, 987.77, 1108.73, 1318.51];
+
+/**
+ * Pure spatial synthesizer curve for the Mirror-House shimmering resonance effect
+ * triggered whenever the user navigates, spins, or steps between Mirror-House tabs.
+ * Maps the 3D Mirror-House coordinates (`xNorm`, `yNorm`, `zDepth`, `tier`) into
+ * HRTF 3D spatial sound placement, crystalline overtone frequencies, and hall-of-mirrors echoes.
+ */
+export function computeMirrorTabShimmerParams(
+  opts: MirrorTabShimmerOptions = {},
+): MirrorTabShimmerParams {
+  const xNorm = Math.max(-1, Math.min(1, Number.isFinite(opts.xNorm) ? (opts.xNorm as number) : 0));
+  const yNorm = Math.max(-1, Math.min(1, Number.isFinite(opts.yNorm) ? (opts.yNorm as number) : 0));
+  const zDepth = Math.max(-1, Math.min(1, Number.isFinite(opts.zDepth) ? (opts.zDepth as number) : 0.85));
+  const tier: -1 | 0 | 1 = opts.tier === 1 ? 1 : opts.tier === -1 ? -1 : 0;
+  const variant = opts.portalVariant === 'B' ? 'B' : 'A';
+  const action: MirrorTabShimmerAction = opts.action ?? 'select';
+  const idx = Math.abs(Math.floor(opts.tabIndex ?? 0));
+
+  const scale = variant === 'A' ? MIRROR_SHIMMER_SCALE_A : MIRROR_SHIMMER_SCALE_B;
+  const tierOctaveMul = tier === 1 ? 1.25 : tier === -1 ? 0.84 : 1.0;
+  const baseHz = scale[idx % scale.length] * tierOctaveMul;
+  const fundamentalHz = Number(baseHz.toFixed(2));
+
+  // Crystalline harmonics: fundamental, fifth, shimmer octave, glass bell partial (2.756x)
+  const harmonicFreqs = [
+    fundamentalHz,
+    Number((fundamentalHz * (variant === 'A' ? 1.498 : 1.5)).toFixed(2)),
+    Number((fundamentalHz * 2.0).toFixed(2)),
+    Number((fundamentalHz * 2.756).toFixed(2)),
+  ];
+
+  // 3D HRTF spatial placement around the listener (origin = listener head inside Mirror House)
+  const spatialX = Number((xNorm * 3.4).toFixed(3));
+  const spatialY = Number((yNorm * 1.9 + tier * 0.55).toFixed(3));
+  // Front mirror (zDepth = +1) sits close in front (-1.1m); rear mirror (-1) sits farther (-3.6m)
+  const depth01 = (zDepth + 1) * 0.5;
+  const spatialZ = Number((-(1.1 + (1 - depth01) * 2.5)).toFixed(3));
+  const stereoPan = Number(Math.max(-0.92, Math.min(0.92, xNorm * 0.88)).toFixed(3));
+
+  const actionDurationMap: Record<MirrorTabShimmerAction, number> = {
+    orbit: 0.42,
+    spin: 0.56,
+    select: 0.68,
+    spawn: 0.84,
+    enter: 0.96,
+    profile: 1.15,
+  };
+  const actionGainMap: Record<MirrorTabShimmerAction, number> = {
+    orbit: 0.068,
+    spin: 0.095,
+    select: 0.115,
+    spawn: 0.128,
+    enter: 0.145,
+    profile: 0.135,
+  };
+
+  const distanceAtten = 0.72 + depth01 * 0.28;
+  const durationSec = actionDurationMap[action];
+  const masterGain = Number((actionGainMap[action] * distanceAtten).toFixed(4));
+  const shimmerSweepStartHz = Number(Math.min(6800, fundamentalHz * 2.4).toFixed(1));
+  const shimmerSweepEndHz = Number(Math.min(10800, fundamentalHz * (action === 'enter' ? 5.6 : 4.2)).toFixed(1));
+  const echoWet = Number((action === 'orbit' ? 0.28 : action === 'enter' ? 0.48 : 0.38).toFixed(3));
+  // Slight left/right asymmetry creates wide kaleidoscopic Hall-of-Mirrors stereo bounce
+  const echoDelayLeftSec = Number((0.068 + Math.max(0, -xNorm) * 0.035).toFixed(4));
+  const echoDelayRightSec = Number((0.094 + Math.max(0, xNorm) * 0.035).toFixed(4));
+
+  return {
+    spatialX,
+    spatialY,
+    spatialZ,
+    stereoPan,
+    fundamentalHz,
+    harmonicFreqs,
+    shimmerSweepStartHz,
+    shimmerSweepEndHz,
+    durationSec,
+    masterGain,
+    echoWet,
+    echoDelayLeftSec,
+    echoDelayRightSec,
+  };
+}
+
 type TierTriggerKind =
   | 'cicadaPulse'
   | 'bambooClack'
@@ -637,6 +758,7 @@ export class SoundEngine {
   private portalDroneFilter: BiquadFilterNode | null = null;
   private portalDronePanner: StereoPannerNode | null = null;
   private portalDroneGain: GainNode | null = null;
+  private lastMirrorOrbitShimmerAt = 0;
 
   public setWeatherAudioCueListener(fn: ((cue: WeatherAudioCueEvent) => void) | null): void {
     this.onWeatherAudioCue = fn;
@@ -2690,6 +2812,157 @@ export class SoundEngine {
     osc2.stop(now + 0.24);
   }
 
+  /**
+   * Triggers a 3D spatial 'shimmering' glass-resonance sound positioned around the listener
+   * whenever the player navigates, spins, or steps between Mirror-House tabs inside a portal.
+   * Uses a 3D HRTF PannerNode (with stereo fallback), detuned crystalline shimmer partials,
+   * a resonant glass-sparkle bandpass noise sweep, and cross-fed stereo mirror-hall echoes.
+   */
+  public playMirrorTabShimmer(opts: MirrorTabShimmerOptions = {}): void {
+    if (this.muted) return;
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+
+    const nowMs = performance.now();
+    if (opts.action === 'orbit' && nowMs - this.lastMirrorOrbitShimmerAt < 72) {
+      return;
+    }
+    if (opts.action === 'orbit') {
+      this.lastMirrorOrbitShimmerAt = nowMs;
+    }
+
+    const params = computeMirrorTabShimmerParams(opts);
+    const now = ctx.currentTime;
+    const dest = this.getSfxDest(ctx);
+
+    // Master envelope bus for this shimmer voice
+    const voiceMaster = ctx.createGain();
+    voiceMaster.gain.setValueAtTime(0.0001, now);
+    voiceMaster.gain.linearRampToValueAtTime(1.0, now + 0.014);
+    voiceMaster.gain.setValueAtTime(1.0, now + params.durationSec * 0.72);
+    voiceMaster.gain.exponentialRampToValueAtTime(0.0001, now + params.durationSec + 0.36);
+    voiceMaster.connect(dest);
+
+    // 3D HRTF Spatial Panner anchored to the mirror tab's 3D position in the Hall of Mirrors
+    let spatialInput: AudioNode;
+    if (typeof ctx.createPanner === 'function') {
+      const panner3d = ctx.createPanner();
+      panner3d.panningModel = 'HRTF';
+      panner3d.distanceModel = 'inverse';
+      panner3d.refDistance = 1.2;
+      panner3d.maxDistance = 16;
+      panner3d.rolloffFactor = 0.85;
+      if (panner3d.positionX) {
+        panner3d.positionX.setValueAtTime(params.spatialX, now);
+        panner3d.positionY.setValueAtTime(params.spatialY, now);
+        panner3d.positionZ.setValueAtTime(params.spatialZ, now);
+      } else {
+        panner3d.setPosition(params.spatialX, params.spatialY, params.spatialZ);
+      }
+      panner3d.connect(voiceMaster);
+      spatialInput = panner3d;
+    } else {
+      spatialInput = this.createPanner(ctx, voiceMaster, params.stereoPan);
+    }
+
+    // Cross-fed stereo Hall-of-Mirrors reflection taps (crystalline bounce between opposing mirrors)
+    const mirrorSend = ctx.createGain();
+    mirrorSend.gain.value = params.echoWet;
+
+    const delayL = ctx.createDelay(0.4);
+    delayL.delayTime.setValueAtTime(params.echoDelayLeftSec, now);
+    const delayR = ctx.createDelay(0.4);
+    delayR.delayTime.setValueAtTime(params.echoDelayRightSec, now);
+
+    const mirrorToneL = ctx.createBiquadFilter();
+    mirrorToneL.type = 'bandpass';
+    mirrorToneL.frequency.setValueAtTime(Math.min(6400, params.fundamentalHz * 2.6), now);
+    mirrorToneL.Q.value = 1.4;
+
+    const mirrorToneR = ctx.createBiquadFilter();
+    mirrorToneR.type = 'bandpass';
+    mirrorToneR.frequency.setValueAtTime(Math.min(7200, params.fundamentalHz * 3.1), now);
+    mirrorToneR.Q.value = 1.6;
+
+    const fbL = ctx.createGain();
+    fbL.gain.value = 0.26;
+    const fbR = ctx.createGain();
+    fbR.gain.value = 0.26;
+
+    const panL = this.createPanner(ctx, voiceMaster, -0.74);
+    const panR = this.createPanner(ctx, voiceMaster, 0.74);
+
+    mirrorSend.connect(delayL);
+    mirrorSend.connect(delayR);
+    delayL.connect(mirrorToneL);
+    mirrorToneL.connect(panL);
+    mirrorToneL.connect(fbL);
+    fbL.connect(delayR);
+
+    delayR.connect(mirrorToneR);
+    mirrorToneR.connect(panR);
+    mirrorToneR.connect(fbR);
+    fbR.connect(delayL);
+
+    // 1. Crystalline Mirror Resonance Harmonics (paired binaural detune for shimmering chorus beating)
+    const partialAmps = [0.46, 0.28, 0.24, 0.14];
+    params.harmonicFreqs.forEach((freq, idx) => {
+      const start = now + idx * (opts.action === 'profile' ? 0.036 : 0.02);
+      const decay = params.durationSec * (1 - idx * 0.11);
+      const oscA = ctx.createOscillator();
+      const oscB = ctx.createOscillator();
+      oscA.type = idx === 0 ? 'triangle' : 'sine';
+      oscB.type = 'sine';
+
+      oscA.frequency.setValueAtTime(freq, start);
+      oscA.frequency.exponentialRampToValueAtTime(freq * 1.012, start + decay);
+      oscB.frequency.setValueAtTime(freq, start);
+      oscB.detune.setValueAtTime(idx % 2 === 0 ? 7.5 : -7.5, start);
+      oscB.frequency.exponentialRampToValueAtTime(freq * 1.018, start + decay);
+
+      const env = ctx.createGain();
+      const peak = params.masterGain * (partialAmps[idx] ?? 0.16);
+      env.gain.setValueAtTime(0.0001, start);
+      env.gain.linearRampToValueAtTime(peak, start + 0.016);
+      env.gain.exponentialRampToValueAtTime(0.0001, start + decay);
+
+      oscA.connect(env);
+      oscB.connect(env);
+      env.connect(spatialInput);
+      env.connect(mirrorSend);
+
+      oscA.start(start);
+      oscB.start(start);
+      oscA.stop(start + decay + 0.04);
+      oscB.stop(start + decay + 0.04);
+    });
+
+    // 2. High-Q Resonant Glass-Sparkle Sweep (gossamer shimmering air transient)
+    if (!this.whiteNoiseBuffer) {
+      this.whiteNoiseBuffer = this.createWhiteNoiseBuffer(ctx, 2);
+    }
+    const sparkleSrc = ctx.createBufferSource();
+    sparkleSrc.buffer = this.whiteNoiseBuffer;
+    const sparkleBp = ctx.createBiquadFilter();
+    sparkleBp.type = 'bandpass';
+    sparkleBp.Q.setValueAtTime(11.5, now);
+    sparkleBp.frequency.setValueAtTime(params.shimmerSweepStartHz, now);
+    sparkleBp.frequency.exponentialRampToValueAtTime(
+      params.shimmerSweepEndHz,
+      now + Math.min(0.32, params.durationSec * 0.55),
+    );
+    const sparkleGain = ctx.createGain();
+    sparkleGain.gain.setValueAtTime(0.0001, now);
+    sparkleGain.gain.linearRampToValueAtTime(params.masterGain * 0.34, now + 0.025);
+    sparkleGain.gain.exponentialRampToValueAtTime(0.0001, now + Math.min(0.38, params.durationSec * 0.65));
+
+    sparkleSrc.connect(sparkleBp);
+    sparkleBp.connect(sparkleGain);
+    sparkleGain.connect(spatialInput);
+    sparkleGain.connect(mirrorSend);
+    sparkleSrc.start(now, Math.random() * 1.2, Math.min(0.42, params.durationSec * 0.7));
+  }
+
   public playBoost(): void {
     if (this.muted) return;
     const ctx = this.ensureContext();
@@ -3457,6 +3730,335 @@ export class SoundEngine {
       env.connect(panner);
       osc.start(start);
       osc.stop(start + p.dur + 0.06);
+    });
+  }
+
+  /**
+   * Celestial golden bronze gong + ascending imperial pentatonic chime when the
+   * periodic Global Ranking Portal manifests on the continent.
+   */
+  public playGlobalRankingPortalSpawn(): void {
+    const ctx = this.ensureContext();
+    if (!ctx || this.muted || this.tabHidden || !this.sfxBus) return;
+    const now = ctx.currentTime;
+    const bus = this.sfxBus;
+
+    // 1. Deep resonant celestial gong foundation
+    const gongFreqs = [110, 164.81, 220, 329.63];
+    gongFreqs.forEach((freq, idx) => {
+      const osc = ctx.createOscillator();
+      osc.type = idx === 0 ? 'sine' : 'triangle';
+      osc.frequency.setValueAtTime(freq, now);
+      osc.frequency.exponentialRampToValueAtTime(freq * 1.008, now + 1.8);
+
+      const g = ctx.createGain();
+      const peak = idx === 0 ? 0.16 : 0.065 / (idx + 0.5);
+      g.gain.setValueAtTime(0.0001, now);
+      g.gain.linearRampToValueAtTime(peak, now + 0.04);
+      g.gain.exponentialRampToValueAtTime(0.0001, now + 2.2);
+
+      osc.connect(g);
+      g.connect(bus);
+      osc.start(now);
+      osc.stop(now + 2.3);
+    });
+
+    // 2. Ascending golden-jade pentatonic beacon arpeggio (D5-E5-G5-A5-D6)
+    const notes = [587.33, 659.25, 783.99, 880.0, 1174.66];
+    notes.forEach((freq, i) => {
+      const t = now + 0.14 + i * 0.095;
+      const panner = this.createPanner(ctx, bus, (i - 2) * 0.28);
+      const osc = ctx.createOscillator();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, t);
+
+      const env = ctx.createGain();
+      env.gain.setValueAtTime(0.0001, t);
+      env.gain.linearRampToValueAtTime(0.078, t + 0.018);
+      env.gain.exponentialRampToValueAtTime(0.0001, t + 0.95);
+
+      osc.connect(env);
+      env.connect(panner);
+      osc.start(t);
+      osc.stop(t + 1.0);
+    });
+  }
+
+  /**
+   * Radiant sovereign seal chord played when a player inscribes their cultivation
+   * progress onto the Global Ranking Stele.
+   */
+  public playGlobalRankingSubmit(): void {
+    const ctx = this.ensureContext();
+    if (!ctx || this.muted || this.tabHidden || !this.sfxBus) return;
+    const now = ctx.currentTime;
+    const bus = this.sfxBus;
+
+    const chord = [523.25, 659.25, 783.99, 1046.5, 1318.51];
+    chord.forEach((freq, i) => {
+      const start = now + i * 0.045;
+      const panner = this.createPanner(ctx, bus, (i - 2) * 0.22);
+      const osc = ctx.createOscillator();
+      osc.type = i < 2 ? 'triangle' : 'sine';
+      osc.frequency.setValueAtTime(freq, start);
+
+      const env = ctx.createGain();
+      env.gain.setValueAtTime(0.0001, start);
+      env.gain.linearRampToValueAtTime(0.072, start + 0.02);
+      env.gain.exponentialRampToValueAtTime(0.0001, start + 1.15);
+
+      osc.connect(env);
+      env.connect(panner);
+      osc.start(start);
+      osc.stop(start + 1.2);
+    });
+  }
+
+  /**
+   * Liquid-crystalline dimensional shockwave sweep played when a mission is completed
+   * and portals ripple & relocate to fresh coordinates across the 3D continent.
+   */
+  public playPortalShiftRipple(soulAwarded = false): void {
+    const ctx = this.ensureContext();
+    if (!ctx || this.muted || this.tabHidden || !this.sfxBus) return;
+    const now = ctx.currentTime;
+    const bus = this.sfxBus;
+
+    // 1. Sub-dimensional pressure dip & upward liquid-warp sweep
+    const sweepOsc = ctx.createOscillator();
+    sweepOsc.type = 'sine';
+    sweepOsc.frequency.setValueAtTime(soulAwarded ? 260 : 215, now);
+    sweepOsc.frequency.exponentialRampToValueAtTime(soulAwarded ? 98 : 84, now + 0.24);
+    sweepOsc.frequency.exponentialRampToValueAtTime(soulAwarded ? 587.33 : 493.88, now + 0.92);
+
+    const sweepFilter = ctx.createBiquadFilter();
+    sweepFilter.type = 'lowpass';
+    sweepFilter.frequency.setValueAtTime(920, now);
+    sweepFilter.frequency.exponentialRampToValueAtTime(2400, now + 0.72);
+
+    const sweepGain = ctx.createGain();
+    sweepGain.gain.setValueAtTime(0.0001, now);
+    sweepGain.gain.linearRampToValueAtTime(0.145, now + 0.05);
+    sweepGain.gain.exponentialRampToValueAtTime(0.0001, now + 1.15);
+
+    sweepOsc.connect(sweepFilter);
+    sweepFilter.connect(sweepGain);
+    sweepGain.connect(bus);
+    sweepOsc.start(now);
+    sweepOsc.stop(now + 1.2);
+
+    // 2. Stereo-widening harmonic ripple chimes matching primary & secondary wavefront crests
+    const partials = soulAwarded
+      ? [
+          { freq: 587.33, delay: 0.06, pan: -0.45, dur: 0.95 },
+          { freq: 880.0, delay: 0.14, pan: 0.45, dur: 1.05 },
+          { freq: 1174.66, delay: 0.26, pan: -0.25, dur: 1.1 },
+          { freq: 1479.98, delay: 0.36, pan: 0.28, dur: 1.15 },
+        ]
+      : [
+          { freq: 523.25, delay: 0.06, pan: -0.42, dur: 0.85 },
+          { freq: 783.99, delay: 0.16, pan: 0.42, dur: 0.95 },
+          { freq: 1046.5, delay: 0.28, pan: 0.0, dur: 1.0 },
+        ];
+
+    partials.forEach((p, idx) => {
+      const start = now + p.delay;
+      const panner = this.createPanner(ctx, bus, p.pan);
+      const osc = ctx.createOscillator();
+      osc.type = idx % 2 === 0 ? 'sine' : 'triangle';
+      osc.frequency.setValueAtTime(p.freq * 0.97, start);
+      osc.frequency.exponentialRampToValueAtTime(p.freq * 1.02, start + p.dur * 0.6);
+
+      const env = ctx.createGain();
+      env.gain.setValueAtTime(0.0001, start);
+      env.gain.linearRampToValueAtTime(0.058, start + 0.025);
+      env.gain.exponentialRampToValueAtTime(0.0001, start + p.dur);
+
+      osc.connect(env);
+      env.connect(panner);
+      osc.start(start);
+      osc.stop(start + p.dur + 0.06);
+    });
+  }
+
+  /**
+   * Eerie hollow spirit-chime rising whisper when a Soul Clan Sentry detects player
+   * activity near a portal and switches from Circular Patrol into Search behavior.
+   */
+  public playSentrySearchCue(): void {
+    const ctx = this.ensureContext();
+    if (!ctx || this.muted || this.tabHidden || !this.sfxBus) return;
+    const now = ctx.currentTime;
+    const bus = this.sfxBus;
+
+    const freqs = [311.13, 466.16, 622.25];
+    freqs.forEach((f, i) => {
+      const t = now + i * 0.065;
+      const osc = ctx.createOscillator();
+      osc.type = i === 0 ? 'triangle' : 'sine';
+      osc.frequency.setValueAtTime(f * 0.94, t);
+      osc.frequency.exponentialRampToValueAtTime(f * 1.08, t + 0.36);
+
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.linearRampToValueAtTime(0.055 / (i + 0.7), t + 0.03);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.58);
+
+      osc.connect(g);
+      g.connect(bus);
+      osc.start(t);
+      osc.stop(t + 0.62);
+    });
+  }
+
+  /**
+   * Haunting Soul Bell alarm toll when a Soul Clan Sentry detects the player and seals a portal.
+   */
+  public playSentryAlertBell(): void {
+    const ctx = this.ensureContext();
+    if (!ctx || this.muted || this.tabHidden || !this.sfxBus) return;
+    const now = ctx.currentTime;
+    const bus = this.sfxBus;
+
+    const bellPartials = [196, 293.66, 415.3, 622.25];
+    bellPartials.forEach((f, idx) => {
+      const osc = ctx.createOscillator();
+      osc.type = idx % 2 === 0 ? 'sawtooth' : 'triangle';
+      osc.frequency.setValueAtTime(f, now);
+      osc.frequency.exponentialRampToValueAtTime(f * 0.96, now + 0.95);
+
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'bandpass';
+      filter.frequency.setValueAtTime(f * 1.35, now);
+      filter.Q.value = 2.4;
+
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0.0001, now);
+      g.gain.linearRampToValueAtTime(0.11 / (idx + 0.8), now + 0.015);
+      g.gain.exponentialRampToValueAtTime(0.0001, now + 1.05);
+
+      osc.connect(filter);
+      filter.connect(g);
+      g.connect(bus);
+      osc.start(now);
+      osc.stop(now + 1.1);
+    });
+  }
+
+  /**
+   * Bright cleansing jade-gold exorcism chord when a player banishes a Soul Clan Sentry.
+   */
+  public playSentryBanish(): void {
+    const ctx = this.ensureContext();
+    if (!ctx || this.muted || this.tabHidden || !this.sfxBus) return;
+    const now = ctx.currentTime;
+    const bus = this.sfxBus;
+
+    const notes = [440, 554.37, 659.25, 880, 1108.73];
+    notes.forEach((f, i) => {
+      const t = now + i * 0.04;
+      const panner = this.createPanner(ctx, bus, (i - 2) * 0.24);
+      const osc = ctx.createOscillator();
+      osc.type = i < 2 ? 'triangle' : 'sine';
+      osc.frequency.setValueAtTime(f, t);
+
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.linearRampToValueAtTime(0.068, t + 0.018);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.72);
+
+      osc.connect(g);
+      g.connect(panner);
+      osc.start(t);
+      osc.stop(t + 0.76);
+    });
+  }
+
+  /**
+   * Soft jade-shadow wind whisper when toggling Stealth Veil on/off.
+   */
+  public playStealthToggle(entering: boolean): void {
+    const ctx = this.ensureContext();
+    if (!ctx || this.muted || this.tabHidden || !this.sfxBus) return;
+    const now = ctx.currentTime;
+    const bus = this.sfxBus;
+
+    const osc = ctx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(entering ? 420 : 240, now);
+    osc.frequency.exponentialRampToValueAtTime(entering ? 190 : 390, now + 0.22);
+
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, now);
+    g.gain.linearRampToValueAtTime(0.048, now + 0.03);
+    g.gain.exponentialRampToValueAtTime(0.0001, now + 0.26);
+
+    osc.connect(g);
+    g.connect(bus);
+    osc.start(now);
+    osc.stop(now + 0.3);
+  }
+
+  /**
+   * Subtle crystalline parchment chime when a new Soul Clan Archives lore entry unlocks.
+   */
+  public playLoreUnlockedChime(): void {
+    const ctx = this.ensureContext();
+    if (!ctx || this.muted || this.tabHidden || !this.sfxBus) return;
+    const now = ctx.currentTime;
+    const bus = this.sfxBus;
+
+    const freqs = [659.25, 987.77]; // E5 -> B5 open fifth
+    freqs.forEach((f, idx) => {
+      const t = now + idx * 0.085;
+      const osc = ctx.createOscillator();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(f, t);
+
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.linearRampToValueAtTime(idx === 0 ? 0.036 : 0.044, t + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.52);
+
+      osc.connect(g);
+      g.connect(bus);
+      osc.start(t);
+      osc.stop(t + 0.56);
+    });
+  }
+
+  /**
+   * Rarity-scaled crystalline triad/arpeggio chime when claiming Portal Mission loot or refining materials.
+   */
+  public playLootDropChime(rarity: 'uncommon' | 'rare' | 'epic' | 'mythic' = 'rare'): void {
+    const ctx = this.ensureContext();
+    if (!ctx || this.muted || this.tabHidden || !this.sfxBus) return;
+    const now = ctx.currentTime;
+    const bus = this.sfxBus;
+
+    const noteSets: Record<'uncommon' | 'rare' | 'epic' | 'mythic', number[]> = {
+      uncommon: [523.25, 659.25, 783.99],
+      rare: [587.33, 739.99, 880.0, 1174.66],
+      epic: [523.25, 659.25, 783.99, 1046.5, 1318.51],
+      mythic: [440.0, 554.37, 659.25, 880.0, 1108.73, 1318.51],
+    };
+    const notes = noteSets[rarity] ?? noteSets.rare;
+
+    notes.forEach((freq, idx) => {
+      const t = now + idx * 0.068;
+      const osc = ctx.createOscillator();
+      osc.type = rarity === 'mythic' && idx % 2 === 0 ? 'triangle' : 'sine';
+      osc.frequency.setValueAtTime(freq, t);
+
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.linearRampToValueAtTime(rarity === 'mythic' ? 0.056 : 0.044, t + 0.016);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + (rarity === 'mythic' ? 0.72 : 0.5));
+
+      osc.connect(g);
+      g.connect(bus);
+      osc.start(t);
+      osc.stop(t + 0.78);
     });
   }
 

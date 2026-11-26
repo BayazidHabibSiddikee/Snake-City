@@ -8,7 +8,7 @@ export type BuilderTool = PropType | 'erase';
 
 export type GameMode = 'title' | 'playing' | 'paused' | 'gameover' | 'builder' | 'evolving' | 'ascended';
 
-export type CameraMode = 'ant' | 'chase' | 'aerial';
+export type CameraMode = 'ant' | 'fpv' | 'chase' | 'aerial';
 
 export type SpeedPreset = 'chill' | 'classic' | 'turbo';
 
@@ -177,6 +177,40 @@ export interface ShockwaveEffect {
   colorHex: number;
 }
 
+export interface GlobalRankingPortalState {
+  active: boolean;
+  wave: number;
+  x: number;
+  z: number;
+  y: number;
+  timeRemainingSec: number;
+  durationSec: number;
+  nextSpawnInSec: number;
+  submittedThisWave: boolean;
+  distToPlayer: number;
+  bearingRel: number;
+}
+
+export interface SentryMinimapPoint {
+  x: number;
+  z: number;
+  heading: number;
+  patrolMode: 'circular' | 'search' | 'alert' | 'banished';
+  visionRange: number;
+  visionHalfAngle: number;
+  portalLocked: boolean;
+}
+
+export interface SentryHudAlert {
+  id: string;
+  name: string;
+  subtitle: string;
+  patrolMode: 'circular' | 'search' | 'alert' | 'banished';
+  suspicion: number; // 0..1
+  dist: number;
+  portalLockTimer: number;
+}
+
 export interface MinimapSnapshot {
   biome: BiomeId;
   headX: number;
@@ -189,6 +223,8 @@ export interface MinimapSnapshot {
   fissures: Array<{ x: number; z: number; isBoss: boolean }>;
   projectiles: Array<{ x: number; z: number; fromPlayer: boolean }>;
   portals: Array<{ x: number; z: number; variant: 'A' | 'B' }>;
+  sentries: SentryMinimapPoint[];
+  globalRankingPortal: { x: number; z: number; timeRemainingSec: number; wave: number } | null;
   visitedLandmarkIds: string[];
   nextLandmarkId: string | null;
 }
@@ -279,7 +315,17 @@ export interface HudSnapshot {
   difficultyHpMult: number;
   difficultyDamageMult: number;
   difficultyTierLabel: string;
+  globalRankingPortal: GlobalRankingPortalState;
+  stealthActive: boolean;
+  nearestSentryAlert: SentryHudAlert | null;
+  soulArchivesUnlockedCount: number;
+  soulArchivesTotalCount: number;
+  cultivationMult: number;
+  cultivationBuffName: string | null;
+  cultivationBuffRemainingSec: number;
+  permanentResonancePct: number;
+  rareMaterialCount: number;
 }
 
-export const WORLD_PLAY_RADIUS = 240;
+export const WORLD_PLAY_RADIUS = 360;
 export const WATER_LEVEL = -1.2;

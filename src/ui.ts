@@ -13,16 +13,65 @@ import {
   computeBossBarSegments,
   getMagicTierForLevel,
 } from './evolution';
+import { MirrorTabShimmerAction } from './audio';
 import {
   CHROMIUM_ENGINE_META,
-  PORTAL_BOOKMARKS,
+  NewTabBehavior,
   PortalVariant,
+  SEARCH_ENGINE_CATALOG,
+  SearchEngineId,
+  StartupMode,
+  UserAgentPreset,
   computeRollingTabOrbitLayout,
 } from './browser';
 import { ComplimentNotice, FloatingTauntNotice } from './compliments';
-import { PRESET_FORMATIONS } from './formations';
+import { PRESET_FORMATIONS, PortalShiftResult } from './formations';
 import { ClimateLogNotice, SnakeGameController } from './game';
 import { renderHumanityGrowthChart } from './humanityChart';
+import {
+  LOOT_RARITY_META,
+  PortalLootDrop,
+  RARE_MATERIALS_CATALOG,
+  REFINEMENT_RECIPES,
+  computeMissionDifficultyTier,
+  formatLootDuration,
+  renderLootIconSvg,
+} from './loot';
+import {
+  CardDuelParticipant,
+  FIFTEENTH_SOUL_EPILOGUE_TEXT,
+  HOSPITAL_REVELATION_TEXT,
+  PortalMissionDef,
+  SOUL_TARGET_COUNT,
+  evaluateAlchemyMix,
+  evaluateNetworkCircuit,
+  resolve29CardEliminationRound,
+} from './missions';
+import type { User } from 'firebase/auth';
+import type { Unsubscribe } from 'firebase/firestore';
+import {
+  isFirebaseReady,
+  signInWithGooglePopup,
+  signOutCultivator,
+  subscribeAuthState,
+} from './firebase';
+import {
+  GlobalRankingEntry,
+  RankingSortMode,
+  computePlayerStanding,
+  deleteOwnRankingRecord,
+  fetchGlobalRankings,
+  sanitizeCallsign,
+  sortRankingEntries,
+  submitCultivationRanking,
+  subscribeGlobalRankings,
+} from './ranking';
+import {
+  LoreUnlockNotice,
+  SENTRY_ARCHETYPES,
+  SoulArchiveSnapshot,
+  renderSoulArchiveEmblemSvg,
+} from './sentries';
 import { WORLD_LANDMARKS, terrainHeightAt } from './terrain';
 import {
   BestiaryEntryId,
@@ -134,24 +183,75 @@ export class GameUI {
   private chromiumBackBtn!: HTMLButtonElement;
   private chromiumFwdBtn!: HTMLButtonElement;
   private chromiumProxyBtn!: HTMLButtonElement;
+  private chromiumBookmarkBtn!: HTMLButtonElement;
+  private chromiumSettingsBtn!: HTMLButtonElement;
+  private chromiumStandaloneBtn!: HTMLButtonElement;
   private chromiumWarpBtn!: HTMLButtonElement;
   private chromiumPipBtn!: HTMLButtonElement;
   private chromiumOrbitToggleBtn!: HTMLButtonElement;
+  private chromiumMissionToggleBtn!: HTMLButtonElement;
+  private chromiumSoulClockBadgeEl!: HTMLElement;
   private chromiumPortalABtn!: HTMLButtonElement;
   private chromiumPortalBBtn!: HTMLButtonElement;
+  private chromiumProfileBtn!: HTMLButtonElement;
+  private chromiumProfilePopoverEl!: HTMLElement;
+  private chromiumOtherworldProfileStripEl!: HTMLElement;
   private chromiumBookmarksBarEl!: HTMLElement;
   private chromiumOtherworldEl!: HTMLElement;
   private chromiumOrbitStageEl!: HTMLElement;
+  private chromiumMissionPanelEl!: HTMLElement;
+  private chromiumSettingsPanelEl!: HTMLElement;
+  private chromiumLoadingBarEl!: HTMLElement;
   private chromiumViewportFrame!: HTMLIFrameElement;
   private chromiumStatusTextEl!: HTMLElement;
   private lastLoadedIframeKey = '';
   private portalBrowserPip = false;
+  private portalBrowserStandalone = false;
   private portalWorldOrbitMode = true;
+  private portalMissionViewMode = false;
+  private portalBrowserSettingsMode = false;
+  private portalBrowserSettingsTab: 'general' | 'privacy' | 'history' = 'general';
+  private activePortalKey = 'spawn-guard-portal-a';
+  private portalProfilePopoverOpen = false;
   private portalOrbitAngle = 0;
-  private portalOrbitVel = 0.34;
+  private portalOrbitPitchDeg = 0;
+  private portalOrbitVel = 0.28;
   private portalOrbitRafId = 0;
   private portalOrbitHoverPaused = false;
   private portalOrbitLastPerf = 0;
+  private lastOrbitFrontIdx = -1;
+  private deferredInstallPrompt: (Event & { prompt: () => Promise<void>; userChoice: Promise<{ outcome: string }> }) | null = null;
+  private settingsActiveTab: 'game' | 'browser' = 'game';
+
+  // Portal Loot Reliquary modal & latest drop state
+  private lootReliquaryModal!: HTMLElement;
+  private lootReliquaryBodyEl!: HTMLElement;
+  private lootReliquaryMetaEl!: HTMLElement;
+  private latestMissionLootDrop: PortalLootDrop | null = null;
+
+  // Interactive per-portal Mission / 5-Floor Trial / 29-Card Soul Duel state
+  private missionQuizHintOpen = false;
+  private missionFeedbackMsg = '';
+  private missionFeedbackTone: 'neutral' | 'success' | 'error' = 'neutral';
+  private missionNetworkToggles: [boolean, boolean, boolean, boolean] = [false, false, false, false];
+  private missionAlchemySelected: string[] = [];
+  private missionCardParticipants: CardDuelParticipant[] = [];
+  private missionCardRound = 1;
+  private missionCardLog = '';
+  private missionShadowPhase = false;
+  private missionShadowPlayerHp = 3;
+  private missionShadowBossHp = 3;
+  private missionShadowIntent: 'strike' | 'ward' | 'feint' = 'strike';
+  private missionRevelationBanner: 'hospital' | 'fifteenth' | null = null;
+  private fpvReticleEl!: HTMLElement;
+  private portalShiftRippleOverlayEl!: HTMLElement;
+  private portalShiftRippleBannerEl!: HTMLElement;
+  private portalShiftRippleCoordsEl!: HTMLElement;
+  private portalShiftRippleSubEl!: HTMLElement;
+  private portalShiftDisplaceEl: SVGFEDisplacementMapElement | null = null;
+  private portalShiftRippleTimer = 0;
+  private portalShiftDisplaceRaf = 0;
+  private pendingReemergenceShift: { newX: number; newZ: number; soulAwarded: boolean } | null = null;
 
   // Mobile Landscape, Virtual Moving Cursor & Arcade Fighting Skill nodes
   private mobileLeftClusterEl!: HTMLElement;
@@ -251,8 +351,35 @@ export class GameUI {
   // GTA Circular Minimap
   private minimapCanvas!: HTMLCanvasElement;
   private minimapCtx!: CanvasRenderingContext2D;
+  private minimapCaptionEl!: HTMLElement;
   private terrainMapCache: HTMLCanvasElement | null = null;
   private cachedMapBiome: BiomeId | null = null;
+
+  // Celestial Global Ranking Sanctuary Modal
+  private globalRankingModal!: HTMLElement;
+  private rankingPortalBannerEl!: HTMLElement;
+  private rankingAuthBarEl!: HTMLElement;
+  private rankingCallsignInput!: HTMLInputElement;
+  private rankingSubmitBtn!: HTMLButtonElement;
+  private rankingDeleteOwnBtn!: HTMLButtonElement;
+  private rankingDossierStatsEl!: HTMLElement;
+  private rankingStatusEl!: HTMLElement;
+  private rankingStandingEl!: HTMLElement;
+  private rankingPodiumEl!: HTMLElement;
+  private rankingCompareEl!: HTMLElement;
+  private rankingRowsEl!: HTMLElement;
+  private rankingEntries: GlobalRankingEntry[] = [];
+  private rankingSortMode: RankingSortMode = 'score';
+  private rankingAuthUser: User | null = null;
+  private rankingSelectedRivalUid: string | null = null;
+  private rankingEnteredViaPortal = false;
+  private rankingUnsubscribe: Unsubscribe | null = null;
+  private rankingLoading = false;
+  private rankingSubmitting = false;
+  private rankingStatusMsg = '';
+  private rankingStatusTone: 'neutral' | 'success' | 'error' = 'neutral';
+  private rankingErrorMsg = '';
+  private rankingCallsignDirty = false;
 
   // Game Over stats
   private goScoreEl!: HTMLElement;
@@ -299,6 +426,35 @@ export class GameUI {
   private bestiaryQuery = '';
   private selectedBestiaryId: BestiaryEntryId = 'dire_ridge_wolf';
 
+  // Soul Clan Sentry stealth indicator & Soul Clan Archives lore gallery
+  private sentryStealthBannerEl!: HTMLElement;
+  private sentryBannerTitleEl!: HTMLElement;
+  private sentryBannerStateEl!: HTMLElement;
+  private sentrySuspicionFillEl!: HTMLElement;
+  private sentryBannerHintEl!: HTMLElement;
+  private soulArchivesModal!: HTMLElement;
+  private soulArchivesCountEl!: HTMLElement;
+  private soulArchivesListEl!: HTMLElement;
+  private soulArchivesReaderEl!: HTMLElement;
+  private pauseSoulArchivesBtn!: HTMLButtonElement;
+  private soulArchivesFilter: 'all' | 'sentry' | 'chronicle' | 'unlocked' = 'all';
+  private selectedSoulArchiveId = 'lantern_watcher';
+
+  // Subtle interactive "New Lore Unlocked" toast notification
+  private loreUnlockToastEl!: HTMLElement;
+  private loreToastOpenBtn!: HTMLButtonElement;
+  private loreToastDismissBtn!: HTMLButtonElement;
+  private loreToastEmblemEl!: HTMLElement;
+  private loreToastKickerEl!: HTMLElement;
+  private loreToastTitleEl!: HTMLElement;
+  private loreToastSourceEl!: HTMLElement;
+  private loreToastProgressEl!: HTMLElement;
+  private loreToastQueue: LoreUnlockNotice[] = [];
+  private activeLoreToast: LoreUnlockNotice | null = null;
+  private loreToastTimer = 0;
+  private loreToastLeaveTimer = 0;
+  private loreToastHovered = false;
+
   // Builder controls
   private presetSelectEl!: HTMLSelectElement;
   private mirrorBtnEl!: HTMLButtonElement;
@@ -331,6 +487,15 @@ export class GameUI {
     uiLayer.innerHTML = `
       <!-- SCREEN-EDGE COMBAT & ENVIRONMENT VIGNETTE (NON-BLOCKING) -->
       <div class="combat-vignette" id="combatVignette" aria-hidden="true"></div>
+
+      <!-- FIRST-PERSON VIEW (FPV) CENTER AIMING RETICLE -->
+      <div class="fpv-reticle hidden" id="fpvReticle" aria-hidden="true">
+        <span class="fpv-tick top"></span>
+        <span class="fpv-tick right"></span>
+        <span class="fpv-tick bottom"></span>
+        <span class="fpv-tick left"></span>
+        <span class="fpv-dot"></span>
+      </div>
 
       <!-- TITLE SCREEN -->
       <section class="title-screen" id="titleScreen">
@@ -371,6 +536,9 @@ export class GameUI {
             <button type="button" class="primary-cta" id="startPlayBtn">
               Begin Odyssey
             </button>
+            <button type="button" class="secondary-cta" id="launchBrowserTitleBtn">
+              Launch Browser
+            </button>
             <button type="button" class="secondary-cta" id="openBestiaryTitleBtn">
               Bestiary
             </button>
@@ -389,7 +557,7 @@ export class GameUI {
             </label>
           </div>
 
-          <p class="control-hint">A / D Steer · W / Space Boost · F/1 Bolt · Q/2 Wave · E/3 Dash Strike · R/4 Flame Lotus · C Camera · K Bestiary · Esc Pause</p>
+          <p class="control-hint">A / D Steer · W / Space Boost · F/1 Bolt · Q/2 Wave · E/3 Dash Strike · R/4 Flame Lotus · V FPV · C Camera · G Portals · K Bestiary · Esc Pause</p>
         </div>
       </section>
 
@@ -448,6 +616,9 @@ export class GameUI {
         </div>
 
         <div class="hud-controls-cluster">
+          <button type="button" class="hud-icon-btn portal-hud-btn" id="hudPortalBtn" title="Enter 3D Portal Chromium Mirror-House Browser (G)">
+            🌐 Portal (G)
+          </button>
           <button type="button" class="hud-icon-btn" id="hudCamBtn" title="Switch Camera View (C)">
             <span id="hudCamLabel">Ant View</span>
           </button>
@@ -514,6 +685,38 @@ export class GameUI {
           <span class="soul-influence-status" id="soulInfluenceStatus">Earth Calm</span>
         </div>
       </button>
+
+      <!-- EPHEMERAL SOUL CLAN SENTRY & STEALTH VEIL BANNER (SHOWN ONLY IN STEALTH OR NEAR A SENTRY) -->
+      <div class="sentry-stealth-banner hidden" id="sentryStealthBanner" aria-live="polite">
+        <div class="sentry-banner-top">
+          <span class="sentry-banner-title" id="sentryBannerTitle">Veil of Shadow Active</span>
+          <span class="sentry-banner-state" id="sentryBannerState">Concealed</span>
+        </div>
+        <div class="sentry-suspicion-track" id="sentrySuspicionTrack">
+          <div class="sentry-suspicion-fill" id="sentrySuspicionFill"></div>
+        </div>
+        <div class="sentry-banner-hint" id="sentryBannerHint">
+          Hold Shift or press X for Stealth Veil · Q Shockwave banishes sentries
+        </div>
+      </div>
+
+      <!-- SUBTLE INTERACTIVE "NEW LORE UNLOCKED" TOAST LINKING DIRECTLY TO SOUL CLAN ARCHIVES -->
+      <div class="lore-unlock-toast hidden" id="loreUnlockToast" role="status" aria-live="polite">
+        <button type="button" class="lore-toast-trigger" id="loreToastOpenBtn">
+          <span class="lore-toast-emblem" id="loreToastEmblem" aria-hidden="true"></span>
+          <span class="lore-toast-body">
+            <span class="lore-toast-kicker" id="loreToastKicker">New Lore Unlocked · 1 / 12</span>
+            <span class="lore-toast-title" id="loreToastTitle">Lantern Watcher</span>
+            <span class="lore-toast-meta">
+              <span class="lore-toast-source" id="loreToastSource">New Sentry Encountered</span>
+              <span aria-hidden="true">·</span>
+              <span class="lore-toast-link">Open Soul Clan Archives ›</span>
+            </span>
+          </span>
+        </button>
+        <button type="button" class="lore-toast-dismiss" id="loreToastDismissBtn" aria-label="Dismiss lore notification">✕</button>
+        <span class="lore-toast-progress" id="loreToastProgress" aria-hidden="true"></span>
+      </div>
 
       <!-- ENGAGED HOSTILE / BOSS MODE HEALTH BAR -->
       <div class="hostile-target-bar hidden" id="hostileBarWrap" aria-live="polite">
@@ -619,9 +822,9 @@ export class GameUI {
           </button>
         </div>
 
-        <div class="minimap-shell" title="Continental Radar — Gold diamond is next Peak, orange triangles are Beasts, jade/magenta diamonds are Soul Clan ghosts">
+        <div class="minimap-shell" title="Continental Radar — Gold star is Global Ranking Portal, Gold diamond is next Peak, orange triangles are Beasts, jade/magenta diamonds are Soul Clan ghosts">
           <canvas id="minimapCanvas" width="148" height="148"></canvas>
-          <div class="minimap-caption">CONTINENT RADAR</div>
+          <div class="minimap-caption" id="minimapCaption">CONTINENT RADAR</div>
         </div>
       </aside>
 
@@ -830,7 +1033,10 @@ export class GameUI {
           <p class="modal-sub">Catch your breath above the valley, inspect your Humanity Path stats, or review your expedition.</p>
           <div class="modal-actions">
             <button type="button" class="primary-cta" id="resumeBtn">Resume</button>
-            <button type="button" class="secondary-cta" id="pausePortalBrowserBtn">🌐 Portal Chromium Browser (G)</button>
+            <button type="button" class="secondary-cta" id="pauseGlobalRankingBtn">Global Rankings (L)</button>
+            <button type="button" class="secondary-cta" id="pausePortalBrowserBtn">Portal Chromium Browser (G)</button>
+            <button type="button" class="secondary-cta" id="pauseLootReliquaryBtn">Loot Reliquary (I)</button>
+            <button type="button" class="secondary-cta" id="pauseSoulArchivesBtn">Soul Clan Archives (N)</button>
             <button type="button" class="secondary-cta" id="pauseSettingsBtn">Settings</button>
             <button type="button" class="secondary-cta" id="pauseBestiaryBtn">Bestiary Catalog</button>
             <button type="button" class="secondary-cta" id="pauseSummaryBtn">Humanity Path Summary</button>
@@ -838,6 +1044,144 @@ export class GameUI {
             <button type="button" class="secondary-cta" id="pauseRestartBtn">Respawn at Checkpoint</button>
             <button type="button" class="secondary-cta" id="pauseBuilderBtn">Edit Mountain</button>
             <button type="button" class="ghost-btn" id="pauseTitleBtn">Main Menu</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- PORTAL LOOT RELIQUARY MODAL -->
+      <div class="modal-backdrop hidden" id="lootReliquaryModal" role="dialog" aria-modal="true" aria-label="Portal Loot Reliquary">
+        <div class="modal-card reliquary-modal-card">
+          <div class="reliquary-header">
+            <div>
+              <div class="reliquary-eyebrow">Portal Mission Spoils</div>
+              <h2 class="modal-title reliquary-title">Loot Reliquary</h2>
+            </div>
+            <div class="reliquary-header-right">
+              <span class="reliquary-meta" id="lootReliquaryMeta">1.00× Cultivation · 0 Materials</span>
+              <button type="button" class="ghost-btn compact" id="closeLootReliquaryBtn" aria-label="Close Loot Reliquary">Close</button>
+            </div>
+          </div>
+          <div class="reliquary-body" id="lootReliquaryBody"></div>
+          <div class="reliquary-footer">
+            <span class="reliquary-hotkey-note">Clear higher-floor portal missions (Floors 1–5) for Mythic materials &amp; stronger cultivation multipliers · [I] Reliquary</span>
+            <button type="button" class="primary-cta compact" id="closeLootReliquaryFooterBtn">Return</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- SOUL CLAN ARCHIVES LORE GALLERY MODAL -->
+      <div class="modal-backdrop hidden" id="soulArchivesModal" role="dialog" aria-modal="true" aria-label="Soul Clan Archives">
+        <div class="modal-card archives-modal-card">
+          <div class="archives-header">
+            <div class="archives-title-group">
+              <div class="archives-eyebrow">NETHER HALL HISTORICAL RECORDS</div>
+              <h2 class="modal-title archives-title">Soul Clan Archives</h2>
+            </div>
+            <div class="archives-header-right">
+              <span class="archives-count-readout" id="soulArchivesCount">0 / 8 Deciphered</span>
+              <button type="button" class="ghost-btn compact" id="closeSoulArchivesBtn" aria-label="Close Soul Clan Archives">✕ Close</button>
+            </div>
+          </div>
+
+          <div class="archives-toolbar">
+            <p class="archives-subtitle">
+              Encounter patrolling Soul Clan Sentries near portals, trigger their search patterns, infiltrate unseen, or banish their wards to unseal ancient records.
+            </p>
+            <div class="archives-filter-bar" role="tablist" aria-label="Filter Soul Clan Archives">
+              <button type="button" class="archives-filter-btn active" data-afilter="all" role="tab" aria-selected="true">All Entries</button>
+              <button type="button" class="archives-filter-btn" data-afilter="sentry" role="tab" aria-selected="false">Sentries</button>
+              <button type="button" class="archives-filter-btn" data-afilter="chronicle" role="tab" aria-selected="false">Chronicles</button>
+              <button type="button" class="archives-filter-btn" data-afilter="unlocked" role="tab" aria-selected="false">Unlocked</button>
+            </div>
+          </div>
+
+          <div class="archives-columns">
+            <nav class="archives-index" id="soulArchivesList" aria-label="Soul Clan Archives Entries"></nav>
+            <article class="archives-reader" id="soulArchivesReader"></article>
+          </div>
+
+          <div class="archives-footer">
+            <span class="archives-hotkey-note">Tip: Hold [Shift] or press [X] for Veil of Shadow · [Q] Shockwave banishes sentries · [N] Archives</span>
+            <button type="button" class="primary-cta compact" id="closeSoulArchivesFooterBtn">Return to Mountain</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- CELESTIAL GLOBAL RANKING SANCTUARY MODAL -->
+      <div class="modal-backdrop hidden" id="globalRankingModal" role="dialog" aria-modal="true" aria-label="Celestial Global Ranking Sanctuary">
+        <div class="modal-card ranking-modal-card">
+          <div class="ranking-header">
+            <div class="ranking-title-group">
+              <div class="ranking-eyebrow">CELESTIAL ASCENSION STELE</div>
+              <h2 class="modal-title ranking-title">Global Ranking Portal</h2>
+            </div>
+            <div class="ranking-header-actions">
+              <div class="ranking-auth-bar" id="rankingAuthBar"></div>
+              <button type="button" class="ghost-btn compact" id="rankingRefreshBtn" title="Refresh Global Leaderboard">↻ Refresh</button>
+              <button type="button" class="ghost-btn compact" id="closeGlobalRankingBtn" aria-label="Close Global Ranking">✕ Close</button>
+            </div>
+          </div>
+
+          <div class="ranking-portal-banner" id="rankingPortalBanner"></div>
+
+          <div class="ranking-dossier-card">
+            <div class="ranking-dossier-top">
+              <div>
+                <div class="ranking-section-label">YOUR CULTIVATION DOSSIER</div>
+                <div class="ranking-dossier-stats" id="rankingDossierStats"></div>
+              </div>
+              <div class="ranking-submit-box">
+                <label class="ranking-callsign-label" for="rankingCallsignInput">Cultivator Callsign</label>
+                <div class="ranking-submit-row">
+                  <input
+                    type="text"
+                    id="rankingCallsignInput"
+                    class="ranking-callsign-input"
+                    maxlength="32"
+                    placeholder="Jade Cultivator"
+                    autocomplete="off"
+                  />
+                  <button type="button" class="primary-cta compact ranking-submit-btn" id="rankingSubmitBtn">
+                    Inscribe Progress
+                  </button>
+                  <button type="button" class="ghost-btn compact danger-outline hidden" id="rankingDeleteOwnBtn" title="Remove your public entry from the stele">
+                    Remove
+                  </button>
+                </div>
+              </div>
+            </div>
+            <div class="ranking-status-msg hidden" id="rankingStatusMsg"></div>
+          </div>
+
+          <div class="ranking-standing-strip" id="rankingStandingStrip"></div>
+
+          <div class="ranking-sort-bar" role="tablist" aria-label="Sort Global Rankings">
+            <button type="button" class="ranking-sort-btn active" data-rsort="score" role="tab" aria-selected="true">Highest Score</button>
+            <button type="button" class="ranking-sort-btn" data-rsort="cultivation" role="tab" aria-selected="false">Cultivation Lv &amp; XP</button>
+            <button type="button" class="ranking-sort-btn" data-rsort="souls" role="tab" aria-selected="false">Soul Fragments</button>
+            <button type="button" class="ranking-sort-btn" data-rsort="shrines" role="tab" aria-selected="false">Trial Shrines</button>
+          </div>
+
+          <div class="ranking-podium" id="rankingPodium"></div>
+
+          <div class="ranking-compare-card hidden" id="rankingCompareCard"></div>
+
+          <div class="ranking-table-wrap">
+            <table class="ranking-table">
+              <thead>
+                <tr>
+                  <th>Rank</th>
+                  <th>Cultivator</th>
+                  <th>Stage &amp; Realm</th>
+                  <th>Score</th>
+                  <th>XP</th>
+                  <th>Shrines</th>
+                  <th>Souls</th>
+                  <th>Compare</th>
+                </tr>
+              </thead>
+              <tbody id="rankingRowsBody"></tbody>
+            </table>
           </div>
         </div>
       </div>
@@ -907,46 +1251,122 @@ export class GameUI {
         <span class="taunt-bubble-tail" aria-hidden="true"></span>
       </div>
 
-      <!-- SETTINGS MODAL -->
+      <!-- UNIFIED GAME & BROWSER SETTINGS MODAL -->
       <div class="modal-backdrop hidden" id="settingsModal" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
-        <div class="modal-card">
-          <h2 class="modal-title" id="settingsTitle">Settings</h2>
-          <div class="settings-section">
-            <span class="settings-label">Master Volume</span>
-            <div class="settings-row">
-              <input type="range" class="settings-slider" id="settingsMasterVol" min="0" max="100" value="82" />
-              <span class="settings-val" id="settingsMasterVolVal">82%</span>
+        <div class="modal-card settings-unified-card">
+          <div class="settings-modal-head">
+            <h2 class="modal-title" id="settingsTitle">Settings</h2>
+            <div class="settings-tab-bar" role="tablist" aria-label="Settings Categories">
+              <button type="button" class="settings-tab-btn active" data-stab="game" role="tab" aria-selected="true">Game</button>
+              <button type="button" class="settings-tab-btn" data-stab="browser" role="tab" aria-selected="false">Browser &amp; Release</button>
             </div>
           </div>
-          <div class="settings-section">
-            <span class="settings-label">Ambient Volume</span>
-            <div class="settings-row">
-              <input type="range" class="settings-slider" id="settingsAmbientVol" min="0" max="100" value="100" />
-              <span class="settings-val" id="settingsAmbientVolVal">100%</span>
+
+          <div class="settings-pane" id="settingsPaneGame">
+            <div class="settings-section">
+              <span class="settings-label">Master Volume</span>
+              <div class="settings-row">
+                <input type="range" class="settings-slider" id="settingsMasterVol" min="0" max="100" value="82" />
+                <span class="settings-val" id="settingsMasterVolVal">82%</span>
+              </div>
+            </div>
+            <div class="settings-section">
+              <span class="settings-label">Ambient Volume</span>
+              <div class="settings-row">
+                <input type="range" class="settings-slider" id="settingsAmbientVol" min="0" max="100" value="100" />
+                <span class="settings-val" id="settingsAmbientVolVal">100%</span>
+              </div>
+            </div>
+            <div class="settings-section">
+              <span class="settings-label">SFX Volume</span>
+              <div class="settings-row">
+                <input type="range" class="settings-slider" id="settingsSfxVol" min="0" max="100" value="100" />
+                <span class="settings-val" id="settingsSfxVolVal">100%</span>
+              </div>
+            </div>
+            <div class="settings-section">
+              <span class="settings-label">Graphics Quality</span>
+              <div class="speed-group" role="group">
+                <button type="button" class="speed-btn" data-quality="low">Low</button>
+                <button type="button" class="speed-btn" data-quality="medium">Medium</button>
+                <button type="button" class="speed-btn active" data-quality="high">High</button>
+              </div>
+            </div>
+            <div class="settings-section">
+              <span class="settings-label">Mobile Touch Controls &amp; Virtual Cursor</span>
+              <div class="settings-row">
+                <button type="button" class="secondary-cta compact" id="toggleMobileControlsBtn">Toggle Touch Pad &amp; Cursor</button>
+                <button type="button" class="secondary-cta compact" id="lockLandscapeSettingsBtn">Lock Landscape</button>
+              </div>
             </div>
           </div>
-          <div class="settings-section">
-            <span class="settings-label">SFX Volume</span>
-            <div class="settings-row">
-              <input type="range" class="settings-slider" id="settingsSfxVol" min="0" max="100" value="100" />
-              <span class="settings-val" id="settingsSfxVolVal">100%</span>
+
+          <div class="settings-pane hidden" id="settingsPaneBrowser">
+            <div class="settings-section">
+              <span class="settings-label">App Launch Mode</span>
+              <div class="speed-group" role="group" aria-label="Startup Launch Mode">
+                <button type="button" class="speed-btn active" data-bsetting-startup="game">Start in 3D Game</button>
+                <button type="button" class="speed-btn" data-bsetting-startup="browser">Start as Web Browser</button>
+              </div>
+            </div>
+            <div class="settings-section">
+              <span class="settings-label">Default Search Engine</span>
+              <select class="dark-select settings-full-select" id="settingsSearchEngineSel">
+                <option value="duckduckgo">DuckDuckGo Lite (Recommended for Proxy)</option>
+                <option value="wikipedia">Wikipedia</option>
+                <option value="brave">Brave Search</option>
+                <option value="ecosia">Ecosia</option>
+                <option value="bing">Bing</option>
+                <option value="google">Google</option>
+              </select>
+            </div>
+            <div class="settings-section">
+              <span class="settings-label">Homepage URL</span>
+              <div class="settings-row">
+                <input type="text" class="dark-select settings-text-input" id="settingsHomepageInput" placeholder="chrome://newtab or https://..." spellcheck="false" />
+                <button type="button" class="secondary-cta compact" id="settingsSaveHomepageBtn">Save</button>
+              </div>
+            </div>
+            <div class="settings-section">
+              <span class="settings-label">User-Agent Profile</span>
+              <select class="dark-select settings-full-select" id="settingsUaSel">
+                <option value="serpent_portal">Portal Chromium 131 (Default)</option>
+                <option value="desktop_chrome">Desktop Chrome (Windows 10/11)</option>
+                <option value="mobile_chrome">Mobile Chrome (Android Pixel)</option>
+              </select>
+            </div>
+            <div class="settings-section">
+              <span class="settings-label">Page Zoom</span>
+              <div class="settings-row">
+                <input type="range" class="settings-slider" id="settingsZoomSlider" min="80" max="130" step="5" value="100" />
+                <span class="settings-val" id="settingsZoomVal">100%</span>
+              </div>
+            </div>
+            <div class="settings-section settings-toggle-grid">
+              <label class="settings-check-row">
+                <input type="checkbox" id="settingsTrackerShieldChk" checked />
+                <span>Privacy Tracker Shield (strip analytics &amp; send DNT/GPC)</span>
+              </label>
+              <label class="settings-check-row">
+                <input type="checkbox" id="settingsDefaultProxyChk" checked />
+                <span>Default Server Proxy (bypass X-Frame-Options)</span>
+              </label>
+              <label class="settings-check-row">
+                <input type="checkbox" id="settingsBookmarksBarChk" checked />
+                <span>Show Bookmarks Bar</span>
+              </label>
+            </div>
+            <div class="settings-section">
+              <span class="settings-label">Browser Data &amp; App Release</span>
+              <div class="settings-row settings-wrap-row">
+                <button type="button" class="secondary-cta compact" id="settingsLaunchBrowserNowBtn">Open Standalone Browser</button>
+                <button type="button" class="secondary-cta compact" id="settingsInstallPwaBtn">Install App (PWA)</button>
+                <button type="button" class="ghost-btn compact" id="settingsClearHistoryBtn">Clear History</button>
+                <button type="button" class="ghost-btn compact" id="settingsResetBrowserBtn">Reset Browser Defaults</button>
+              </div>
             </div>
           </div>
-          <div class="settings-section">
-            <span class="settings-label">Graphics Quality</span>
-            <div class="speed-group" role="group">
-              <button type="button" class="speed-btn" data-quality="low">Low</button>
-              <button type="button" class="speed-btn" data-quality="medium">Medium</button>
-              <button type="button" class="speed-btn active" data-quality="high">High</button>
-            </div>
-          </div>
-          <div class="settings-section">
-            <span class="settings-label">Mobile Touch Controls &amp; Virtual Cursor</span>
-            <div class="settings-row">
-              <button type="button" class="secondary-cta compact" id="toggleMobileControlsBtn">Toggle Touch Pad &amp; Cursor</button>
-              <button type="button" class="secondary-cta compact" id="lockLandscapeSettingsBtn">⟳ Lock Landscape</button>
-            </div>
-          </div>
+
           <div class="modal-actions">
             <button type="button" class="primary-cta" id="closeSettingsBtn">Close</button>
           </div>
@@ -967,14 +1387,25 @@ export class GameUI {
               <button type="button" class="chromium-channel-btn active-a" id="chromiumPortalABtn" title="View Portal A Dimension">● Portal A</button>
               <button type="button" class="chromium-channel-btn" id="chromiumPortalBBtn" title="View Portal B Dimension">● Portal B</button>
             </div>
-            <button type="button" class="chromium-orbit-mode-btn is-active" id="chromiumOrbitToggleBtn" title="Return to the 3D Rolling Tab Cosmos">🌌 Rolling Tab World</button>
+            <button type="button" class="chromium-mission-mode-btn" id="chromiumMissionToggleBtn" title="Play this Portal's Soul Trial / Quiz / 29-Card Duel">⚔️ Portal Mission</button>
+            <button type="button" class="chromium-orbit-mode-btn is-active" id="chromiumOrbitToggleBtn" title="Return to the 3D Mirror-House Tab Rotunda">🪞 Mirror-House World</button>
             <div class="chromium-tabs-scroll" id="chromiumTabList" role="tablist"></div>
-            <button type="button" class="chromium-newtab-btn" id="chromiumNewTabBtn" title="Spawn New Rolling Tab World" aria-label="New Tab">+</button>
+            <button type="button" class="chromium-newtab-btn" id="chromiumNewTabBtn" title="Spawn New Mirror Tab World" aria-label="New Tab">+</button>
             <div class="chromium-window-actions">
-              <button type="button" class="chromium-win-btn" id="chromiumPipBtn" title="Dock Picture-in-Picture while playing">⧉ PiP Dock</button>
-              <button type="button" class="chromium-win-btn close" id="chromiumCloseBtn" title="Close Portal Browser (Esc)">✕</button>
+              <div class="chromium-soul-clock-badge" id="chromiumSoulClockBadge" title="Collected Soul Fragments & 40-Hour Coma Countdown">👻 0/14 · ⏱ 40:00:00</div>
+              <button type="button" class="chromium-profile-btn" id="chromiumProfileBtn" title="Switch Chromium Browser Profile & Saved Mirror-House Tabs">
+                <span class="cprof-avatar" id="chromiumProfileAvatar">🐉</span>
+                <span class="cprof-name" id="chromiumProfileName">Serpent Sovereign</span>
+                <span class="cprof-caret" aria-hidden="true">▾</span>
+              </button>
+              <button type="button" class="chromium-win-btn" id="chromiumStandaloneBtn" title="Toggle Fullscreen Standalone Browser Mode">⛶ Fullscreen</button>
+              <button type="button" class="chromium-win-btn" id="chromiumPipBtn" title="Dock Picture-in-Picture while playing">⧉ PiP</button>
+              <button type="button" class="chromium-win-btn close" id="chromiumCloseBtn" title="Return to 3D Mountain Game (Esc)">Play Game</button>
             </div>
           </div>
+
+          <!-- CHROMIUM BROWSER PROFILE SWITCHER & CREATOR POPOVER -->
+          <div class="chromium-profile-popover hidden" id="chromiumProfilePopover" role="dialog" aria-label="Chromium Browser Profiles"></div>
 
           <!-- CHROMIUM NAVIGATION & OMNIBOX BAR -->
           <div class="chromium-toolbar-row">
@@ -982,7 +1413,7 @@ export class GameUI {
               <button type="button" class="chromium-nav-btn" id="chromiumBackBtn" title="Back" aria-label="Back">←</button>
               <button type="button" class="chromium-nav-btn" id="chromiumFwdBtn" title="Forward" aria-label="Forward">→</button>
               <button type="button" class="chromium-nav-btn" id="chromiumReloadBtn" title="Reload Tab" aria-label="Reload">↻</button>
-              <button type="button" class="chromium-nav-btn" id="chromiumHomeBtn" title="Open 3D Rolling Tab Cosmos" aria-label="Home">🌌</button>
+              <button type="button" class="chromium-nav-btn" id="chromiumHomeBtn" title="Go to Homepage" aria-label="Home">⌂</button>
             </div>
             <form class="chromium-omnibox-form" id="chromiumOmniboxForm">
               <span class="chromium-omnibox-lock" aria-hidden="true">🔒</span>
@@ -990,26 +1421,46 @@ export class GameUI {
                 type="text"
                 class="chromium-omnibox-input"
                 id="chromiumOmniboxInput"
-                placeholder="Search DuckDuckGo or enter URL to launch a rolling tab world..."
+                placeholder="Search the web or enter a URL (chrome://settings, wikipedia.org)..."
                 autocomplete="off"
                 spellcheck="false"
               />
-              <button type="submit" class="chromium-omnibox-go">Enter World</button>
+              <button type="button" class="chromium-bookmark-star" id="chromiumBookmarkBtn" title="Bookmark this page" aria-label="Bookmark this page">☆</button>
+              <button type="submit" class="chromium-omnibox-go">Go</button>
             </form>
             <div class="chromium-toolbar-right">
               <button type="button" class="chromium-proxy-btn is-on" id="chromiumProxyBtn" title="Toggle Server-Side Chromium Proxy vs Direct Iframe">Proxy: ON</button>
-              <button type="button" class="chromium-warp-btn" id="chromiumWarpBtn" title="Physically teleport your serpent to the next Dimensional Portal across the mountain">⚡ Warp Next Portal ➔</button>
+              <button type="button" class="chromium-settings-btn" id="chromiumSettingsBtn" title="Browser Settings &amp; History (chrome://settings)" aria-label="Browser Settings">⚙ Settings</button>
+              <button type="button" class="chromium-warp-btn" id="chromiumWarpBtn" title="Physically teleport your serpent to the next Dimensional Portal across the mountain">Warp Portal</button>
             </div>
           </div>
 
           <!-- CHROMIUM BOOKMARKS BAR -->
           <div class="chromium-bookmarks-bar" id="chromiumBookmarksBar"></div>
 
-          <!-- CHROMIUM POCKET DIMENSION VIEWPORT: 3D ROLLING TAB COSMOS + LIVE WEB IFRAME -->
+          <!-- CHROMIUM POCKET DIMENSION VIEWPORT: PORTAL MISSION CHAMBER + BROWSER SETTINGS + 3D MIRROR-HOUSE ROTUNDA + LIVE WEB IFRAME -->
           <div class="chromium-viewport-wrap">
-            <!-- OTHERWORLD 3D ROLLING TAB ORBIT ("ANOTHER WORLD INSIDE THE PORTAL") -->
+            <div class="chromium-loading-bar hidden" id="chromiumLoadingBar" aria-hidden="true"></div>
+
+            <!-- PER-PORTAL MISSION / QUIZ / 5-FLOOR TRIAL / 29-CARD SOUL DUEL CHAMBER -->
+            <div class="chromium-mission-panel hidden" id="chromiumMissionPanel" role="region" aria-label="Portal Mission Trial Chamber"></div>
+
+            <!-- INTEGRATED IN-BROWSER SETTINGS, PRIVACY, BOOKMARKS & HISTORY PANEL (chrome://settings) -->
+            <div class="chromium-settings-panel hidden" id="chromiumSettingsPanel" role="region" aria-label="Portal Chromium Browser Settings"></div>
+
+            <!-- OTHERWORLD 3D MIRROR-HOUSE TAB ROTUNDA ("LIKE A MIRROR HOUSE ALL AROUND INSIDE THE PORTAL") -->
             <div class="chromium-otherworld-cosmos" id="chromiumOtherworldCosmos">
               <div class="otherworld-nebula-bg" aria-hidden="true">
+                <div class="mirror-house-prism-wall">
+                  <span class="mirror-prism-col"></span>
+                  <span class="mirror-prism-col"></span>
+                  <span class="mirror-prism-col"></span>
+                  <span class="mirror-prism-col"></span>
+                  <span class="mirror-prism-col"></span>
+                  <span class="mirror-prism-col"></span>
+                  <span class="mirror-prism-col"></span>
+                  <span class="mirror-prism-col"></span>
+                </div>
                 <div class="otherworld-astrolabe-ring ring-outer"></div>
                 <div class="otherworld-astrolabe-ring ring-mid"></div>
                 <div class="otherworld-astrolabe-ring ring-inner"></div>
@@ -1017,20 +1468,22 @@ export class GameUI {
               </div>
 
               <div class="otherworld-header-hud">
-                <span class="otherworld-kicker">🌌 DIMENSIONAL PORTAL POCKET WORLD · CHROMIUM 131 MULTIVERSE</span>
-                <h3 class="otherworld-title">Every Tab is Rolling Around in Orbit — Select Any Tab World to Enter</h3>
-                <p class="otherworld-subtitle">Click or tap any orbiting tab portal below to dive into its live web world, drag/scroll to spin the orbit, or spawn a new tab.</p>
+                <div class="otherworld-profile-strip" id="otherworldProfileStrip" role="group" aria-label="Quick Browser Profile Switcher"></div>
+                <span class="otherworld-kicker">🪞 360° HALL OF MIRRORS POCKET WORLD · CHROMIUM 131 MULTI-PROFILE ROTUNDA</span>
+                <h3 class="otherworld-title">Mirror-House of Rolling Tab Worlds All Around You — Click Any Mirror to Enter</h3>
+                <p class="otherworld-subtitle">Each Browser Profile keeps its own 3-tier kaleidoscopic Hall of Mirrors (12+ live tabs surrounding you). Spin or click any mirror tab to dive in — or switch to ⚔️ Portal Mission.</p>
               </div>
 
-              <!-- 3D PERSPECTIVE ORBIT STAGE WHERE EVERY TAB ROLLS AROUND -->
-              <div class="otherworld-orbit-stage" id="chromiumOrbitStage" role="region" aria-label="3D Rolling Tabs Orbit"></div>
+              <!-- 3D PERSPECTIVE MIRROR-HOUSE STAGE WHERE EVERY TAB SURROUNDS THE PLAYER -->
+              <div class="otherworld-orbit-stage" id="chromiumOrbitStage" role="region" aria-label="3D Mirror-House Rolling Tabs Rotunda"></div>
 
               <!-- ORBIT CONTROLS FOOTER -->
               <div class="otherworld-orbit-controls">
-                <button type="button" class="otherworld-ctrl-btn" id="orbitSpinLeftBtn">⟲ Spin Left</button>
-                <button type="button" class="otherworld-ctrl-btn primary" id="orbitEnterFrontBtn">⚡ Enter Front Tab World</button>
-                <button type="button" class="otherworld-ctrl-btn" id="orbitSpawnTabBtn">+ New Rolling Tab</button>
-                <button type="button" class="otherworld-ctrl-btn" id="orbitSpinRightBtn">⟳ Spin Right</button>
+                <button type="button" class="otherworld-ctrl-btn" id="orbitSpinLeftBtn">⟲ Spin Mirrors Left</button>
+                <button type="button" class="otherworld-ctrl-btn primary" id="orbitEnterFrontBtn">⚡ Enter Center Mirror World</button>
+                <button type="button" class="otherworld-ctrl-btn" id="orbitSpawnTabBtn">+ New Mirror Tab</button>
+                <button type="button" class="otherworld-ctrl-btn accent" id="orbitPopulateMirrorsBtn">🪞 +4 Mirror-House Tabs</button>
+                <button type="button" class="otherworld-ctrl-btn" id="orbitSpinRightBtn">⟳ Spin Mirrors Right</button>
               </div>
             </div>
 
@@ -1045,8 +1498,29 @@ export class GameUI {
           <!-- CHROMIUM FOOTER STATUS BAR -->
           <div class="chromium-statusbar">
             <span class="chromium-status-left" id="chromiumStatusText">Chromium 131.0.6778.86 · Blink Portal Wormhole Compositor</span>
-            <span class="chromium-status-right">Synced to 8 Colossal 3D Mountain Portals · Press [G] or [Esc] to return</span>
+            <span class="chromium-status-right" id="chromiumPortalCountText">Synced to 28+ Random 3D Mountain Portals · Press [G] or [Esc] to return</span>
           </div>
+        </div>
+      </div>
+
+      <!-- FULL-VIEWPORT DIMENSIONAL PORTAL SHIFT SCREEN RIPPLE TRANSITION OVERLAY -->
+      <div class="portal-shift-ripple-overlay" id="portalShiftRippleOverlay" aria-hidden="true">
+        <svg class="portal-shift-svg-defs" width="0" height="0" focusable="false">
+          <defs>
+            <filter id="portalShiftDisplaceFilter" x="-8%" y="-8%" width="116%" height="116%">
+              <feTurbulence type="fractalNoise" baseFrequency="0.014 0.022" numOctaves="2" seed="7" result="noise" />
+              <feDisplacementMap id="portalShiftDisplaceMap" in="SourceGraphic" in2="noise" scale="0" xChannelSelector="R" yChannelSelector="G" />
+            </filter>
+          </defs>
+        </svg>
+        <div class="portal-ripple-prism"></div>
+        <div class="portal-ripple-ring ring-primary"></div>
+        <div class="portal-ripple-ring ring-secondary"></div>
+        <div class="portal-ripple-ring ring-echo"></div>
+        <div class="portal-ripple-banner" id="portalShiftRippleBanner">
+          <div class="portal-ripple-kicker">Dimensional Rift Relocated</div>
+          <div class="portal-ripple-coords" id="portalShiftRippleCoords">(0, 0) → (0, 0)</div>
+          <div class="portal-ripple-sub" id="portalShiftRippleSub">5 portals shifted to fresh mountain coordinates</div>
         </div>
       </div>
 
@@ -1149,6 +1623,10 @@ export class GameUI {
     this.settingsModal = uiLayer.querySelector('#settingsModal')!;
     this.tutorialOverlay = uiLayer.querySelector('#tutorialOverlay')!;
 
+    this.lootReliquaryModal = uiLayer.querySelector('#lootReliquaryModal')!;
+    this.lootReliquaryBodyEl = uiLayer.querySelector('#lootReliquaryBody')!;
+    this.lootReliquaryMetaEl = uiLayer.querySelector('#lootReliquaryMeta')!;
+
     this.portalBrowserModal = uiLayer.querySelector('#portalBrowserModal')!;
     this.chromiumTabListEl = uiLayer.querySelector('#chromiumTabList')!;
     this.chromiumOmniboxForm = uiLayer.querySelector('#chromiumOmniboxForm')!;
@@ -1156,16 +1634,28 @@ export class GameUI {
     this.chromiumBackBtn = uiLayer.querySelector('#chromiumBackBtn')!;
     this.chromiumFwdBtn = uiLayer.querySelector('#chromiumFwdBtn')!;
     this.chromiumProxyBtn = uiLayer.querySelector('#chromiumProxyBtn')!;
+    this.chromiumBookmarkBtn = uiLayer.querySelector('#chromiumBookmarkBtn')!;
+    this.chromiumSettingsBtn = uiLayer.querySelector('#chromiumSettingsBtn')!;
+    this.chromiumStandaloneBtn = uiLayer.querySelector('#chromiumStandaloneBtn')!;
     this.chromiumWarpBtn = uiLayer.querySelector('#chromiumWarpBtn')!;
     this.chromiumPipBtn = uiLayer.querySelector('#chromiumPipBtn')!;
     this.chromiumOrbitToggleBtn = uiLayer.querySelector('#chromiumOrbitToggleBtn')!;
+    this.chromiumMissionToggleBtn = uiLayer.querySelector('#chromiumMissionToggleBtn')!;
+    this.chromiumSoulClockBadgeEl = uiLayer.querySelector('#chromiumSoulClockBadge')!;
     this.chromiumPortalABtn = uiLayer.querySelector('#chromiumPortalABtn')!;
     this.chromiumPortalBBtn = uiLayer.querySelector('#chromiumPortalBBtn')!;
+    this.chromiumProfileBtn = uiLayer.querySelector('#chromiumProfileBtn')!;
+    this.chromiumProfilePopoverEl = uiLayer.querySelector('#chromiumProfilePopover')!;
+    this.chromiumOtherworldProfileStripEl = uiLayer.querySelector('#otherworldProfileStrip')!;
     this.chromiumBookmarksBarEl = uiLayer.querySelector('#chromiumBookmarksBar')!;
     this.chromiumOtherworldEl = uiLayer.querySelector('#chromiumOtherworldCosmos')!;
     this.chromiumOrbitStageEl = uiLayer.querySelector('#chromiumOrbitStage')!;
+    this.chromiumMissionPanelEl = uiLayer.querySelector('#chromiumMissionPanel')!;
+    this.chromiumSettingsPanelEl = uiLayer.querySelector('#chromiumSettingsPanel')!;
+    this.chromiumLoadingBarEl = uiLayer.querySelector('#chromiumLoadingBar')!;
     this.chromiumViewportFrame = uiLayer.querySelector('#chromiumViewportFrame')!;
     this.chromiumStatusTextEl = uiLayer.querySelector('#chromiumStatusText')!;
+    this.fpvReticleEl = uiLayer.querySelector('#fpvReticle')!;
 
     this.mobileLeftClusterEl = uiLayer.querySelector('#mobileLeftCluster')!;
     this.mobileActionRowEl = uiLayer.querySelector('#mobileActionRow')!;
@@ -1260,6 +1750,25 @@ export class GameUI {
 
     this.minimapCanvas = uiLayer.querySelector('#minimapCanvas')!;
     this.minimapCtx = this.minimapCanvas.getContext('2d')!;
+    this.minimapCaptionEl = uiLayer.querySelector('#minimapCaption')!;
+
+    this.globalRankingModal = uiLayer.querySelector('#globalRankingModal')!;
+    this.rankingPortalBannerEl = uiLayer.querySelector('#rankingPortalBanner')!;
+    this.rankingAuthBarEl = uiLayer.querySelector('#rankingAuthBar')!;
+    this.rankingCallsignInput = uiLayer.querySelector('#rankingCallsignInput')!;
+    this.rankingSubmitBtn = uiLayer.querySelector('#rankingSubmitBtn')!;
+    this.rankingDeleteOwnBtn = uiLayer.querySelector('#rankingDeleteOwnBtn')!;
+    this.rankingDossierStatsEl = uiLayer.querySelector('#rankingDossierStats')!;
+    this.rankingStatusEl = uiLayer.querySelector('#rankingStatusMsg')!;
+    this.rankingStandingEl = uiLayer.querySelector('#rankingStandingStrip')!;
+    this.rankingPodiumEl = uiLayer.querySelector('#rankingPodium')!;
+    this.rankingCompareEl = uiLayer.querySelector('#rankingCompareCard')!;
+    this.rankingRowsEl = uiLayer.querySelector('#rankingRowsBody')!;
+    this.portalShiftRippleOverlayEl = uiLayer.querySelector('#portalShiftRippleOverlay')!;
+    this.portalShiftRippleBannerEl = uiLayer.querySelector('#portalShiftRippleBanner')!;
+    this.portalShiftRippleCoordsEl = uiLayer.querySelector('#portalShiftRippleCoords')!;
+    this.portalShiftRippleSubEl = uiLayer.querySelector('#portalShiftRippleSub')!;
+    this.portalShiftDisplaceEl = uiLayer.querySelector('#portalShiftDisplaceMap');
 
     this.goScoreEl = uiLayer.querySelector('#goScore')!;
     this.goLevelEl = uiLayer.querySelector('#goLevel')!;
@@ -1297,6 +1806,26 @@ export class GameUI {
     this.bestiarySearchClearBtn = uiLayer.querySelector('#bestiarySearchClearBtn')!;
     this.bestiaryIndexEl = uiLayer.querySelector('#bestiaryIndex')!;
     this.bestiaryDossierEl = uiLayer.querySelector('#bestiaryDossier')!;
+
+    this.sentryStealthBannerEl = uiLayer.querySelector('#sentryStealthBanner')!;
+    this.sentryBannerTitleEl = uiLayer.querySelector('#sentryBannerTitle')!;
+    this.sentryBannerStateEl = uiLayer.querySelector('#sentryBannerState')!;
+    this.sentrySuspicionFillEl = uiLayer.querySelector('#sentrySuspicionFill')!;
+    this.sentryBannerHintEl = uiLayer.querySelector('#sentryBannerHint')!;
+    this.soulArchivesModal = uiLayer.querySelector('#soulArchivesModal')!;
+    this.soulArchivesCountEl = uiLayer.querySelector('#soulArchivesCount')!;
+    this.soulArchivesListEl = uiLayer.querySelector('#soulArchivesList')!;
+    this.soulArchivesReaderEl = uiLayer.querySelector('#soulArchivesReader')!;
+    this.pauseSoulArchivesBtn = uiLayer.querySelector('#pauseSoulArchivesBtn')!;
+
+    this.loreUnlockToastEl = uiLayer.querySelector('#loreUnlockToast')!;
+    this.loreToastOpenBtn = uiLayer.querySelector('#loreToastOpenBtn')!;
+    this.loreToastDismissBtn = uiLayer.querySelector('#loreToastDismissBtn')!;
+    this.loreToastEmblemEl = uiLayer.querySelector('#loreToastEmblem')!;
+    this.loreToastKickerEl = uiLayer.querySelector('#loreToastKicker')!;
+    this.loreToastTitleEl = uiLayer.querySelector('#loreToastTitle')!;
+    this.loreToastSourceEl = uiLayer.querySelector('#loreToastSource')!;
+    this.loreToastProgressEl = uiLayer.querySelector('#loreToastProgress')!;
 
     this.presetSelectEl = uiLayer.querySelector('#builderPresetSelect')!;
     this.mirrorBtnEl = uiLayer.querySelector('#builderMirrorBtn')!;
@@ -1376,6 +1905,9 @@ export class GameUI {
           ? 'soul_hall_reaper'
           : 'nether_earth_wraith';
       this.openBestiaryModal(targetId);
+    });
+    this.root.querySelector('#hudPortalBtn')?.addEventListener('click', () => {
+      this.game.openPortalBrowserOverlay();
     });
     this.camBtnEl.addEventListener('click', () => {
       this.game.cycleCameraMode();
@@ -1542,9 +2074,108 @@ export class GameUI {
 
     // Pause modal
     this.root.querySelector('#resumeBtn')!.addEventListener('click', () => this.game.togglePause());
+    this.root.querySelector('#pauseGlobalRankingBtn')!.addEventListener('click', () => {
+      this.pauseModal.classList.add('hidden');
+      this.openGlobalRankingModal(false);
+    });
+    this.root.querySelector('#launchBrowserTitleBtn')?.addEventListener('click', () => {
+      this.launchStandaloneBrowser();
+    });
     this.root.querySelector('#pausePortalBrowserBtn')!.addEventListener('click', () => {
       this.pauseModal.classList.add('hidden');
       this.openPortalBrowserModal();
+    });
+    this.root.querySelector('#pauseLootReliquaryBtn')?.addEventListener('click', () => {
+      this.pauseModal.classList.add('hidden');
+      this.openLootReliquaryModal();
+    });
+    this.pauseSoulArchivesBtn.addEventListener('click', () => {
+      this.pauseModal.classList.add('hidden');
+      this.openSoulArchivesModal();
+    });
+
+    // Loot Reliquary Modal events
+    this.root.querySelector('#closeLootReliquaryBtn')?.addEventListener('click', () => {
+      this.closeLootReliquaryModal();
+    });
+    this.root.querySelector('#closeLootReliquaryFooterBtn')?.addEventListener('click', () => {
+      this.closeLootReliquaryModal();
+    });
+    this.lootReliquaryModal.addEventListener('click', (e) => {
+      if (e.target === this.lootReliquaryModal) {
+        this.closeLootReliquaryModal();
+      }
+    });
+    this.lootReliquaryBodyEl.addEventListener('click', (e) => {
+      const btn = (e.target as HTMLElement).closest<HTMLButtonElement>('[data-refine-recipe]');
+      if (!btn || !btn.dataset.refineRecipe) return;
+      if (this.game.refinePortalLootRecipe(btn.dataset.refineRecipe)) {
+        this.renderLootReliquaryModal();
+      }
+    });
+
+    // Soul Clan Archives Lore Gallery Modal events
+    this.root.querySelector('#closeSoulArchivesBtn')!.addEventListener('click', () => {
+      this.closeSoulArchivesModal();
+    });
+    this.root.querySelector('#closeSoulArchivesFooterBtn')!.addEventListener('click', () => {
+      this.closeSoulArchivesModal();
+    });
+    this.soulArchivesModal.addEventListener('click', (e) => {
+      if (e.target === this.soulArchivesModal) {
+        this.closeSoulArchivesModal();
+      }
+    });
+    this.root.querySelectorAll<HTMLButtonElement>('.archives-filter-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const next = btn.dataset.afilter as 'all' | 'sentry' | 'chronicle' | 'unlocked';
+        if (!next) return;
+        this.soulArchivesFilter = next;
+        this.game.sound.playClick();
+        this.renderSoulArchivesModal();
+      });
+    });
+    this.soulArchivesListEl.addEventListener('click', (e) => {
+      const row = (e.target as HTMLElement).closest<HTMLButtonElement>('.archives-row');
+      if (!row || !row.dataset.entryId) return;
+      this.selectedSoulArchiveId = row.dataset.entryId;
+      this.game.sound.playClick();
+      this.renderSoulArchivesModal();
+    });
+
+    // Subtle "New Lore Unlocked" toast direct link to Soul Clan Archives
+    this.loreToastOpenBtn.addEventListener('click', () => {
+      const targetEntryId = this.activeLoreToast?.entryId;
+      this.dismissLoreUnlockToast(false);
+      this.openSoulArchivesModal(targetEntryId);
+    });
+    this.loreToastDismissBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.dismissLoreUnlockToast(true);
+    });
+    this.loreUnlockToastEl.addEventListener('pointerenter', () => {
+      this.loreToastHovered = true;
+      window.clearTimeout(this.loreToastTimer);
+      this.loreUnlockToastEl.classList.add('is-paused');
+    });
+    this.loreUnlockToastEl.addEventListener('pointerleave', () => {
+      this.loreToastHovered = false;
+      this.loreUnlockToastEl.classList.remove('is-paused');
+      if (this.activeLoreToast) {
+        this.scheduleLoreToastAutoHide(2400);
+      }
+    });
+    this.loreUnlockToastEl.addEventListener('focusin', () => {
+      this.loreToastHovered = true;
+      window.clearTimeout(this.loreToastTimer);
+      this.loreUnlockToastEl.classList.add('is-paused');
+    });
+    this.loreUnlockToastEl.addEventListener('focusout', () => {
+      this.loreToastHovered = false;
+      this.loreUnlockToastEl.classList.remove('is-paused');
+      if (this.activeLoreToast) {
+        this.scheduleLoreToastAutoHide(2400);
+      }
     });
     this.root.querySelector('#pauseBestiaryBtn')!.addEventListener('click', () => this.openBestiaryModal());
     this.root.querySelector('#pauseSummaryBtn')!.addEventListener('click', () => this.openCurrentSummaryForReview());
@@ -1552,6 +2183,8 @@ export class GameUI {
     this.root.querySelector('#pauseRestartBtn')!.addEventListener('click', () => this.game.startGame());
     this.root.querySelector('#pauseBuilderBtn')!.addEventListener('click', () => this.game.enterBuilder());
     this.root.querySelector('#pauseTitleBtn')!.addEventListener('click', () => this.game.returnToTitle());
+
+    this.bindGlobalRankingEvents();
 
     // Game Over modal
     this.root.querySelector('#retryBtn')!.addEventListener('click', () => this.game.startGame());
@@ -1563,16 +2196,35 @@ export class GameUI {
       this.shareModal.classList.add('hidden');
     });
 
-    // --- Settings Modal ---
-    const openSettingsModal = () => {
+    // --- Unified Game & Browser Settings Modal ---
+    window.addEventListener('beforeinstallprompt', (e) => {
+      e.preventDefault();
+      this.deferredInstallPrompt = e as Event & {
+        prompt: () => Promise<void>;
+        userChoice: Promise<{ outcome: string }>;
+      };
+    });
+
+    const openSettingsModal = (initialTab: 'game' | 'browser' = 'game') => {
+      this.settingsActiveTab = initialTab;
+      this.syncUnifiedSettingsUi();
       this.settingsModal.classList.remove('hidden');
       this.game.setModalFreeze(true);
     };
-    this.root.querySelector('#openSettingsTitleBtn')?.addEventListener('click', openSettingsModal);
-    this.root.querySelector('#pauseSettingsBtn')?.addEventListener('click', openSettingsModal);
+    this.root.querySelector('#openSettingsTitleBtn')?.addEventListener('click', () => openSettingsModal('game'));
+    this.root.querySelector('#pauseSettingsBtn')?.addEventListener('click', () => openSettingsModal('game'));
     this.root.querySelector('#closeSettingsBtn')!.addEventListener('click', () => {
       this.settingsModal.classList.add('hidden');
-      this.game.setModalFreeze(false);
+      this.syncModalFreeze();
+    });
+
+    this.root.querySelectorAll<HTMLButtonElement>('.settings-tab-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const next = btn.dataset.stab === 'browser' ? 'browser' : 'game';
+        this.settingsActiveTab = next;
+        this.game.sound.playClick();
+        this.syncUnifiedSettingsUi();
+      });
     });
 
     const masterSlider = this.root.querySelector<HTMLInputElement>('#settingsMasterVol')!;
@@ -1604,6 +2256,93 @@ export class GameUI {
           b.classList.toggle('active', (b as HTMLButtonElement).dataset.quality === q),
         );
       });
+    });
+
+    // Browser & Release Settings bindings inside #settingsModal
+    this.root.querySelectorAll<HTMLButtonElement>('[data-bsetting-startup]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const mode = btn.dataset.bsettingStartup as StartupMode;
+        this.game.portalBrowser.updateSettings({ startupMode: mode });
+        this.game.sound.playClick();
+        this.syncUnifiedSettingsUi();
+        this.showToast(
+          mode === 'browser'
+            ? 'Startup mode set to Web Browser (launches directly into Portal Chromium).'
+            : 'Startup mode set to 3D Game (Serpent Peaks).',
+        );
+      });
+    });
+
+    const searchEngSel = this.root.querySelector<HTMLSelectElement>('#settingsSearchEngineSel');
+    searchEngSel?.addEventListener('change', () => {
+      this.game.portalBrowser.updateSettings({
+        searchEngine: searchEngSel.value as SearchEngineId,
+      });
+      this.syncUnifiedSettingsUi();
+      this.renderPortalChromiumBrowser(false);
+    });
+
+    const saveHomepage = () => {
+      const inp = this.root.querySelector<HTMLInputElement>('#settingsHomepageInput');
+      if (!inp) return;
+      const val = inp.value.trim() || 'chrome://newtab';
+      this.game.portalBrowser.updateSettings({ homepageUrl: val });
+      this.syncUnifiedSettingsUi();
+      this.showToast(`Browser homepage saved: ${val}`);
+    };
+    this.root.querySelector('#settingsSaveHomepageBtn')?.addEventListener('click', saveHomepage);
+
+    const uaSel = this.root.querySelector<HTMLSelectElement>('#settingsUaSel');
+    uaSel?.addEventListener('change', () => {
+      this.game.portalBrowser.updateSettings({
+        userAgentPreset: uaSel.value as UserAgentPreset,
+      });
+      this.lastLoadedIframeKey = '';
+      this.syncUnifiedSettingsUi();
+      this.renderPortalChromiumBrowser(true);
+    });
+
+    const zoomSlider = this.root.querySelector<HTMLInputElement>('#settingsZoomSlider');
+    zoomSlider?.addEventListener('input', () => {
+      const z = Number(zoomSlider.value);
+      this.game.portalBrowser.updateSettings({ zoomPercent: z });
+      const valEl = this.root.querySelector('#settingsZoomVal');
+      if (valEl) valEl.textContent = `${z}%`;
+      this.applyBrowserViewportZoom();
+    });
+
+    this.root.querySelector<HTMLInputElement>('#settingsTrackerShieldChk')?.addEventListener('change', (e) => {
+      const checked = (e.target as HTMLInputElement).checked;
+      this.game.portalBrowser.updateSettings({ trackerShield: checked });
+      this.lastLoadedIframeKey = '';
+      this.renderPortalChromiumBrowser(true);
+    });
+    this.root.querySelector<HTMLInputElement>('#settingsDefaultProxyChk')?.addEventListener('change', (e) => {
+      const checked = (e.target as HTMLInputElement).checked;
+      this.game.portalBrowser.updateSettings({ defaultProxyMode: checked });
+    });
+    this.root.querySelector<HTMLInputElement>('#settingsBookmarksBarChk')?.addEventListener('change', (e) => {
+      const checked = (e.target as HTMLInputElement).checked;
+      this.game.portalBrowser.updateSettings({ showBookmarksBar: checked });
+      this.renderPortalChromiumBrowser(false);
+    });
+    this.root.querySelector('#settingsLaunchBrowserNowBtn')?.addEventListener('click', () => {
+      this.settingsModal.classList.add('hidden');
+      this.launchStandaloneBrowser();
+    });
+    this.root.querySelector('#settingsInstallPwaBtn')?.addEventListener('click', () => {
+      void this.triggerPwaInstallPrompt();
+    });
+    this.root.querySelector('#settingsClearHistoryBtn')?.addEventListener('click', () => {
+      this.game.portalBrowser.clearHistory();
+      this.showToast('Browsing history cleared.');
+      if (this.portalBrowserSettingsMode) this.renderBrowserSettingsPanel();
+    });
+    this.root.querySelector('#settingsResetBrowserBtn')?.addEventListener('click', () => {
+      this.game.portalBrowser.resetSettings();
+      this.syncUnifiedSettingsUi();
+      this.renderPortalChromiumBrowser(false);
+      this.showToast('Browser settings restored to defaults.');
     });
 
     // --- Tutorial Overlay ---
@@ -1719,6 +2458,7 @@ export class GameUI {
     this.journeyModal.classList.add('hidden');
     this.shareModal.classList.add('hidden');
     this.bestiaryModal.classList.add('hidden');
+    this.portalBrowserModal.classList.add('hidden');
     this.evolutionSummaryModal.classList.remove('hidden');
     this.syncModalFreeze();
   }
@@ -1917,6 +2657,7 @@ export class GameUI {
   public openJourneyModal(): void {
     this.bestiaryModal.classList.add('hidden');
     this.evolutionSummaryModal.classList.add('hidden');
+    this.portalBrowserModal.classList.add('hidden');
     this.renderJourneyList();
     this.journeyModal.classList.remove('hidden');
     this.syncModalFreeze();
@@ -1947,6 +2688,8 @@ export class GameUI {
     this.journeyModal.classList.add('hidden');
     this.evolutionSummaryModal.classList.add('hidden');
     this.shareModal.classList.add('hidden');
+    this.soulArchivesModal.classList.add('hidden');
+    this.portalBrowserModal.classList.add('hidden');
     this.bestiaryModal.classList.remove('hidden');
     const playedLegendary = this.renderBestiary(true);
     this.syncModalFreeze();
@@ -1968,12 +2711,355 @@ export class GameUI {
     }
   }
 
+  public openSoulArchivesModal(focusEntryId?: string): void {
+    this.journeyModal.classList.add('hidden');
+    this.evolutionSummaryModal.classList.add('hidden');
+    this.shareModal.classList.add('hidden');
+    this.bestiaryModal.classList.add('hidden');
+    this.globalRankingModal.classList.add('hidden');
+    this.portalBrowserModal.classList.add('hidden');
+    this.pauseModal.classList.add('hidden');
+    this.soulArchivesModal.classList.remove('hidden');
+
+    if (focusEntryId) {
+      this.soulArchivesFilter = 'all';
+      this.selectedSoulArchiveId = focusEntryId;
+    } else {
+      const snap = this.game.getSoulArchiveSnapshot();
+      const cur = snap.entries.find((e) => e.def.id === this.selectedSoulArchiveId);
+      if (!cur || !cur.record.unlocked) {
+        const firstUnlocked = snap.entries.find((e) => e.record.unlocked);
+        if (firstUnlocked) {
+          this.selectedSoulArchiveId = firstUnlocked.def.id;
+        }
+      }
+    }
+
+    this.renderSoulArchivesModal();
+    if (focusEntryId) {
+      const selectedRow = this.soulArchivesListEl.querySelector<HTMLElement>('.archives-row.selected');
+      selectedRow?.scrollIntoView({ block: 'nearest' });
+    }
+    this.syncModalFreeze();
+    this.game.sound.playClick();
+  }
+
+  public showLoreUnlockedToast(notice: LoreUnlockNotice): void {
+    if (
+      this.activeLoreToast?.entryId === notice.entryId ||
+      this.loreToastQueue.some((q) => q.entryId === notice.entryId)
+    ) {
+      return;
+    }
+    this.loreToastQueue.push(notice);
+    if (!this.activeLoreToast) {
+      this.presentNextLoreToast();
+    }
+  }
+
+  private presentNextLoreToast(): void {
+    const next = this.loreToastQueue.shift();
+    if (!next) {
+      this.activeLoreToast = null;
+      return;
+    }
+    this.activeLoreToast = next;
+    window.clearTimeout(this.loreToastTimer);
+    window.clearTimeout(this.loreToastLeaveTimer);
+
+    const sourceLabel =
+      next.source === 'portal'
+        ? 'New Portal Discovered'
+        : next.source === 'sentry'
+          ? 'New Sentry Encountered'
+          : 'Soul Clan Chronicle';
+
+    this.loreUnlockToastEl.style.setProperty('--lore-accent', next.accentHex);
+    this.loreToastEmblemEl.innerHTML = renderSoulArchiveEmblemSvg(
+      next.entryId,
+      next.accentHex,
+      true,
+    );
+    this.loreToastKickerEl.textContent = `New Lore Unlocked · ${next.unlockedCount} / ${next.totalCount}`;
+    this.loreToastTitleEl.textContent = next.title;
+    this.loreToastSourceEl.textContent = sourceLabel;
+
+    this.loreUnlockToastEl.classList.remove('hidden', 'is-leaving', 'is-visible', 'is-paused');
+    // Restart hairline timer bar animation cleanly
+    this.loreToastProgressEl.classList.remove('is-running');
+    void this.loreUnlockToastEl.offsetWidth;
+    this.loreUnlockToastEl.classList.add('is-visible');
+    this.loreToastProgressEl.classList.add('is-running');
+
+    if (!this.loreToastHovered) {
+      this.scheduleLoreToastAutoHide(6500);
+    }
+  }
+
+  private scheduleLoreToastAutoHide(delayMs: number): void {
+    window.clearTimeout(this.loreToastTimer);
+    this.loreToastTimer = window.setTimeout(() => {
+      if (!this.loreToastHovered) {
+        this.dismissLoreUnlockToast(true);
+      }
+    }, delayMs);
+  }
+
+  private dismissLoreUnlockToast(showNext: boolean): void {
+    window.clearTimeout(this.loreToastTimer);
+    window.clearTimeout(this.loreToastLeaveTimer);
+    if (!showNext) {
+      this.loreToastQueue = [];
+    }
+    this.activeLoreToast = null;
+    this.loreUnlockToastEl.classList.remove('is-visible', 'is-paused');
+    this.loreUnlockToastEl.classList.add('is-leaving');
+    this.loreToastProgressEl.classList.remove('is-running');
+
+    this.loreToastLeaveTimer = window.setTimeout(() => {
+      this.loreUnlockToastEl.classList.add('hidden');
+      this.loreUnlockToastEl.classList.remove('is-leaving');
+      if (showNext && this.loreToastQueue.length > 0) {
+        this.presentNextLoreToast();
+      }
+    }, 220);
+  }
+
+  public closeSoulArchivesModal(): void {
+    if (this.soulArchivesModal.classList.contains('hidden')) return;
+    this.soulArchivesModal.classList.add('hidden');
+    this.syncModalFreeze();
+    this.game.sound.playClick();
+  }
+
+  public toggleSoulArchivesModal(): void {
+    if (this.soulArchivesModal.classList.contains('hidden')) {
+      this.openSoulArchivesModal();
+    } else {
+      this.closeSoulArchivesModal();
+    }
+  }
+
+  public openLootReliquaryModal(): void {
+    this.journeyModal.classList.add('hidden');
+    this.evolutionSummaryModal.classList.add('hidden');
+    this.shareModal.classList.add('hidden');
+    this.bestiaryModal.classList.add('hidden');
+    this.soulArchivesModal.classList.add('hidden');
+    this.globalRankingModal.classList.add('hidden');
+    this.portalBrowserModal.classList.add('hidden');
+    this.pauseModal.classList.add('hidden');
+    this.lootReliquaryModal.classList.remove('hidden');
+    this.renderLootReliquaryModal();
+    this.syncModalFreeze();
+    this.game.sound.playClick();
+  }
+
+  public closeLootReliquaryModal(): void {
+    if (this.lootReliquaryModal.classList.contains('hidden')) return;
+    this.lootReliquaryModal.classList.add('hidden');
+    this.syncModalFreeze();
+    this.game.sound.playClick();
+  }
+
+  public toggleLootReliquaryModal(): void {
+    if (this.lootReliquaryModal.classList.contains('hidden')) {
+      this.openLootReliquaryModal();
+    } else {
+      this.closeLootReliquaryModal();
+    }
+  }
+
+  private renderLootReliquaryModal(): void {
+    const mgr = this.game.portalLoot;
+    const state = mgr.getState();
+    const buff = mgr.getActiveBuff();
+    const effectiveMult = mgr.getEffectiveCultivationMultiplier();
+    const permRes = mgr.getPermanentResonancePct();
+    const totalMats = mgr.getTotalMaterialCount();
+
+    this.lootReliquaryMetaEl.textContent = `${effectiveMult.toFixed(2)}× Cultivation · +${permRes}% Permanent Resonance · ${totalMats} Materials`;
+
+    const buffCardHtml = buff
+      ? `
+        <div class="reliquary-buff-banner" style="--loot-accent:${buff.accentHex}">
+          <div class="reliquary-buff-icon">${renderLootIconSvg('elixir', buff.accentHex, buff.rarity)}</div>
+          <div class="reliquary-buff-copy">
+            <div class="reliquary-kicker">Active Cultivation Multiplier · ${LOOT_RARITY_META[buff.rarity].label}</div>
+            <div class="reliquary-buff-name">${buff.name} · <strong>${buff.multiplier.toFixed(2)}×</strong></div>
+            <div class="reliquary-buff-sub">Total effective XP &amp; Qi rate: ${effectiveMult.toFixed(2)}× · Time remaining: ${formatLootDuration(buff.remainingSec)}</div>
+          </div>
+        </div>
+      `
+      : `
+        <div class="reliquary-buff-banner is-idle" style="--loot-accent:#3de095">
+          <div class="reliquary-buff-icon">${renderLootIconSvg('elixir', '#3de095', 'uncommon')}</div>
+          <div class="reliquary-buff-copy">
+            <div class="reliquary-kicker">No Active Timed Elixir</div>
+            <div class="reliquary-buff-name">Base Cultivation Speed · <strong>${effectiveMult.toFixed(2)}×</strong></div>
+            <div class="reliquary-buff-sub">Complete any Portal Mission or refine rare materials below to activate a timed 1.35×–2.65× multiplier.</div>
+          </div>
+        </div>
+      `;
+
+    const recipesHtml = REFINEMENT_RECIPES.map((r) => {
+      const have = mgr.getMaterialCountByRarity(r.requiredRarity);
+      const ready = have >= r.requiredCount;
+      return `
+        <div class="reliquary-recipe-row" style="--loot-accent:${r.reward.accentHex}">
+          <div class="reliquary-recipe-copy">
+            <div class="reliquary-recipe-title">${r.title}</div>
+            <div class="reliquary-recipe-meta">${r.summary} · Stockpile: ${have}/${r.requiredCount} ${LOOT_RARITY_META[r.requiredRarity].label}</div>
+          </div>
+          <button type="button" class="${ready ? 'primary-cta' : 'ghost-btn'} compact" data-refine-recipe="${r.id}" ${ready ? '' : 'disabled'}>
+            Refine
+          </button>
+        </div>
+      `;
+    }).join('');
+
+    const materialsHtml = RARE_MATERIALS_CATALOG.map((def) => {
+      const qty = state.materials[def.id] ?? 0;
+      const discovered = state.discoveredMaterialIds.includes(def.id);
+      return `
+        <div class="reliquary-mat-card ${discovered ? 'is-discovered' : 'is-locked'}" style="--loot-accent:${def.accentHex}">
+          <div class="reliquary-mat-top">
+            <span class="reliquary-mat-icon">${renderLootIconSvg('material', def.accentHex, def.rarity)}</span>
+            <span class="reliquary-mat-qty">×${qty}</span>
+          </div>
+          <div class="reliquary-mat-name">${def.name}</div>
+          <div class="reliquary-mat-meta">${LOOT_RARITY_META[def.rarity].label} · ${def.origin}</div>
+          <p class="reliquary-mat-desc">${def.description}</p>
+        </div>
+      `;
+    }).join('');
+
+    const recentHtml =
+      state.recentDrops.length > 0
+        ? state.recentDrops
+            .slice(0, 6)
+            .map((drop) => {
+              const mats = drop.materials.map((m) => `${m.quantity}× ${m.name}`).join(', ');
+              return `
+                <div class="reliquary-drop-row">
+                  <div class="reliquary-drop-title">${this.escapeHtmlText(drop.missionTitle)}</div>
+                  <div class="reliquary-drop-meta">${drop.difficulty.label} · ${drop.multiplierReward.multiplier.toFixed(2)}× ${drop.multiplierReward.name} · ${this.escapeHtmlText(mats)}</div>
+                </div>
+              `;
+            })
+            .join('')
+        : `<p class="reliquary-empty">No portal spoils claimed yet. Enter any 3D mountain portal and clear its trial to earn unique rewards scaled to its difficulty.</p>`;
+
+    this.lootReliquaryBodyEl.innerHTML = `
+      ${buffCardHtml}
+      <div class="reliquary-section">
+        <div class="reliquary-section-head">
+          <h3>Material Refinement</h3>
+          <span class="reliquary-section-note">Permanent Resonance: +${permRes}% XP (${state.discoveredMaterialIds.length}/${RARE_MATERIALS_CATALOG.length} discovered)</span>
+        </div>
+        <div class="reliquary-recipes-list">${recipesHtml}</div>
+      </div>
+      <div class="reliquary-section">
+        <div class="reliquary-section-head">
+          <h3>Rare Materials Stockpile</h3>
+          <span class="reliquary-section-note">Higher Floors &amp; Storm Climates unlock Mythic drops</span>
+        </div>
+        <div class="reliquary-materials-grid">${materialsHtml}</div>
+      </div>
+      <div class="reliquary-section">
+        <div class="reliquary-section-head">
+          <h3>Recent Portal Spoils</h3>
+          <span class="reliquary-section-note">${state.totalDropsClaimed} total claimed</span>
+        </div>
+        <div class="reliquary-drops-list">${recentHtml}</div>
+      </div>
+    `;
+  }
+
+  private syncUnifiedSettingsUi(): void {
+    const s = this.game.portalBrowser.getSettings();
+    const isBrowserTab = this.settingsActiveTab === 'browser';
+    this.root.querySelectorAll<HTMLButtonElement>('.settings-tab-btn').forEach((btn) => {
+      const act = btn.dataset.stab === this.settingsActiveTab;
+      btn.classList.toggle('active', act);
+      btn.setAttribute('aria-selected', act ? 'true' : 'false');
+    });
+    this.root.querySelector('#settingsPaneGame')?.classList.toggle('hidden', isBrowserTab);
+    this.root.querySelector('#settingsPaneBrowser')?.classList.toggle('hidden', !isBrowserTab);
+
+    this.root.querySelectorAll<HTMLButtonElement>('[data-bsetting-startup]').forEach((btn) => {
+      btn.classList.toggle('active', btn.dataset.bsettingStartup === s.startupMode);
+    });
+    const searchSel = this.root.querySelector<HTMLSelectElement>('#settingsSearchEngineSel');
+    if (searchSel) searchSel.value = s.searchEngine;
+    const homeInp = this.root.querySelector<HTMLInputElement>('#settingsHomepageInput');
+    if (homeInp && document.activeElement !== homeInp) homeInp.value = s.homepageUrl;
+    const uaSel = this.root.querySelector<HTMLSelectElement>('#settingsUaSel');
+    if (uaSel) uaSel.value = s.userAgentPreset;
+    const zoomSlider = this.root.querySelector<HTMLInputElement>('#settingsZoomSlider');
+    if (zoomSlider) zoomSlider.value = String(s.zoomPercent);
+    const zoomVal = this.root.querySelector('#settingsZoomVal');
+    if (zoomVal) zoomVal.textContent = `${s.zoomPercent}%`;
+    const shieldChk = this.root.querySelector<HTMLInputElement>('#settingsTrackerShieldChk');
+    if (shieldChk) shieldChk.checked = s.trackerShield;
+    const proxyChk = this.root.querySelector<HTMLInputElement>('#settingsDefaultProxyChk');
+    if (proxyChk) proxyChk.checked = s.defaultProxyMode;
+    const bmChk = this.root.querySelector<HTMLInputElement>('#settingsBookmarksBarChk');
+    if (bmChk) bmChk.checked = s.showBookmarksBar;
+  }
+
+  private async triggerPwaInstallPrompt(): Promise<void> {
+    if (this.deferredInstallPrompt) {
+      await this.deferredInstallPrompt.prompt();
+      const choice = await this.deferredInstallPrompt.userChoice;
+      this.deferredInstallPrompt = null;
+      this.showToast(
+        choice.outcome === 'accepted'
+          ? 'Serpent Peaks Browser & Game installed!'
+          : 'Installation cancelled — you can install anytime from Settings.',
+      );
+    } else {
+      this.showToast(
+        'Use your browser address bar "Install" icon or Share -> Add to Home Screen to install Serpent Peaks as both a Browser and Game.',
+      );
+    }
+  }
+
+  public launchStandaloneBrowser(): void {
+    this.portalBrowserStandalone = true;
+    this.portalBrowserPip = false;
+    this.portalMissionViewMode = false;
+    this.portalBrowserSettingsMode = false;
+    const settings = this.game.portalBrowser.getSettings();
+    this.portalWorldOrbitMode = settings.newTabBehavior === 'mirror_house';
+    if (settings.newTabBehavior === 'newtab') {
+      const existingNewTab = this.game.portalBrowser
+        .getTabs()
+        .find((t) => t.url === 'chrome://newtab');
+      if (existingNewTab) {
+        this.game.portalBrowser.activateTab(existingNewTab.id);
+      } else {
+        this.game.portalBrowser.createTab('chrome://newtab');
+      }
+    }
+    this.portalBrowserModal.classList.remove('hidden', 'is-pip');
+    this.portalBrowserModal.classList.add('is-standalone');
+    this.syncSoulClockBadge();
+    this.renderPortalChromiumBrowser(true);
+    this.startPortalOrbitAnimation();
+    this.syncModalFreeze();
+  }
+
   private syncModalFreeze(): void {
     const portalBlocking =
       !this.portalBrowserModal.classList.contains('hidden') && !this.portalBrowserPip;
     const anyBlockingModal =
       portalBlocking ||
+      !this.globalRankingModal.classList.contains('hidden') ||
       !this.bestiaryModal.classList.contains('hidden') ||
+      !this.soulArchivesModal.classList.contains('hidden') ||
+      !this.lootReliquaryModal.classList.contains('hidden') ||
+      !this.settingsModal.classList.contains('hidden') ||
       !this.journeyModal.classList.contains('hidden') ||
       !this.evolutionSummaryModal.classList.contains('hidden');
     this.game.setModalFreeze(anyBlockingModal);
@@ -1982,10 +3068,14 @@ export class GameUI {
   public isModalOpen(): boolean {
     return (
       (!this.portalBrowserModal.classList.contains('hidden') && !this.portalBrowserPip) ||
+      !this.globalRankingModal.classList.contains('hidden') ||
       !this.shareModal.classList.contains('hidden') ||
       !this.journeyModal.classList.contains('hidden') ||
       !this.evolutionSummaryModal.classList.contains('hidden') ||
-      !this.bestiaryModal.classList.contains('hidden')
+      !this.bestiaryModal.classList.contains('hidden') ||
+      !this.soulArchivesModal.classList.contains('hidden') ||
+      !this.lootReliquaryModal.classList.contains('hidden') ||
+      !this.settingsModal.classList.contains('hidden')
     );
   }
 
@@ -2005,10 +3095,16 @@ export class GameUI {
     if (!this.evolutionSummaryModal.classList.contains('hidden')) {
       this.handleEvolutionSummaryPrimary();
     }
+    this.closeGlobalRankingModal();
     this.portalBrowserModal.classList.add('hidden');
+    this.portalBrowserModal.classList.remove('is-standalone');
+    this.portalBrowserStandalone = false;
     this.shareModal.classList.add('hidden');
     this.journeyModal.classList.add('hidden');
     this.bestiaryModal.classList.add('hidden');
+    this.soulArchivesModal.classList.add('hidden');
+    this.lootReliquaryModal.classList.add('hidden');
+    this.settingsModal.classList.add('hidden');
     this.syncModalFreeze();
   }
 
@@ -2553,12 +3649,18 @@ export class GameUI {
     }
     this.xpFillEl.style.width = `${Math.round(snap.xpProgress * 100)}%`;
     this.xpFillEl.classList.toggle('human-full', snap.isHuman);
+    const cultSuffix =
+      snap.cultivationBuffRemainingSec > 0
+        ? ` · ${snap.cultivationMult.toFixed(2)}× (${formatLootDuration(snap.cultivationBuffRemainingSec)})`
+        : snap.cultivationMult > 1.01
+          ? ` · ${snap.cultivationMult.toFixed(2)}×`
+          : '';
     if (snap.isHuman) {
-      this.xpMetaEl.textContent = `${snap.xp.toLocaleString()} XP · Dou Di Ascended`;
+      this.xpMetaEl.textContent = `${snap.xp.toLocaleString()} XP · Dou Di Ascended${cultSuffix}`;
     } else if (snap.xp >= snap.nextLevelXp && snap.visitedCount < snap.shrinesRequiredForNext) {
-      this.xpMetaEl.textContent = `XP Ready · Need Peak ${snap.shrinesRequiredForNext}`;
+      this.xpMetaEl.textContent = `XP Ready · Need Peak ${snap.shrinesRequiredForNext}${cultSuffix}`;
     } else {
-      this.xpMetaEl.textContent = `${snap.xp.toLocaleString()} / ${snap.nextLevelXp.toLocaleString()} XP`;
+      this.xpMetaEl.textContent = `${snap.xp.toLocaleString()} / ${snap.nextLevelXp.toLocaleString()} XP${cultSuffix}`;
     }
 
     this.scoreValEl.textContent = String(snap.score);
@@ -2824,10 +3926,18 @@ export class GameUI {
 
     const camNames: Record<CameraMode, string> = {
       ant: 'Ant View',
+      fpv: 'FPV Eye',
       chase: 'GTA Chase',
       aerial: 'Eagle Map',
     };
     this.root.querySelector('#hudCamLabel')!.textContent = camNames[snap.cameraMode];
+    this.fpvReticleEl.classList.toggle(
+      'hidden',
+      !(snap.cameraMode === 'fpv' && snap.mode === 'playing'),
+    );
+    if (!this.portalBrowserModal.classList.contains('hidden')) {
+      this.syncSoulClockBadge();
+    }
     this.muteBtnEl.textContent = snap.muted ? 'SFX Off' : 'SFX On';
 
     const pauseBtn = this.root.querySelector('#hudPauseBtn')!;
@@ -2850,11 +3960,64 @@ export class GameUI {
       this.goNewBestEl.classList.toggle('hidden', !snap.isNewBest);
     }
 
+    this.pauseSoulArchivesBtn.textContent =
+      `📜 Soul Clan Archives (${snap.soulArchivesUnlockedCount}/${snap.soulArchivesTotalCount}) (N)`;
+
+    const showSentryBanner =
+      snap.mode === 'playing' && (snap.stealthActive || snap.nearestSentryAlert !== null);
+    this.sentryStealthBannerEl.classList.toggle('hidden', !showSentryBanner);
+    if (showSentryBanner) {
+      const alert = snap.nearestSentryAlert;
+      this.sentryStealthBannerEl.classList.remove(
+        'mode-stealth',
+        'mode-circular',
+        'mode-search',
+        'mode-alert',
+      );
+      if (alert) {
+        const isLocked = alert.portalLockTimer > 0 || alert.patrolMode === 'alert';
+        const modeClass = isLocked
+          ? 'mode-alert'
+          : alert.patrolMode === 'search'
+            ? 'mode-search'
+            : snap.stealthActive
+              ? 'mode-stealth'
+              : 'mode-circular';
+        this.sentryStealthBannerEl.classList.add(modeClass);
+        const stateText = isLocked
+          ? `Portal Sealed · ${Math.ceil(Math.max(1, alert.portalLockTimer))}s`
+          : alert.patrolMode === 'search'
+            ? 'Searching Activity'
+            : snap.stealthActive
+              ? 'Veil Active · Circular Patrol'
+              : 'Circular Patrol';
+        this.sentryBannerTitleEl.textContent = `${alert.name} · ${alert.dist}m`;
+        this.sentryBannerStateEl.textContent = stateText;
+        const pct = Math.max(0, Math.min(100, Math.round(alert.suspicion * 100)));
+        this.sentrySuspicionFillEl.style.width = `${isLocked ? 100 : pct}%`;
+        this.sentryBannerHintEl.textContent = isLocked
+          ? 'Detected! Banish with [Q] Shockwave or [R] Lotus to unseal portal'
+          : snap.stealthActive
+            ? 'Veil of Shadow active — stay outside spectral cone to infiltrate portal'
+            : 'Hold [Shift] / press [X] for Stealth Veil · [Q] Shockwave banishes sentry';
+      } else {
+        this.sentryStealthBannerEl.classList.add('mode-stealth');
+        this.sentryBannerTitleEl.textContent = 'Veil of Shadow Active';
+        this.sentryBannerStateEl.textContent = 'Concealed';
+        this.sentrySuspicionFillEl.style.width = '0%';
+        this.sentryBannerHintEl.textContent =
+          'Sentry vision halved · Release [Shift] or press [X] to lift veil';
+      }
+    }
+
     if (!this.journeyModal.classList.contains('hidden')) {
       this.renderJourneyList();
     }
     if (!this.bestiaryModal.classList.contains('hidden')) {
       this.renderBestiary();
+    }
+    if (!this.soulArchivesModal.classList.contains('hidden')) {
+      this.renderSoulArchivesModal();
     }
   }
 
@@ -3075,6 +4238,51 @@ export class GameUI {
       ctx.fill();
     }
 
+    // Patrolling Soul Clan Sentries & Live Spectral Vision Cones on Continent Radar
+    for (const st of snap.sentries) {
+      const sx = (st.x - snap.headX) * mapZoom;
+      const sz = (st.z - snap.headZ) * mapZoom;
+      if (sx * sx + sz * sz > (radius + 14) * (radius + 14)) continue;
+
+      const coneLen = Math.max(6, st.visionRange * mapZoom * 0.92);
+      // In canvas coordinates (+X right, +Y down = +Z world), heading 0 points along +Z (+Y), PI/2 along +X
+      const canvasHeading = Math.atan2(Math.cos(st.heading), Math.sin(st.heading));
+      const coneFill =
+        st.patrolMode === 'alert' || st.portalLocked
+          ? 'rgba(244, 63, 94, 0.34)'
+          : st.patrolMode === 'search'
+            ? 'rgba(245, 158, 11, 0.30)'
+            : 'rgba(192, 132, 252, 0.24)';
+      const glyphColor =
+        st.patrolMode === 'alert' || st.portalLocked
+          ? '#fb7185'
+          : st.patrolMode === 'search'
+            ? '#fbbf24'
+            : '#d8b4fe';
+
+      ctx.save();
+      ctx.translate(sx, sz);
+      ctx.fillStyle = coneFill;
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.arc(0, 0, coneLen, canvasHeading - st.visionHalfAngle, canvasHeading + st.visionHalfAngle);
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.fillStyle = glyphColor;
+      ctx.strokeStyle = '#090c14';
+      ctx.lineWidth = 1.1;
+      ctx.beginPath();
+      ctx.moveTo(0, -3.8);
+      ctx.lineTo(3.2, 0);
+      ctx.lineTo(0, 3.8);
+      ctx.lineTo(-3.2, 0);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    }
+
     if (snap.trail.length > 1) {
       ctx.strokeStyle = '#3de095';
       ctx.lineWidth = 2.2;
@@ -3115,6 +4323,65 @@ export class GameUI {
       ctx.closePath();
       ctx.fill();
       ctx.stroke();
+    }
+
+    // Periodic Sovereign "Global Ranking" Portal Golden Star & Off-Radar Rim Arrow
+    if (snap.globalRankingPortal) {
+      const rawGx = (snap.globalRankingPortal.x - snap.headX) * mapZoom;
+      const rawGz = (snap.globalRankingPortal.z - snap.headZ) * mapZoom;
+      const distR = Math.hypot(rawGx, rawGz);
+      const maxRim = radius - 6.5;
+      const isClamped = distR > maxRim;
+      const gx = isClamped ? (rawGx / distR) * maxRim : rawGx;
+      const gz = isClamped ? (rawGz / distR) * maxRim : rawGz;
+
+      ctx.save();
+      ctx.translate(gx, gz);
+      if (isClamped) {
+        // Directional golden arrow pointing along rim toward the Global Ranking Portal
+        ctx.rotate(Math.atan2(rawGz, rawGx));
+        ctx.fillStyle = '#ffe066';
+        ctx.strokeStyle = '#09111a';
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        ctx.moveTo(6.8, 0);
+        ctx.lineTo(-4.8, -5.2);
+        ctx.lineTo(-2.4, 0);
+        ctx.lineTo(-4.8, 5.2);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+      } else {
+        // Radiant 8-point Imperial Gold Star + Celestial Jade Core
+        ctx.fillStyle = '#ffe066';
+        ctx.strokeStyle = '#09111a';
+        ctx.lineWidth = 1.3;
+        ctx.beginPath();
+        for (let k = 0; k < 16; k++) {
+          const rStar = k % 2 === 0 ? 7.2 : 3.2;
+          const a = (k * Math.PI) / 8;
+          const sx = Math.cos(a) * rStar;
+          const sy = Math.sin(a) * rStar;
+          if (k === 0) ctx.moveTo(sx, sy);
+          else ctx.lineTo(sx, sy);
+        }
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.fillStyle = '#3de095';
+        ctx.beginPath();
+        ctx.arc(0, 0, 2.1, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+
+      const secLeft = Math.max(0, Math.ceil(snap.globalRankingPortal.timeRemainingSec));
+      this.minimapCaptionEl.textContent = `★ RANKING PORTAL · ${secLeft}s`;
+      this.minimapCaptionEl.classList.add('is-ranking-active');
+    } else {
+      this.minimapCaptionEl.textContent = 'CONTINENT RADAR';
+      this.minimapCaptionEl.classList.remove('is-ranking-active');
     }
 
     ctx.restore();
@@ -3340,30 +4607,460 @@ export class GameUI {
 
   // ==================== PORTAL CHROMIUM MULTI-TAB BROWSER & 3D ROLLING TAB OTHERWORLD ====================
 
+  private triggerMirrorShimmerForTab(
+    tabIndex: number,
+    action: MirrorTabShimmerAction,
+    overrideVariant?: PortalVariant,
+  ): void {
+    const tabs = this.game.portalBrowser.getTabs();
+    const safeCount = Math.max(1, tabs.length);
+    const idx = ((tabIndex % safeCount) + safeCount) % safeCount;
+    const layout = computeRollingTabOrbitLayout(safeCount, this.portalOrbitAngle);
+    const node = layout[idx] || layout[0];
+    const tab = tabs[idx];
+    this.game.sound.playMirrorTabShimmer({
+      xNorm: node ? node.xNorm : 0,
+      yNorm: node ? node.yNorm : 0,
+      zDepth: node ? node.zDepth : 1,
+      tier: node ? node.tier : 0,
+      portalVariant: overrideVariant ?? tab?.portalVariant ?? this.game.portalBrowser.getActivePortalVariant(),
+      tabIndex: idx,
+      action,
+    });
+  }
+
+  private syncSoulClockBadge(): void {
+    const souls = this.game.portalMissions.getCollectedSouls();
+    const clock = this.game.portalMissions.getFormattedClock();
+    this.chromiumSoulClockBadgeEl.textContent = `👻 ${souls}/${SOUL_TARGET_COUNT} · ⏱ ${clock}`;
+    const portalCountEl = this.root.querySelector('#chromiumPortalCountText');
+    if (portalCountEl) {
+      portalCountEl.textContent = `Synced to ${this.game.getActivePortalCount()} Random 3D Mountain Portals · Press [G] or [Esc] to return`;
+    }
+  }
+
+  private resetMissionSession(mission: PortalMissionDef): void {
+    this.missionQuizHintOpen = false;
+    this.missionFeedbackMsg = '';
+    this.missionFeedbackTone = 'neutral';
+    this.latestMissionLootDrop = null;
+    this.missionNetworkToggles = [false, false, false, false];
+    this.missionAlchemySelected = [];
+    this.missionCardRound = 1;
+    this.missionCardLog =
+      mission.cardDuel?.loreQuote ||
+      'Draw from the 29-Card Soul Deck. Lowest card each round is eliminated until 2 finalists remain.';
+    this.missionShadowPhase = false;
+    this.missionShadowPlayerHp = 3;
+    this.missionShadowBossHp = 3;
+    this.missionShadowIntent = 'strike';
+    this.missionCardParticipants = [
+      { id: 'player', name: 'You (Serpent Ascendant)', isPlayer: true, alive: true, lastCard: null },
+      ...(mission.cardDuel?.rivalNames ?? ['Vesper', 'Kael', 'Mire']).map((name, i) => ({
+        id: `rival-${i}`,
+        name,
+        isPlayer: false,
+        alive: true,
+        lastCard: null,
+      })),
+    ];
+  }
+
+  private completeActivePortalMission(mission: PortalMissionDef, successText: string): void {
+    const res = this.game.portalMissions.completePortalMission(this.activePortalKey, mission);
+    const { shiftResult, lootDrop, awardedXp } = this.game.grantPortalMissionReward(
+      mission,
+      res.soulAwarded,
+      this.activePortalKey,
+    );
+    this.latestMissionLootDrop = lootDrop;
+    const shiftCount = shiftResult.shifted.length;
+    const shiftNote =
+      shiftCount > 0
+        ? ` Dimensional Shift: ${shiftCount} portals respawned at new mountain peaks with fresh trials.`
+        : '';
+
+    this.missionFeedbackTone = 'success';
+    this.missionFeedbackMsg = res.soulAwarded
+      ? `${successText} Claimed "${mission.soulTitle}" (${res.collectedSouls}/${SOUL_TARGET_COUNT} Souls) · +${awardedXp} XP.${shiftNote}`
+      : `${successText} Portal Trial cleared · +${awardedXp} XP & Vitality/Qi restored.${shiftNote}`;
+    if (res.triggeredHospitalRevelation) {
+      this.missionRevelationBanner = 'hospital';
+    } else if (res.triggeredFifteenthMystery) {
+      this.missionRevelationBanner = 'fifteenth';
+    }
+    this.triggerMirrorShimmerForTab(0, 'enter', this.game.portalBrowser.getActivePortalVariant());
+    if (shiftCount > 0) {
+      this.triggerPortalShiftScreenRipple(shiftResult, res.soulAwarded);
+      const primaryShift = shiftResult.shifted[0];
+      if (primaryShift) {
+        this.pendingReemergenceShift = {
+          newX: primaryShift.newX,
+          newZ: primaryShift.newZ,
+          soulAwarded: res.soulAwarded,
+        };
+      }
+    }
+    this.syncSoulClockBadge();
+    this.renderPortalMissionPanel();
+  }
+
+  /**
+   * Fires a full-viewport concentric ripple transition + liquid-glass displacement pulse
+   * across the screen and displays the departing -> new portal coordinates briefly.
+   */
+  private triggerPortalShiftScreenRipple(shiftResult: PortalShiftResult, soulAwarded: boolean): void {
+    const overlay = this.portalShiftRippleOverlayEl;
+    if (!overlay || shiftResult.shifted.length === 0) return;
+
+    const primary = shiftResult.shifted[0];
+    const fmt = (n: number) => Math.round(n);
+    this.portalShiftRippleCoordsEl.textContent = `(${fmt(primary.oldX)}, ${fmt(primary.oldZ)})  →  (${fmt(primary.newX)}, ${fmt(primary.newZ)})`;
+    this.portalShiftRippleSubEl.textContent =
+      shiftResult.shifted.length === 1
+        ? `Portal shifted to a fresh peak coordinate`
+        : `${shiftResult.shifted.length} portals shifted across the peaks · Radar updated`;
+
+    overlay.classList.remove('is-rippling', 'is-soul');
+    // Force reflow so rapid consecutive mission completions cleanly restart CSS ripple waves
+    void overlay.offsetWidth;
+    if (soulAwarded) {
+      overlay.classList.add('is-soul');
+    }
+    overlay.classList.add('is-rippling');
+
+    // Brief organic SVG liquid-glass displacement ripple on the active portal chamber window
+    const reducedMotion =
+      typeof window !== 'undefined' &&
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const chromiumWin = this.portalBrowserModal.querySelector('.chromium-window') as HTMLElement | null;
+
+    window.cancelAnimationFrame(this.portalShiftDisplaceRaf);
+    if (!reducedMotion && chromiumWin && this.portalShiftDisplaceEl) {
+      const displaceMap = this.portalShiftDisplaceEl;
+      chromiumWin.classList.add('is-portal-rippling');
+      const startPerf = performance.now();
+      const durMs = 920;
+      const animateDisplace = (now: number) => {
+        const p = Math.min(1, (now - startPerf) / durMs);
+        const attack = Math.min(1, p / 0.14);
+        const decay = Math.pow(1 - p, 1.8);
+        const osc = 0.65 + 0.35 * Math.sin(p * Math.PI * 4.5);
+        const scale = Number((22 * attack * decay * osc).toFixed(2));
+        displaceMap.setAttribute('scale', String(scale));
+        if (p < 1) {
+          this.portalShiftDisplaceRaf = window.requestAnimationFrame(animateDisplace);
+        } else {
+          displaceMap.setAttribute('scale', '0');
+          chromiumWin.classList.remove('is-portal-rippling');
+          this.portalShiftDisplaceRaf = 0;
+        }
+      };
+      this.portalShiftDisplaceRaf = window.requestAnimationFrame(animateDisplace);
+    }
+
+    window.clearTimeout(this.portalShiftRippleTimer);
+    this.portalShiftRippleTimer = window.setTimeout(() => {
+      overlay.classList.remove('is-rippling', 'is-soul');
+      this.portalShiftRippleTimer = 0;
+    }, 1850);
+  }
+
+  private renderChromiumBookmarksBar(): void {
+    const bookmarks = this.game.portalBrowser.getAllBookmarks();
+    this.chromiumBookmarksBarEl.innerHTML = bookmarks
+      .map(
+        (b) => `
+          <button type="button" class="chromium-bookmark-chip" data-burl="${this.escapeHtmlText(b.url)}">
+            <span class="cbm-badge" style="color:${b.accentHex}">${this.escapeHtmlText(b.badge)}</span>
+            <span>${this.escapeHtmlText(b.title)}</span>
+          </button>
+        `,
+      )
+      .join('');
+    this.chromiumBookmarksBarEl.classList.toggle(
+      'hidden',
+      !this.game.portalBrowser.getSettings().showBookmarksBar,
+    );
+  }
+
+  private applyBrowserViewportZoom(): void {
+    const zoom = this.game.portalBrowser.getSettings().zoomPercent;
+    const scale = zoom / 100;
+    if (Math.abs(scale - 1) < 0.005) {
+      this.chromiumViewportFrame.style.transform = '';
+      this.chromiumViewportFrame.style.width = '100%';
+      this.chromiumViewportFrame.style.height = '100%';
+    } else {
+      this.chromiumViewportFrame.style.transformOrigin = 'top left';
+      this.chromiumViewportFrame.style.transform = `scale(${scale})`;
+      this.chromiumViewportFrame.style.width = `${(100 / scale).toFixed(2)}%`;
+      this.chromiumViewportFrame.style.height = `${(100 / scale).toFixed(2)}%`;
+    }
+  }
+
   private bindPortalChromiumEvents(): void {
-    // Render bookmarks bar once
-    this.chromiumBookmarksBarEl.innerHTML = PORTAL_BOOKMARKS.map(
-      (b) => `
-        <button type="button" class="chromium-bookmark-chip" data-burl="${b.url}">
-          <span class="cbm-badge" style="color:${b.accentHex}">${b.badge}</span>
-          <span>${b.title}</span>
-        </button>
-      `,
-    ).join('');
+    this.renderChromiumBookmarksBar();
+
+    this.chromiumViewportFrame.addEventListener('load', () => {
+      this.chromiumLoadingBarEl.classList.add('hidden');
+    });
 
     this.chromiumBookmarksBarEl.addEventListener('click', (e) => {
       const btn = (e.target as HTMLElement).closest<HTMLButtonElement>('.chromium-bookmark-chip');
       if (!btn || !btn.dataset.burl) return;
-      this.game.sound.playClick();
-      this.game.portalBrowser.navigateActiveTab(btn.dataset.burl);
-      this.portalWorldOrbitMode = false;
-      this.renderPortalChromiumBrowser(true);
+      const activeIdx = Math.max(
+        0,
+        this.game.portalBrowser.getTabs().findIndex((t) => t.id === this.game.portalBrowser.getActiveTab().id),
+      );
+      this.triggerMirrorShimmerForTab(activeIdx, 'select');
+      this.navigatePortalBrowserUrl(btn.dataset.burl);
+    });
+
+    this.chromiumMissionToggleBtn.addEventListener('click', () => {
+      this.triggerMirrorShimmerForTab(0, 'select');
+      this.portalBrowserSettingsMode = false;
+      this.portalMissionViewMode = !this.portalMissionViewMode;
+      if (this.portalMissionViewMode) {
+        this.portalWorldOrbitMode = false;
+      }
+      this.renderPortalChromiumBrowser(false);
     });
 
     this.chromiumOrbitToggleBtn.addEventListener('click', () => {
-      this.game.sound.playClick();
+      this.triggerMirrorShimmerForTab(0, 'orbit');
+      this.portalBrowserSettingsMode = false;
+      this.portalMissionViewMode = false;
       this.portalWorldOrbitMode = !this.portalWorldOrbitMode;
       this.renderPortalChromiumBrowser(false);
+    });
+
+    this.chromiumBookmarkBtn.addEventListener('click', () => {
+      const tab = this.game.portalBrowser.getActiveTab();
+      const added = this.game.portalBrowser.toggleBookmark(tab.title, tab.displayUrl);
+      this.game.sound.playClick();
+      this.renderChromiumBookmarksBar();
+      this.renderPortalChromiumBrowser(false);
+      this.showToast(added ? `Bookmarked "${tab.title}"` : `Removed bookmark for "${tab.title}"`);
+    });
+
+    this.chromiumSettingsBtn.addEventListener('click', () => {
+      this.game.sound.playClick();
+      this.portalBrowserSettingsMode = !this.portalBrowserSettingsMode;
+      if (this.portalBrowserSettingsMode) {
+        this.portalMissionViewMode = false;
+        this.portalWorldOrbitMode = false;
+      }
+      this.renderPortalChromiumBrowser(false);
+    });
+
+    this.chromiumStandaloneBtn.addEventListener('click', () => {
+      this.game.sound.playClick();
+      this.portalBrowserStandalone = !this.portalBrowserStandalone;
+      this.portalBrowserPip = false;
+      this.portalBrowserModal.classList.remove('is-pip');
+      this.portalBrowserModal.classList.toggle('is-standalone', this.portalBrowserStandalone);
+      this.game.portalBrowser.updateSettings({ standaloneFullscreen: this.portalBrowserStandalone });
+      this.renderPortalChromiumBrowser(false);
+    });
+
+    // Delegated interactions for the in-browser Settings & History Panel (chrome://settings)
+    this.chromiumSettingsPanelEl.addEventListener('click', (e) => {
+      const target = e.target as HTMLElement;
+      const tabBtn = target.closest<HTMLButtonElement>('[data-bset-tab]');
+      if (tabBtn && tabBtn.dataset.bsetTab) {
+        this.portalBrowserSettingsTab = tabBtn.dataset.bsetTab as 'general' | 'privacy' | 'history';
+        this.game.sound.playClick();
+        this.renderBrowserSettingsPanel();
+        return;
+      }
+      const startupBtn = target.closest<HTMLButtonElement>('[data-inb-startup]');
+      if (startupBtn && startupBtn.dataset.inbStartup) {
+        const mode = startupBtn.dataset.inbStartup as StartupMode;
+        this.game.portalBrowser.updateSettings({ startupMode: mode });
+        this.game.sound.playClick();
+        this.syncUnifiedSettingsUi();
+        this.renderBrowserSettingsPanel();
+        return;
+      }
+      const newTabBtn = target.closest<HTMLButtonElement>('[data-inb-newtab]');
+      if (newTabBtn && newTabBtn.dataset.inbNewtab) {
+        this.game.portalBrowser.updateSettings({
+          newTabBehavior: newTabBtn.dataset.inbNewtab as NewTabBehavior,
+        });
+        this.game.sound.playClick();
+        this.renderBrowserSettingsPanel();
+        return;
+      }
+      if (target.closest('#inbSaveHomepageBtn')) {
+        const inp = this.chromiumSettingsPanelEl.querySelector<HTMLInputElement>('#inbHomepageInput');
+        const val = inp?.value.trim() || 'chrome://newtab';
+        this.game.portalBrowser.updateSettings({ homepageUrl: val });
+        this.syncUnifiedSettingsUi();
+        this.showToast(`Homepage updated to ${val}`);
+        return;
+      }
+      if (target.closest('#inbInstallPwaBtn')) {
+        void this.triggerPwaInstallPrompt();
+        return;
+      }
+      if (target.closest('#inbClearHistoryBtn')) {
+        this.game.portalBrowser.clearHistory();
+        this.showToast('Browsing history cleared.');
+        this.renderBrowserSettingsPanel();
+        return;
+      }
+      if (target.closest('#inbResetTabsBtn')) {
+        this.game.portalBrowser.resetSessionTabs();
+        this.showToast('Browser tabs restored to profile defaults.');
+        this.renderPortalChromiumBrowser(true);
+        return;
+      }
+      if (target.closest('#inbResetSettingsBtn')) {
+        this.game.portalBrowser.resetSettings();
+        this.syncUnifiedSettingsUi();
+        this.applyBrowserViewportZoom();
+        this.renderChromiumBookmarksBar();
+        this.renderBrowserSettingsPanel();
+        this.showToast('All browser settings reset to defaults.');
+        return;
+      }
+      if (target.closest('#inbCloseSettingsBtn')) {
+        this.portalBrowserSettingsMode = false;
+        this.renderPortalChromiumBrowser(false);
+        return;
+      }
+      const histOpen = target.closest<HTMLButtonElement>('[data-history-url]');
+      if (histOpen && histOpen.dataset.historyUrl) {
+        this.navigatePortalBrowserUrl(histOpen.dataset.historyUrl);
+        return;
+      }
+      const rmBm = target.closest<HTMLButtonElement>('[data-remove-bm]');
+      if (rmBm && rmBm.dataset.removeBm) {
+        this.game.portalBrowser.removeCustomBookmark(rmBm.dataset.removeBm);
+        this.renderChromiumBookmarksBar();
+        this.renderBrowserSettingsPanel();
+      }
+    });
+
+    this.chromiumSettingsPanelEl.addEventListener('change', (e) => {
+      const target = e.target as HTMLElement;
+      if (target.id === 'inbSearchEngineSel') {
+        this.game.portalBrowser.updateSettings({
+          searchEngine: (target as HTMLSelectElement).value as SearchEngineId,
+        });
+        this.syncUnifiedSettingsUi();
+        this.renderBrowserSettingsPanel();
+      } else if (target.id === 'inbUaSel') {
+        this.game.portalBrowser.updateSettings({
+          userAgentPreset: (target as HTMLSelectElement).value as UserAgentPreset,
+        });
+        this.lastLoadedIframeKey = '';
+        this.syncUnifiedSettingsUi();
+        this.renderBrowserSettingsPanel();
+      } else if (target.id === 'inbTrackerShieldChk') {
+        this.game.portalBrowser.updateSettings({
+          trackerShield: (target as HTMLInputElement).checked,
+        });
+        this.lastLoadedIframeKey = '';
+        this.syncUnifiedSettingsUi();
+      } else if (target.id === 'inbDefaultProxyChk') {
+        this.game.portalBrowser.updateSettings({
+          defaultProxyMode: (target as HTMLInputElement).checked,
+        });
+        this.syncUnifiedSettingsUi();
+      } else if (target.id === 'inbBookmarksBarChk') {
+        this.game.portalBrowser.updateSettings({
+          showBookmarksBar: (target as HTMLInputElement).checked,
+        });
+        this.renderChromiumBookmarksBar();
+        this.syncUnifiedSettingsUi();
+      }
+    });
+
+    this.chromiumSettingsPanelEl.addEventListener('input', (e) => {
+      const target = e.target as HTMLElement;
+      if (target.id === 'inbZoomSlider') {
+        const z = Number((target as HTMLInputElement).value);
+        this.game.portalBrowser.updateSettings({ zoomPercent: z });
+        const lbl = this.chromiumSettingsPanelEl.querySelector('#inbZoomVal');
+        if (lbl) lbl.textContent = `${z}%`;
+        this.applyBrowserViewportZoom();
+        this.syncUnifiedSettingsUi();
+      }
+    });
+
+    // Browser Profile Switcher button & popover interactions
+    this.chromiumProfileBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.game.sound.playClick();
+      this.portalProfilePopoverOpen = !this.portalProfilePopoverOpen;
+      this.chromiumProfilePopoverEl.classList.toggle('hidden', !this.portalProfilePopoverOpen);
+      if (this.portalProfilePopoverOpen) {
+        this.renderProfilePopover();
+      }
+    });
+
+    this.chromiumProfilePopoverEl.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const profBtn = (e.target as HTMLElement).closest<HTMLButtonElement>('[data-switch-profile]');
+      if (profBtn && profBtn.dataset.switchProfile) {
+        this.triggerMirrorShimmerForTab(0, 'profile');
+        const switched = this.game.portalBrowser.switchProfile(profBtn.dataset.switchProfile);
+        this.portalProfilePopoverOpen = false;
+        this.chromiumProfilePopoverEl.classList.add('hidden');
+        this.portalMissionViewMode = false;
+        this.portalWorldOrbitMode = true;
+        this.showToast(
+          `${switched.avatarEmoji} Switched to ${switched.name} (${this.game.portalBrowser.getTabs().length} Mirror-House Tabs)`,
+        );
+        this.renderPortalChromiumBrowser(true);
+        return;
+      }
+
+      const populateBtn = (e.target as HTMLElement).closest<HTMLButtonElement>('#popoverPopulateMirrorsBtn');
+      if (populateBtn) {
+        this.game.portalBrowser.populateMirrorHouseTabs();
+        this.triggerMirrorShimmerForTab(this.game.portalBrowser.getTabs().length - 1, 'spawn');
+        this.portalProfilePopoverOpen = false;
+        this.chromiumProfilePopoverEl.classList.add('hidden');
+        this.portalMissionViewMode = false;
+        this.portalWorldOrbitMode = true;
+        this.showToast('🪞 Added 4 new Mirror-House tab worlds to your active profile!');
+        this.renderPortalChromiumBrowser(false);
+      }
+    });
+
+    this.chromiumProfilePopoverEl.addEventListener('submit', (e) => {
+      const form = (e.target as HTMLElement).closest<HTMLFormElement>('#createProfileForm');
+      if (!form) return;
+      e.preventDefault();
+      const nameInput = form.querySelector<HTMLInputElement>('#newProfileNameInput');
+      const emojiSelect = form.querySelector<HTMLSelectElement>('#newProfileEmojiSelect');
+      const name = nameInput?.value.trim() || 'Ascended Voyager';
+      const emoji = emojiSelect?.value || '🪐';
+      const created = this.game.portalBrowser.createProfile(name, emoji);
+      this.triggerMirrorShimmerForTab(0, 'profile');
+      this.portalProfilePopoverOpen = false;
+      this.chromiumProfilePopoverEl.classList.add('hidden');
+      this.portalMissionViewMode = false;
+      this.portalWorldOrbitMode = true;
+      this.showToast(`${created.avatarEmoji} Created Browser Profile "${created.name}" with 12 Mirror-House Tabs!`);
+      this.renderPortalChromiumBrowser(true);
+    });
+
+    this.chromiumOtherworldProfileStripEl.addEventListener('click', (e) => {
+      const chip = (e.target as HTMLElement).closest<HTMLButtonElement>('[data-switch-profile]');
+      if (!chip || !chip.dataset.switchProfile) return;
+      const switched = this.game.portalBrowser.switchProfile(chip.dataset.switchProfile);
+      this.triggerMirrorShimmerForTab(0, 'profile');
+      this.portalMissionViewMode = false;
+      this.portalWorldOrbitMode = true;
+      this.showToast(
+        `${switched.avatarEmoji} Active Profile: ${switched.name} (${this.game.portalBrowser.getTabs().length} Mirror Tabs)`,
+      );
+      this.renderPortalChromiumBrowser(true);
     });
 
     this.chromiumTabListEl.addEventListener('click', (e) => {
@@ -3377,15 +5074,18 @@ export class GameUI {
       }
       const tabBtn = (e.target as HTMLElement).closest<HTMLElement>('.chromium-tab');
       if (tabBtn && tabBtn.dataset.tabid) {
-        this.game.sound.playClick();
+        const tabs = this.game.portalBrowser.getTabs();
+        const tabIdx = Math.max(0, tabs.findIndex((t) => t.id === tabBtn.dataset.tabid));
         const prevId = this.game.portalBrowser.getActiveTab().id;
         this.game.portalBrowser.activateTab(tabBtn.dataset.tabid);
+        this.triggerMirrorShimmerForTab(tabIdx, 'select');
         this.portalWorldOrbitMode = false;
+        this.portalMissionViewMode = false;
         this.renderPortalChromiumBrowser(prevId !== tabBtn.dataset.tabid);
       }
     });
 
-    // Clicking any 3D rolling tab card in the Otherworld Orbit enters that tab's world!
+    // Clicking any 3D rolling tab card in the Mirror-House Rotunda plays spatial shimmering resonance and enters that tab!
     this.chromiumOrbitStageEl.addEventListener('click', (e) => {
       const closeBtn = (e.target as HTMLElement).closest<HTMLButtonElement>('.orbit-tab-close');
       if (closeBtn && closeBtn.dataset.closeid) {
@@ -3397,9 +5097,11 @@ export class GameUI {
       }
       const card = (e.target as HTMLElement).closest<HTMLElement>('.orbit-tab-card');
       if (card && card.dataset.tabid) {
-        this.game.sound.playPortal();
+        const orbitIdx = Number(card.dataset.orbitidx ?? 0);
+        this.triggerMirrorShimmerForTab(orbitIdx, 'enter');
         this.game.portalBrowser.activateTab(card.dataset.tabid);
         this.portalWorldOrbitMode = false;
+        this.portalMissionViewMode = false;
         this.renderPortalChromiumBrowser(true);
       }
     });
@@ -3409,66 +5111,92 @@ export class GameUI {
     });
     this.chromiumOrbitStageEl.addEventListener('pointerleave', () => {
       this.portalOrbitHoverPaused = false;
+      this.portalOrbitPitchDeg = 0;
+    });
+    this.chromiumOrbitStageEl.addEventListener('pointermove', (e) => {
+      const rect = this.chromiumOrbitStageEl.getBoundingClientRect();
+      if (rect.height > 20) {
+        const ny = (e.clientY - rect.top) / rect.height - 0.5;
+        this.portalOrbitPitchDeg = Math.max(-14, Math.min(14, -ny * 18));
+      }
     });
     this.chromiumOrbitStageEl.addEventListener(
       'wheel',
       (e) => {
         e.preventDefault();
         this.portalOrbitAngle += (e.deltaY || e.deltaX) * 0.0032;
-        this.updateRollingTabOrbitPositions();
+        this.updateRollingTabOrbitPositions(true);
       },
       { passive: false },
     );
 
     this.root.querySelector('#orbitSpinLeftBtn')?.addEventListener('click', () => {
-      this.game.sound.playClick();
-      const count = Math.max(1, this.game.portalBrowser.getTabs().length);
-      this.portalOrbitAngle -= (Math.PI * 2) / count;
-      this.updateRollingTabOrbitPositions();
+      const tabs = this.game.portalBrowser.getTabs();
+      const count = Math.max(1, tabs.length);
+      this.portalOrbitAngle -= (Math.PI * 2) / Math.min(8, count);
+      this.updateRollingTabOrbitPositions(false);
+      const layout = computeRollingTabOrbitLayout(count, this.portalOrbitAngle);
+      const front = layout.find((n) => n.isFront) || layout[0];
+      this.triggerMirrorShimmerForTab(front ? front.index : 0, 'spin');
     });
 
     this.root.querySelector('#orbitSpinRightBtn')?.addEventListener('click', () => {
-      this.game.sound.playClick();
-      const count = Math.max(1, this.game.portalBrowser.getTabs().length);
-      this.portalOrbitAngle += (Math.PI * 2) / count;
-      this.updateRollingTabOrbitPositions();
+      const tabs = this.game.portalBrowser.getTabs();
+      const count = Math.max(1, tabs.length);
+      this.portalOrbitAngle += (Math.PI * 2) / Math.min(8, count);
+      this.updateRollingTabOrbitPositions(false);
+      const layout = computeRollingTabOrbitLayout(count, this.portalOrbitAngle);
+      const front = layout.find((n) => n.isFront) || layout[0];
+      this.triggerMirrorShimmerForTab(front ? front.index : 0, 'spin');
     });
 
     this.root.querySelector('#orbitEnterFrontBtn')?.addEventListener('click', () => {
-      this.game.sound.playPortal();
       const tabs = this.game.portalBrowser.getTabs();
       const layout = computeRollingTabOrbitLayout(tabs.length, this.portalOrbitAngle);
       const frontNode = layout.find((n) => n.isFront) || layout[0];
       if (frontNode && tabs[frontNode.index]) {
+        this.triggerMirrorShimmerForTab(frontNode.index, 'enter');
         this.game.portalBrowser.activateTab(tabs[frontNode.index].id);
       }
       this.portalWorldOrbitMode = false;
+      this.portalMissionViewMode = false;
       this.renderPortalChromiumBrowser(true);
     });
 
     this.root.querySelector('#orbitSpawnTabBtn')?.addEventListener('click', () => {
-      this.game.sound.playClick();
       this.game.portalBrowser.createTab('chrome://newtab');
+      this.triggerMirrorShimmerForTab(this.game.portalBrowser.getTabs().length - 1, 'spawn');
+      this.renderPortalChromiumBrowser(false);
+    });
+
+    this.root.querySelector('#orbitPopulateMirrorsBtn')?.addEventListener('click', () => {
+      this.game.portalBrowser.populateMirrorHouseTabs();
+      this.triggerMirrorShimmerForTab(this.game.portalBrowser.getTabs().length - 1, 'spawn');
+      this.showToast('🪞 Spawned 4 more Mirror-House tabs around your 3D Rotunda!');
       this.renderPortalChromiumBrowser(false);
     });
 
     this.root.querySelector('#chromiumNewTabBtn')!.addEventListener('click', () => {
-      this.game.sound.playClick();
-      this.game.portalBrowser.createTab('chrome://newtab');
+      const settings = this.game.portalBrowser.getSettings();
+      this.game.portalBrowser.createTab();
+      this.triggerMirrorShimmerForTab(this.game.portalBrowser.getTabs().length - 1, 'spawn');
+      this.portalBrowserSettingsMode = false;
+      this.portalMissionViewMode = false;
+      this.portalWorldOrbitMode = settings.newTabBehavior === 'mirror_house';
       this.renderPortalChromiumBrowser(true);
       this.chromiumOmniboxInput.focus();
       this.chromiumOmniboxInput.select();
     });
 
     this.chromiumPortalABtn.addEventListener('click', () => {
-      this.game.sound.playClick();
       this.game.portalBrowser.setActivePortalVariant('A');
+      this.triggerMirrorShimmerForTab(0, 'profile', 'A');
       this.renderPortalChromiumBrowser(true);
     });
 
     this.chromiumPortalBBtn.addEventListener('click', () => {
-      this.game.sound.playClick();
       this.game.portalBrowser.setActivePortalVariant('B');
+      this.triggerMirrorShimmerForTab(0, 'profile', 'B');
       this.renderPortalChromiumBrowser(true);
     });
 
@@ -3477,6 +5205,8 @@ export class GameUI {
       this.game.sound.playClick();
       this.game.portalBrowser.goBack();
       this.portalWorldOrbitMode = false;
+      this.portalMissionViewMode = false;
+      this.portalBrowserSettingsMode = false;
       this.renderPortalChromiumBrowser(true);
     });
 
@@ -3485,6 +5215,8 @@ export class GameUI {
       this.game.sound.playClick();
       this.game.portalBrowser.goForward();
       this.portalWorldOrbitMode = false;
+      this.portalMissionViewMode = false;
+      this.portalBrowserSettingsMode = false;
       this.renderPortalChromiumBrowser(true);
     });
 
@@ -3492,13 +5224,22 @@ export class GameUI {
       this.game.sound.playClick();
       this.lastLoadedIframeKey = '';
       this.portalWorldOrbitMode = false;
+      this.portalMissionViewMode = false;
+      this.portalBrowserSettingsMode = false;
       this.renderPortalChromiumBrowser(true);
     });
 
     this.root.querySelector('#chromiumHomeBtn')!.addEventListener('click', () => {
+      const home = this.game.portalBrowser.getSettings().homepageUrl;
       this.game.sound.playClick();
-      this.portalWorldOrbitMode = true;
-      this.renderPortalChromiumBrowser(false);
+      if (home === 'chrome://mirror-house') {
+        this.portalBrowserSettingsMode = false;
+        this.portalMissionViewMode = false;
+        this.portalWorldOrbitMode = true;
+        this.renderPortalChromiumBrowser(false);
+      } else {
+        this.navigatePortalBrowserUrl(home);
+      }
     });
 
     this.chromiumOmniboxForm.addEventListener('submit', (e) => {
@@ -3506,9 +5247,7 @@ export class GameUI {
       const val = this.chromiumOmniboxInput.value.trim();
       if (!val) return;
       this.game.sound.playClick();
-      this.game.portalBrowser.navigateActiveTab(val);
-      this.portalWorldOrbitMode = false;
-      this.renderPortalChromiumBrowser(true);
+      this.navigatePortalBrowserUrl(val);
       this.chromiumOmniboxInput.blur();
     });
 
@@ -3521,6 +5260,8 @@ export class GameUI {
           : 'Direct Iframe Embed mode active.',
       );
       this.lastLoadedIframeKey = '';
+      this.portalMissionViewMode = false;
+      this.portalWorldOrbitMode = false;
       this.renderPortalChromiumBrowser(true);
     });
 
@@ -3534,6 +5275,7 @@ export class GameUI {
       this.portalBrowserPip = !this.portalBrowserPip;
       if (this.portalBrowserPip) {
         this.portalWorldOrbitMode = false;
+        this.portalMissionViewMode = false;
       }
       this.portalBrowserModal.classList.toggle('is-pip', this.portalBrowserPip);
       this.chromiumPipBtn.textContent = this.portalBrowserPip ? '⤢ Expand' : '⧉ PiP Dock';
@@ -3545,19 +5287,899 @@ export class GameUI {
       this.closePortalBrowserModal();
     });
 
-    // Listen for navigation & title postMessages from proxied pages and chrome://newtab
-    window.addEventListener('message', (e) => {
-      const data = e.data as { type?: string; url?: string; title?: string } | null;
-      if (!data || typeof data !== 'object') return;
-      if (data.type === 'SERPENT_PORTAL_NAVIGATE' && typeof data.url === 'string') {
-        this.game.portalBrowser.navigateActiveTab(data.url);
+    // Delegated interactive handlers for all 5 Portal Mission Trial Floors
+    this.chromiumMissionPanelEl.addEventListener('click', (e) => {
+      const target = e.target as HTMLElement;
+      const mission = this.game.portalMissions.getMissionForPortal(this.activePortalKey);
+
+      if (target.closest('#missionOpenReliquaryBtn')) {
+        this.openLootReliquaryModal();
+        return;
+      }
+      if (target.closest('#missionGoMirrorsBtn')) {
+        this.triggerMirrorShimmerForTab(0, 'orbit');
+        this.portalMissionViewMode = false;
+        this.portalBrowserSettingsMode = false;
+        this.portalWorldOrbitMode = true;
+        this.renderPortalChromiumBrowser(false);
+        return;
+      }
+      if (target.closest('#missionGoWebBtn')) {
+        this.triggerMirrorShimmerForTab(0, 'select');
+        this.portalMissionViewMode = false;
+        this.portalBrowserSettingsMode = false;
         this.portalWorldOrbitMode = false;
         this.renderPortalChromiumBrowser(true);
-      } else if (data.type === 'SERPENT_PORTAL_TAB_LOADED') {
-        this.game.portalBrowser.updateActiveTabMetadata(data.url, data.title);
-        this.renderPortalChromiumBrowser(false);
+        return;
+      }
+      if (target.closest('#missionWarpNextBtn')) {
+        this.closePortalBrowserModal();
+        this.game.executePendingPortalWarp();
+        return;
+      }
+      if (target.closest('#missionDismissRevBtn')) {
+        this.missionRevelationBanner = null;
+        this.renderPortalMissionPanel();
+        return;
+      }
+
+      // Floor 1: Quiz & Archive Riddle
+      if (target.closest('#missionQuizHintBtn')) {
+        this.game.sound.playClick();
+        this.missionQuizHintOpen = true;
+        this.renderPortalMissionPanel();
+        return;
+      }
+      const quizBtn = target.closest<HTMLButtonElement>('[data-quiz-idx]');
+      if (quizBtn && mission.quiz) {
+        const chosen = Number(quizBtn.dataset.quizIdx);
+        if (chosen === mission.quiz.correctIndex) {
+          this.completeActivePortalMission(mission, `Correct! ${mission.quiz.explanation}`);
+        } else {
+          this.game.sound.playClick();
+          this.game.portalMissions.applyTimePenalty(30);
+          this.missionFeedbackTone = 'error';
+          this.missionFeedbackMsg =
+            'Incorrect answer (-00:00:30 on Coma Clock). Use the Hint or try another option!';
+          this.syncSoulClockBadge();
+          this.renderPortalMissionPanel();
+        }
+        return;
+      }
+
+      // Floor 2: Tactical Rescue / Strategy Allocation
+      const stratBtn = target.closest<HTMLButtonElement>('[data-strat-idx]');
+      if (stratBtn && mission.strategy) {
+        const idx = Number(stratBtn.dataset.stratIdx);
+        const choice = mission.strategy.choices[idx];
+        if (!choice) return;
+        if (choice.success) {
+          this.completeActivePortalMission(mission, choice.outcomeText);
+        } else {
+          this.game.sound.playClick();
+          this.game.portalMissions.applyTimePenalty(choice.timePenaltySec);
+          this.missionFeedbackTone = 'error';
+          this.missionFeedbackMsg = `${choice.outcomeText} (-${choice.timePenaltySec}s on Coma Clock)`;
+          this.syncSoulClockBadge();
+          this.renderPortalMissionPanel();
+        }
+        return;
+      }
+
+      // Floor 3: Network Repair Circuit Puzzle
+      const netNodeBtn = target.closest<HTMLButtonElement>('[data-net-toggle]');
+      if (netNodeBtn && mission.network) {
+        const idx = Number(netNodeBtn.dataset.netToggle);
+        if (idx >= 0 && idx < 4) {
+          this.missionNetworkToggles[idx] = !this.missionNetworkToggles[idx];
+          this.triggerMirrorShimmerForTab(idx, 'select');
+          this.renderPortalMissionPanel();
+        }
+        return;
+      }
+      if (target.closest('#missionNetVerifyBtn') && mission.network) {
+        const evalRes = evaluateNetworkCircuit(this.missionNetworkToggles, mission.network);
+        if (evalRes.solved) {
+          this.completeActivePortalMission(
+            mission,
+            `Relay Locked at ${evalRes.currentSignal} Hz! The Portal Wormhole link is fully synchronized.`,
+          );
+        } else {
+          this.game.sound.playClick();
+          this.game.portalMissions.applyTimePenalty(20);
+          this.missionFeedbackTone = 'error';
+          this.missionFeedbackMsg = `Signal reads ${evalRes.currentSignal} Hz (target ${mission.network.targetSignal} Hz, off by ${evalRes.delta > 0 ? `+${evalRes.delta}` : evalRes.delta} Hz). Adjust the active routers!`;
+          this.syncSoulClockBadge();
+          this.renderPortalMissionPanel();
+        }
+        return;
+      }
+
+      // Floor 4: Chemical Alchemy Stabilization
+      const alchBtn = target.closest<HTMLButtonElement>('[data-alch-id]');
+      if (alchBtn && alchBtn.dataset.alchId && mission.alchemy) {
+        const rid = alchBtn.dataset.alchId;
+        const existingIdx = this.missionAlchemySelected.indexOf(rid);
+        if (existingIdx >= 0) {
+          this.missionAlchemySelected.splice(existingIdx, 1);
+        } else {
+          if (this.missionAlchemySelected.length >= 2) {
+            this.missionAlchemySelected.shift();
+          }
+          this.missionAlchemySelected.push(rid);
+        }
+        this.triggerMirrorShimmerForTab(this.missionAlchemySelected.length, 'select');
+        this.renderPortalMissionPanel();
+        return;
+      }
+      if (target.closest('#missionAlchClearBtn')) {
+        this.missionAlchemySelected = [];
+        this.renderPortalMissionPanel();
+        return;
+      }
+      if (target.closest('#missionAlchMixBtn') && mission.alchemy) {
+        const mixRes = evaluateAlchemyMix(this.missionAlchemySelected, mission.alchemy);
+        if (!mixRes.validCount) {
+          this.missionFeedbackTone = 'neutral';
+          this.missionFeedbackMsg = 'Select exactly 2 reagents from the crucible tray before synthesizing.';
+          this.renderPortalMissionPanel();
+          return;
+        }
+        if (mixRes.solved) {
+          this.completeActivePortalMission(
+            mission,
+            `${mission.alchemy.formulaName} synthesized cleanly! The fractured portal lens glows bright.`,
+          );
+        } else {
+          this.game.sound.playClick();
+          this.game.portalMissions.applyTimePenalty(25);
+          this.missionFeedbackTone = 'error';
+          this.missionFeedbackMsg =
+            'Unstable reaction! Re-read the alchemist’s journal clue and pick the two harmonizing reagents (-25s).';
+          this.missionAlchemySelected = [];
+          this.syncSoulClockBadge();
+          this.renderPortalMissionPanel();
+        }
+        return;
+      }
+
+      // Floor 5: 29-Card Soul Elimination & 1v1 Shadow Duel
+      if (target.closest('#missionCardResetBtn')) {
+        this.game.sound.playClick();
+        this.resetMissionSession(mission);
+        this.renderPortalMissionPanel();
+        return;
+      }
+      const cardActBtn = target.closest<HTMLButtonElement>('[data-card-action]');
+      if (cardActBtn && mission.cardDuel && !this.missionShadowPhase) {
+        const action = cardActBtn.dataset.cardAction === 'gambit' ? 'gambit' : 'steady';
+        const roundRes = resolve29CardEliminationRound(
+          this.missionCardParticipants,
+          this.missionCardRound,
+          action,
+        );
+        this.missionCardRound += 1;
+        this.missionCardLog = roundRes.logMessage;
+        this.triggerMirrorShimmerForTab(this.missionCardRound, 'spin');
+
+        if (!roundRes.playerSurvived) {
+          this.game.portalMissions.applyTimePenalty(35);
+          this.missionFeedbackTone = 'error';
+          this.missionFeedbackMsg = `${roundRes.logMessage} (-35s on Coma Clock)`;
+          this.syncSoulClockBadge();
+        } else if (roundRes.remainingAliveCount <= 2) {
+          this.missionShadowPhase = true;
+          this.missionShadowPlayerHp = 3;
+          this.missionShadowBossHp = 3;
+          this.missionShadowIntent = 'strike';
+          this.missionFeedbackTone = 'neutral';
+          this.missionFeedbackMsg = `Final 2 reached! Defeat ${mission.cardDuel.shadowBossName} in the 1v1 Shadow Duel (Ward beats Strike · Feint beats Ward · Strike beats Feint).`;
+        } else {
+          this.missionFeedbackTone = 'neutral';
+          this.missionFeedbackMsg = roundRes.logMessage;
+        }
+        this.renderPortalMissionPanel();
+        return;
+      }
+
+      const duelMoveBtn = target.closest<HTMLButtonElement>('[data-duel-move]');
+      if (duelMoveBtn && mission.cardDuel && this.missionShadowPhase) {
+        const move = duelMoveBtn.dataset.duelMove as 'strike' | 'ward' | 'feint';
+        const bossMove = this.missionShadowIntent;
+        const playerWinsClash =
+          (move === 'ward' && bossMove === 'strike') ||
+          (move === 'feint' && bossMove === 'ward') ||
+          (move === 'strike' && bossMove === 'feint');
+        const tie = move === bossMove;
+
+        if (playerWinsClash) {
+          this.missionShadowBossHp = Math.max(0, this.missionShadowBossHp - 1);
+          this.triggerMirrorShimmerForTab(2, 'enter');
+          this.missionFeedbackTone = 'success';
+          this.missionFeedbackMsg = `Your ${move.toUpperCase()} countered the Shadow’s ${bossMove.toUpperCase()}! Boss HP: ${this.missionShadowBossHp}/3.`;
+        } else if (tie) {
+          this.game.sound.playClick();
+          this.missionFeedbackTone = 'neutral';
+          this.missionFeedbackMsg = `Steel & Qi clash! Both chose ${move.toUpperCase()} — zero damage.`;
+        } else {
+          this.missionShadowPlayerHp = Math.max(0, this.missionShadowPlayerHp - 1);
+          this.game.sound.playClick();
+          this.missionFeedbackTone = 'error';
+          this.missionFeedbackMsg = `The Shadow’s ${bossMove.toUpperCase()} broke your ${move.toUpperCase()}! Your Guard: ${this.missionShadowPlayerHp}/3.`;
+        }
+
+        const intents: Array<'strike' | 'ward' | 'feint'> = ['strike', 'ward', 'feint'];
+        this.missionShadowIntent = intents[Math.floor(Math.random() * intents.length)];
+
+        if (this.missionShadowBossHp <= 0) {
+          this.completeActivePortalMission(
+            mission,
+            `Shadow Duel Victory! ${mission.cardDuel.shadowBossName} shattered into radiant mirror shards.`,
+          );
+          return;
+        }
+        if (this.missionShadowPlayerHp <= 0) {
+          this.game.portalMissions.applyTimePenalty(40);
+          this.missionFeedbackTone = 'error';
+          this.missionFeedbackMsg =
+            'Your Shadow Guard broke (-40s). Reset the 29-Card Table to challenge again!';
+          this.syncSoulClockBadge();
+        }
+        this.renderPortalMissionPanel();
       }
     });
+
+    // Listen for navigation, actions, and title postMessages from proxied pages and chrome://newtab
+    window.addEventListener('message', (e) => {
+      const data = e.data as {
+        type?: string;
+        url?: string;
+        title?: string;
+        action?: string;
+        target?: string;
+        mode?: string;
+        portalId?: string;
+        variant?: PortalVariant;
+        x?: number;
+        z?: number;
+      } | null;
+      if (!data || typeof data !== 'object') return;
+      if (data.type === 'SERPENT_PORTAL_NAVIGATE' && typeof data.url === 'string') {
+        this.navigatePortalBrowserUrl(data.url);
+      } else if (data.type === 'SERPENT_PORTAL_TAB_LOADED') {
+        this.chromiumLoadingBarEl.classList.add('hidden');
+        this.game.portalBrowser.updateActiveTabMetadata(data.url, data.title);
+        this.renderPortalChromiumBrowser(false);
+      } else if (data.type === 'SERPENT_PORTAL_ACTION') {
+        this.handleNewTabAction(data);
+      }
+    });
+  }
+
+  private handleNewTabAction(data: {
+    action?: string;
+    target?: string;
+    mode?: string;
+    portalId?: string;
+    variant?: PortalVariant;
+    x?: number;
+    z?: number;
+  }): void {
+    this.game.sound.playClick();
+    if (data.action === 'open_mirror_house') {
+      this.portalBrowserSettingsMode = false;
+      this.portalMissionViewMode = false;
+      this.portalWorldOrbitMode = true;
+      this.renderPortalChromiumBrowser(false);
+      return;
+    }
+    if (data.action === 'open_settings') {
+      this.navigatePortalBrowserUrl('chrome://settings');
+      return;
+    }
+    if (data.action === 'play_game') {
+      this.closePortalBrowserModal();
+      if (this.game.getMode() === 'title') {
+        this.game.startGame();
+      }
+      return;
+    }
+    if (data.action === 'open_portal') {
+      const variant: PortalVariant = data.variant === 'B' ? 'B' : 'A';
+      const portalId = data.portalId || this.activePortalKey || 'spawn-guard-portal-a';
+      if (data.mode === 'warp') {
+        this.closePortalBrowserModal();
+        this.game.warpToPortalByIdOrCoords(portalId, data.x, data.z, variant);
+        return;
+      }
+      this.activePortalKey = portalId;
+      this.game.portalBrowser.setActivePortalVariant(variant);
+      const mission = this.game.portalMissions.getMissionForPortal(portalId);
+      this.resetMissionSession(mission);
+      this.portalBrowserSettingsMode = false;
+      this.portalWorldOrbitMode = false;
+      this.portalMissionViewMode = true;
+      this.renderPortalChromiumBrowser(false);
+      return;
+    }
+    if (data.action === 'open_milestone') {
+      switch (data.target) {
+        case 'mission': {
+          this.portalBrowserSettingsMode = false;
+          this.portalWorldOrbitMode = false;
+          this.portalMissionViewMode = true;
+          this.renderPortalChromiumBrowser(false);
+          break;
+        }
+        case 'journey': {
+          this.closePortalBrowserModal();
+          this.openJourneyModal();
+          break;
+        }
+        case 'summary': {
+          this.closePortalBrowserModal();
+          this.openCurrentSummaryForReview();
+          break;
+        }
+        case 'reliquary': {
+          this.closePortalBrowserModal();
+          this.openLootReliquaryModal();
+          break;
+        }
+        case 'archives': {
+          this.closePortalBrowserModal();
+          this.openSoulArchivesModal();
+          break;
+        }
+        case 'bestiary': {
+          this.closePortalBrowserModal();
+          this.openBestiaryModal();
+          break;
+        }
+        case 'ranking': {
+          this.closePortalBrowserModal();
+          this.openGlobalRankingModal(false);
+          break;
+        }
+        default:
+          break;
+      }
+    }
+  }
+
+  private renderPortalMissionPanel(): void {
+    const mgr = this.game.portalMissions;
+    const mission = mgr.getMissionForPortal(this.activePortalKey);
+    const completed = mgr.isPortalCompleted(this.activePortalKey);
+    const souls = mgr.getCollectedSouls();
+    const soulPct = Math.round((souls / SOUL_TARGET_COUNT) * 100);
+    const clock = mgr.getFormattedClock();
+
+    let revelationHtml = '';
+    if (this.missionRevelationBanner === 'hospital') {
+      revelationHtml = `
+        <div class="mission-revelation-banner">
+          <div class="mission-revelation-kicker">🏥 7TH SOUL FRAGMENT · HOSPITAL CORRIDOR REVELATION</div>
+          <p class="mission-revelation-quote">${HOSPITAL_REVELATION_TEXT}</p>
+          <div class="mission-action-bar" style="margin-top:10px">
+            <button type="button" class="mission-btn primary" id="missionDismissRevBtn">Continue Gathering Souls (${souls}/${SOUL_TARGET_COUNT})</button>
+          </div>
+        </div>
+      `;
+    } else if (this.missionRevelationBanner === 'fifteenth') {
+      revelationHtml = `
+        <div class="mission-revelation-banner">
+          <div class="mission-revelation-kicker">✨ ALL 14 SOUL FRAGMENTS UNITED · FINAL TRUTH</div>
+          <p class="mission-revelation-quote">${FIFTEENTH_SOUL_EPILOGUE_TEXT}</p>
+          <div class="mission-action-bar" style="margin-top:10px">
+            <button type="button" class="mission-btn primary" id="missionDismissRevBtn">Awaken on Serpent Peaks</button>
+          </div>
+        </div>
+      `;
+    }
+
+    let bodyHtml = '';
+    if (mission.type === 'quiz' && mission.quiz) {
+      const q = mission.quiz;
+      bodyHtml = `
+        <div class="mission-stage-card">
+          <p class="mission-prompt-text">❓ ${q.prompt}</p>
+          ${this.missionQuizHintOpen ? `<div class="mission-clue-box">💡 Hint: ${q.hint}</div>` : ''}
+          <div class="mission-options-grid">
+            ${q.options
+              .map(
+                (opt, i) => `
+              <button type="button" class="mission-option-btn" data-quiz-idx="${i}">
+                <strong>${String.fromCharCode(65 + i)}.</strong> ${opt}
+              </button>
+            `,
+              )
+              .join('')}
+          </div>
+          <div class="mission-action-bar">
+            <button type="button" class="mission-btn" id="missionQuizHintBtn">💡 Reveal Archive Hint</button>
+          </div>
+        </div>
+      `;
+    } else if (mission.type === 'strategy' && mission.strategy) {
+      bodyHtml = `
+        <div class="mission-stage-card">
+          <div class="mission-clue-box">📋 Situation: ${mission.strategy.situation}</div>
+          <div class="mission-options-grid">
+            ${mission.strategy.choices
+              .map(
+                (c, i) => `
+              <button type="button" class="mission-option-btn" data-strat-idx="${i}">
+                <strong>Command ${i + 1}:</strong> ${c.label}
+                <span class="mission-option-sub">${c.summary}</span>
+              </button>
+            `,
+              )
+              .join('')}
+          </div>
+        </div>
+      `;
+    } else if (mission.type === 'network' && mission.network) {
+      const net = mission.network;
+      const evalRes = evaluateNetworkCircuit(this.missionNetworkToggles, net);
+      bodyHtml = `
+        <div class="mission-stage-card">
+          <div class="mission-clue-box">🔌 Relay Schematic: ${net.clue}</div>
+          <div class="mission-signal-readout">
+            <span>ACTIVE SIGNAL: <strong style="color:${evalRes.solved ? '#4ade80' : '#f472b6'}">${evalRes.currentSignal} Hz</strong></span>
+            <span>TARGET FREQUENCY: <strong style="color:#38bdf8">${net.targetSignal} Hz</strong></span>
+          </div>
+          <div class="mission-nodes-grid">
+            ${net.nodeLabels
+              .map(
+                (label, idx) => `
+              <button type="button" class="mission-node-btn ${this.missionNetworkToggles[idx] ? 'is-on' : ''}" data-net-toggle="${idx}">
+                <span>${label}</span>
+                <span>${this.missionNetworkToggles[idx] ? '● ONLINE' : '○ OFF'}</span>
+              </button>
+            `,
+              )
+              .join('')}
+          </div>
+          <div class="mission-action-bar">
+            <button type="button" class="mission-btn primary" id="missionNetVerifyBtn">⚡ Lock Portal Frequency</button>
+          </div>
+        </div>
+      `;
+    } else if (mission.type === 'alchemy' && mission.alchemy) {
+      const alch = mission.alchemy;
+      bodyHtml = `
+        <div class="mission-stage-card">
+          <div class="mission-clue-box">🧪 ${alch.clue}</div>
+          <div class="mission-nodes-grid">
+            ${alch.reagents
+              .map((r) => {
+                const sel = this.missionAlchemySelected.includes(r.id);
+                return `
+                <button type="button" class="mission-reagent-btn ${sel ? 'is-selected' : ''}" data-alch-id="${r.id}">
+                  <strong style="color:${r.colorHex}">${sel ? '✓ ' : ''}${r.name}</strong>
+                  <span style="font-size:11.5px;color:#99bfb2">${r.trait}</span>
+                </button>
+              `;
+              })
+              .join('')}
+          </div>
+          <div class="mission-action-bar">
+            <button type="button" class="mission-btn primary" id="missionAlchMixBtn">⚗️ Synthesize ${alch.formulaName} (${this.missionAlchemySelected.length}/2)</button>
+            <button type="button" class="mission-btn" id="missionAlchClearBtn">Clear Crucible</button>
+          </div>
+        </div>
+      `;
+    } else if (mission.type === 'card_duel' && mission.cardDuel) {
+      const playerAlive = this.missionCardParticipants.some((p) => p.isPlayer && p.alive);
+      bodyHtml = `
+        <div class="mission-stage-card">
+          <div class="mission-clue-box">🃏 ${this.missionCardLog}</div>
+          <div class="mission-card-table">
+            ${this.missionCardParticipants
+              .map((p) => {
+                const cardTxt =
+                  p.lastCard === null
+                    ? 'Ready'
+                    : p.lastCard === 0
+                      ? '💀 #0 VOID REAPER'
+                      : `Card #${p.lastCard}`;
+                return `
+                <div class="mission-seat-card ${p.isPlayer ? 'is-player' : ''} ${p.alive ? '' : 'is-eliminated'}">
+                  <span class="mission-seat-name">${p.name}</span>
+                  <span class="mission-seat-val">${cardTxt}</span>
+                  <span style="font-size:10.5px;color:${p.alive ? '#4ade80' : '#f87171'}">${p.alive ? 'SEATED' : 'ELIMINATED'}</span>
+                </div>
+              `;
+              })
+              .join('')}
+          </div>
+          ${
+            !this.missionShadowPhase
+              ? `
+            <div class="mission-action-bar">
+              ${
+                playerAlive
+                  ? `
+                <button type="button" class="mission-btn primary" data-card-action="steady">🃏 Draw Round ${this.missionCardRound} (Steady)</button>
+                <button type="button" class="mission-btn teal" data-card-action="gambit">✨ Qi Sense Draw (Pick Higher of 2)</button>
+              `
+                  : ''
+              }
+              <button type="button" class="mission-btn" id="missionCardResetBtn">↺ Reset 29-Card Table</button>
+            </div>
+          `
+              : `
+            <div class="mission-signal-readout">
+              <span>YOUR GUARD: <strong style="color:#4ade80">${this.missionShadowPlayerHp}/3</strong></span>
+              <span>${mission.cardDuel.shadowBossName.toUpperCase()} HP: <strong style="color:#f43f5e">${this.missionShadowBossHp}/3</strong></span>
+              <span>SHADOW INTENT: <strong style="color:#fde047">${this.missionShadowIntent.toUpperCase()}</strong></span>
+            </div>
+            <div class="mission-action-bar">
+              ${
+                this.missionShadowPlayerHp > 0 && this.missionShadowBossHp > 0
+                  ? `
+                <button type="button" class="mission-btn primary" data-duel-move="ward">🛡 Ward (Counters Strike)</button>
+                <button type="button" class="mission-btn teal" data-duel-move="feint">⚡ Feint (Counters Ward)</button>
+                <button type="button" class="mission-btn" data-duel-move="strike">⚔️ Strike (Counters Feint)</button>
+              `
+                  : `<button type="button" class="mission-btn primary" id="missionCardResetBtn">↺ Rematch 29-Card Tournament</button>`
+              }
+            </div>
+          `
+          }
+        </div>
+      `;
+    }
+
+    const diffProfile = computeMissionDifficultyTier({
+      floorNumber: mission.floorNumber,
+      speedPreset: this.game.getSpeedPreset(),
+      weather: this.game.getWeather(),
+      level: this.game.getEvolutionLevel(),
+    });
+
+    let lootDropHtml = '';
+    if (this.latestMissionLootDrop) {
+      const drop = this.latestMissionLootDrop;
+      const matsHtml = drop.materials
+        .map(
+          (m) => `
+            <div class="mission-loot-item" style="--loot-accent:${m.accentHex}">
+              <span class="mission-loot-icon">${renderLootIconSvg('material', m.accentHex, m.rarity)}</span>
+              <div class="mission-loot-copy">
+                <div class="mission-loot-name">${m.quantity}× ${this.escapeHtmlText(m.name)}${m.firstDiscovery ? ' · New' : ''}</div>
+                <div class="mission-loot-meta">${LOOT_RARITY_META[m.rarity].label} Material</div>
+              </div>
+            </div>
+          `,
+        )
+        .join('');
+      lootDropHtml = `
+        <div class="mission-loot-card" style="--loot-accent:${drop.difficulty.accentHex}">
+          <div class="mission-loot-head">
+            <div>
+              <div class="mission-loot-kicker">Mission Spoils Claimed · ${drop.difficulty.label}</div>
+              <div class="mission-loot-sub">Unique rewards scaled to Floor ${drop.floorNumber} &amp; current mountain climate</div>
+            </div>
+            <button type="button" class="mission-btn" id="missionOpenReliquaryBtn">Open Reliquary (I)</button>
+          </div>
+          <div class="mission-loot-grid">
+            <div class="mission-loot-item" style="--loot-accent:${drop.multiplierReward.accentHex}">
+              <span class="mission-loot-icon">${renderLootIconSvg('elixir', drop.multiplierReward.accentHex, drop.multiplierReward.rarity)}</span>
+              <div class="mission-loot-copy">
+                <div class="mission-loot-name">${drop.multiplierReward.multiplier.toFixed(2)}× ${this.escapeHtmlText(drop.multiplierReward.name)}</div>
+                <div class="mission-loot-meta">Active ${formatLootDuration(drop.multiplierReward.durationSec)} · XP &amp; Qi Cultivation Speed</div>
+              </div>
+            </div>
+            ${matsHtml}
+          </div>
+        </div>
+      `;
+    }
+
+    this.chromiumMissionPanelEl.innerHTML = `
+      <div class="mission-chamber-inner">
+        <div class="mission-header-card">
+          <div style="flex:1;min-width:260px">
+            <div class="mission-meta-line" style="color:${mission.accentHex}">
+              ${mission.floorLabel} · ${diffProfile.label} · ${LOOT_RARITY_META[diffProfile.guaranteedMinRarity].label}+ Loot · ${completed ? 'Cleared' : 'Active Trial'}
+            </div>
+            <h3 class="mission-title">${mission.title}</h3>
+            <p class="mission-sub">${mission.briefing}</p>
+          </div>
+          <div class="mission-soul-meter">
+            <div class="mission-soul-meter-top">
+              <span>SOUL FRAGMENTS</span>
+              <span>${souls} / ${SOUL_TARGET_COUNT}</span>
+            </div>
+            <div class="mission-soul-track">
+              <div class="mission-soul-fill" style="width:${soulPct}%"></div>
+            </div>
+            <div class="mission-clock-sub">TIME REMAINING: ${clock}</div>
+          </div>
+        </div>
+
+        ${revelationHtml}
+        ${lootDropHtml}
+        ${bodyHtml}
+        ${
+          this.missionFeedbackMsg
+            ? `<div class="mission-feedback ${this.missionFeedbackTone}">${this.missionFeedbackMsg}</div>`
+            : ''
+        }
+
+        <div class="mission-action-bar">
+          <button type="button" class="mission-btn teal" id="missionGoMirrorsBtn">Enter 360° Mirror-House</button>
+          <button type="button" class="mission-btn" id="missionGoWebBtn">Open Web Browser</button>
+          <button type="button" class="mission-btn" id="missionWarpNextBtn">Warp to Next Portal</button>
+        </div>
+      </div>
+    `;
+  }
+
+  private navigatePortalBrowserUrl(rawInput: string): void {
+    const lower = rawInput.trim().toLowerCase();
+    if (lower === 'chrome://settings' || lower === 'serpent://settings') {
+      this.portalBrowserSettingsTab = 'general';
+      this.portalBrowserSettingsMode = true;
+      this.portalMissionViewMode = false;
+      this.portalWorldOrbitMode = false;
+      this.renderPortalChromiumBrowser(false);
+      return;
+    }
+    if (lower === 'chrome://history' || lower === 'serpent://history') {
+      this.portalBrowserSettingsTab = 'history';
+      this.portalBrowserSettingsMode = true;
+      this.portalMissionViewMode = false;
+      this.portalWorldOrbitMode = false;
+      this.renderPortalChromiumBrowser(false);
+      return;
+    }
+    this.game.portalBrowser.navigateActiveTab(rawInput);
+    this.portalBrowserSettingsMode = false;
+    this.portalWorldOrbitMode = false;
+    this.portalMissionViewMode = false;
+    this.renderPortalChromiumBrowser(true);
+  }
+
+  private renderBrowserSettingsPanel(): void {
+    const mgr = this.game.portalBrowser;
+    const s = mgr.getSettings();
+    const history = mgr.getHistory();
+    const customBms = mgr.getCustomBookmarks();
+    const tab = this.portalBrowserSettingsTab;
+
+    let bodyHtml = '';
+    if (tab === 'general') {
+      const engineOptions = Object.values(SEARCH_ENGINE_CATALOG)
+        .map(
+          (eng) =>
+            `<option value="${eng.id}" ${s.searchEngine === eng.id ? 'selected' : ''}>${eng.name} — ${eng.note}</option>`,
+        )
+        .join('');
+      bodyHtml = `
+        <div class="bset-grid">
+          <div class="bset-group">
+            <label class="bset-label">App Launch Mode (Dual Browser + Game Release)</label>
+            <p class="bset-hint">Choose whether opening Serpent Peaks launches directly into the 3D mountain world or opens straight into the standalone Web Browser.</p>
+            <div class="bset-seg">
+              <button type="button" class="bset-seg-btn ${s.startupMode === 'game' ? 'active' : ''}" data-inb-startup="game">Start in 3D Game</button>
+              <button type="button" class="bset-seg-btn ${s.startupMode === 'browser' ? 'active' : ''}" data-inb-startup="browser">Start as Web Browser</button>
+            </div>
+          </div>
+
+          <div class="bset-group">
+            <label class="bset-label" for="inbSearchEngineSel">Default Search Engine</label>
+            <p class="bset-hint">Used by the Omnibox address bar and the New Tab search box.</p>
+            <select class="dark-select bset-select" id="inbSearchEngineSel">${engineOptions}</select>
+          </div>
+
+          <div class="bset-group">
+            <label class="bset-label" for="inbHomepageInput">Homepage Address</label>
+            <p class="bset-hint">Opened when clicking the Home button (supports https://, chrome://newtab, chrome://mirror-house).</p>
+            <div class="bset-inline-row">
+              <input type="text" class="dark-select bset-input" id="inbHomepageInput" value="${this.escapeHtmlText(s.homepageUrl)}" spellcheck="false" />
+              <button type="button" class="primary-cta compact" id="inbSaveHomepageBtn">Save</button>
+            </div>
+          </div>
+
+          <div class="bset-group">
+            <label class="bset-label">New Tab Opens</label>
+            <div class="bset-seg">
+              <button type="button" class="bset-seg-btn ${s.newTabBehavior === 'newtab' ? 'active' : ''}" data-inb-newtab="newtab">Search Hub</button>
+              <button type="button" class="bset-seg-btn ${s.newTabBehavior === 'mirror_house' ? 'active' : ''}" data-inb-newtab="mirror_house">3D Mirror-House</button>
+              <button type="button" class="bset-seg-btn ${s.newTabBehavior === 'homepage' ? 'active' : ''}" data-inb-newtab="homepage">Homepage</button>
+            </div>
+          </div>
+
+          <div class="bset-group">
+            <label class="bset-label" for="inbZoomSlider">Page Zoom · <strong id="inbZoomVal">${s.zoomPercent}%</strong></label>
+            <input type="range" class="settings-slider" id="inbZoomSlider" min="80" max="130" step="5" value="${s.zoomPercent}" />
+          </div>
+
+          <div class="bset-group">
+            <label class="bset-check">
+              <input type="checkbox" id="inbBookmarksBarChk" ${s.showBookmarksBar ? 'checked' : ''} />
+              <span>Show Bookmarks Bar below the address bar</span>
+            </label>
+          </div>
+
+          <div class="bset-group bset-release-box">
+            <label class="bset-label">Install as Standalone Browser &amp; Game App</label>
+            <p class="bset-hint">Install Serpent Peaks to your desktop or phone with dedicated app shortcuts for both "Play Serpent Peaks" and "Launch Portal Browser".</p>
+            <div class="bset-inline-row">
+              <button type="button" class="primary-cta compact" id="inbInstallPwaBtn">Install App (PWA)</button>
+              <button type="button" class="ghost-btn compact" id="inbResetSettingsBtn">Reset Defaults</button>
+            </div>
+          </div>
+        </div>
+      `;
+    } else if (tab === 'privacy') {
+      bodyHtml = `
+        <div class="bset-grid">
+          <div class="bset-group">
+            <label class="bset-label" for="inbUaSel">User-Agent Identity</label>
+            <p class="bset-hint">Controls how websites format pages fetched through the Portal Chromium proxy.</p>
+            <select class="dark-select bset-select" id="inbUaSel">
+              <option value="serpent_portal" ${s.userAgentPreset === 'serpent_portal' ? 'selected' : ''}>Portal Chromium 131 (Default)</option>
+              <option value="desktop_chrome" ${s.userAgentPreset === 'desktop_chrome' ? 'selected' : ''}>Desktop Chrome (Windows)</option>
+              <option value="mobile_chrome" ${s.userAgentPreset === 'mobile_chrome' ? 'selected' : ''}>Mobile Chrome (Android)</option>
+            </select>
+          </div>
+          <div class="bset-group">
+            <label class="bset-check">
+              <input type="checkbox" id="inbTrackerShieldChk" ${s.trackerShield ? 'checked' : ''} />
+              <span>Privacy Tracker Shield — strip analytics/ad trackers and send DNT / Sec-GPC headers</span>
+            </label>
+          </div>
+          <div class="bset-group">
+            <label class="bset-check">
+              <input type="checkbox" id="inbDefaultProxyChk" ${s.defaultProxyMode ? 'checked' : ''} />
+              <span>Default Server Proxy ON — bypass X-Frame-Options restrictions for new tabs</span>
+            </label>
+          </div>
+          <div class="bset-group">
+            <label class="bset-label">Session &amp; Storage Cleanup</label>
+            <div class="bset-inline-row">
+              <button type="button" class="secondary-cta compact" id="inbClearHistoryBtn">Clear Browsing History</button>
+              <button type="button" class="ghost-btn compact" id="inbResetTabsBtn">Restore Default Tabs</button>
+            </div>
+          </div>
+        </div>
+      `;
+    } else {
+      const bmRows =
+        customBms.length > 0
+          ? customBms
+              .map(
+                (b) => `
+                  <div class="bset-list-row">
+                    <button type="button" class="bset-link-btn" data-history-url="${this.escapeHtmlText(b.url)}">
+                      <span class="bset-row-title">${this.escapeHtmlText(b.title)}</span>
+                      <span class="bset-row-url">${this.escapeHtmlText(b.url)}</span>
+                    </button>
+                    <button type="button" class="ghost-btn compact" data-remove-bm="${this.escapeHtmlText(b.url)}">Remove</button>
+                  </div>
+                `,
+              )
+              .join('')
+          : `<p class="bset-hint">No custom bookmarks yet. Click the star icon in the address bar on any webpage to save it.</p>`;
+
+      const histRows =
+        history.length > 0
+          ? history
+              .slice(0, 24)
+              .map((h) => {
+                const timeStr = new Date(h.visitedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                return `
+                  <div class="bset-list-row">
+                    <button type="button" class="bset-link-btn" data-history-url="${this.escapeHtmlText(h.url)}">
+                      <span class="bset-row-title">${this.escapeHtmlText(h.title)}</span>
+                      <span class="bset-row-url">${this.escapeHtmlText(h.url)}</span>
+                    </button>
+                    <span class="bset-row-time">${timeStr}</span>
+                  </div>
+                `;
+              })
+              .join('')
+          : `<p class="bset-hint">Your recent web browsing history will appear here.</p>`;
+
+      bodyHtml = `
+        <div class="bset-grid">
+          <div class="bset-group">
+            <div class="bset-list-head">
+              <label class="bset-label">Saved Custom Bookmarks (${customBms.length})</label>
+            </div>
+            <div class="bset-list">${bmRows}</div>
+          </div>
+          <div class="bset-group">
+            <div class="bset-list-head">
+              <label class="bset-label">Browsing History (${history.length})</label>
+              <button type="button" class="ghost-btn compact" id="inbClearHistoryBtn">Clear History</button>
+            </div>
+            <div class="bset-list">${histRows}</div>
+          </div>
+        </div>
+      `;
+    }
+
+    this.chromiumSettingsPanelEl.innerHTML = `
+      <div class="bset-inner">
+        <div class="bset-header">
+          <div>
+            <div class="bset-eyebrow">chrome://settings · Portal Chromium 131</div>
+            <h3 class="bset-title">Browser Settings &amp; Release Controls</h3>
+          </div>
+          <div class="bset-header-right">
+            <div class="bset-tabs" role="tablist">
+              <button type="button" class="bset-tab ${tab === 'general' ? 'active' : ''}" data-bset-tab="general" role="tab">General &amp; Search</button>
+              <button type="button" class="bset-tab ${tab === 'privacy' ? 'active' : ''}" data-bset-tab="privacy" role="tab">Privacy &amp; Proxy</button>
+              <button type="button" class="bset-tab ${tab === 'history' ? 'active' : ''}" data-bset-tab="history" role="tab">Bookmarks &amp; History</button>
+            </div>
+            <button type="button" class="ghost-btn compact" id="inbCloseSettingsBtn">Back to Web</button>
+          </div>
+        </div>
+        ${bodyHtml}
+      </div>
+    `;
+  }
+
+  private renderProfilePopover(): void {
+    const mgr = this.game.portalBrowser;
+    const profiles = mgr.getProfiles();
+    const activeProf = mgr.getActiveProfile();
+
+    this.chromiumProfilePopoverEl.innerHTML = `
+      <div class="cprof-popover-head">
+        <span class="cprof-popover-kicker">CHROMIUM 131 MULTI-PROFILE ENGINE</span>
+        <h4 class="cprof-popover-title">Switch Browser Profile &amp; Mirror-House Workspace</h4>
+        <p class="cprof-popover-sub">Each profile stores its own independent Hall of Mirrors (12+ live tabs), history, and portal channel.</p>
+      </div>
+      <div class="cprof-list">
+        ${profiles
+          .map((p) => {
+            const isAct = p.id === activeProf.id;
+            const tabCount = isAct ? mgr.getTabs().length : 12;
+            return `
+              <button type="button" class="cprof-option-card ${isAct ? 'is-active' : ''}" data-switch-profile="${p.id}">
+                <span class="cprof-opt-avatar" style="border-color:${p.accentHex}">${p.avatarEmoji}</span>
+                <div class="cprof-opt-copy">
+                  <div class="cprof-opt-top">
+                    <span class="cprof-opt-name">${p.name}</span>
+                    <span class="cprof-opt-badge" style="color:${p.accentHex}">${p.realmBadge}</span>
+                  </div>
+                  <span class="cprof-opt-meta">${p.handle} · 🪞 ${tabCount} Mirror-House Tabs · ${isAct ? 'ACTIVE PROFILE' : 'Click to Switch'}</span>
+                </div>
+              </button>
+            `;
+          })
+          .join('')}
+      </div>
+      <div class="cprof-actions-row">
+        <button type="button" class="cprof-populate-btn" id="popoverPopulateMirrorsBtn">
+          🪞 +4 Extra Mirror-House Tabs in ${activeProf.name}
+        </button>
+      </div>
+      <form class="cprof-create-form" id="createProfileForm">
+        <select id="newProfileEmojiSelect" class="cprof-emoji-select" aria-label="Profile Avatar">
+          <option value="🪐">🪐</option>
+          <option value="🦊">🦊</option>
+          <option value="⚡">⚡</option>
+          <option value="👑">👑</option>
+          <option value="🧿">🧿</option>
+        </select>
+        <input
+          type="text"
+          id="newProfileNameInput"
+          class="cprof-name-input"
+          placeholder="New profile name (e.g. Cloud Sect)..."
+          maxlength="28"
+          required
+        />
+        <button type="submit" class="cprof-create-btn">+ Create Profile</button>
+      </form>
+    `;
   }
 
   private startPortalOrbitAnimation(): void {
@@ -3570,45 +6192,80 @@ export class GameUI {
       }
       const dt = Math.min(0.08, Math.max(0.001, (now - this.portalOrbitLastPerf) / 1000));
       this.portalOrbitLastPerf = now;
-      if (this.portalWorldOrbitMode && !this.portalOrbitHoverPaused) {
+      if (this.portalWorldOrbitMode && !this.portalMissionViewMode && !this.portalOrbitHoverPaused) {
         this.portalOrbitAngle += this.portalOrbitVel * dt;
-        this.updateRollingTabOrbitPositions();
+        this.updateRollingTabOrbitPositions(false);
       }
       this.portalOrbitRafId = window.requestAnimationFrame(step);
     };
     this.portalOrbitRafId = window.requestAnimationFrame(step);
   }
 
-  private updateRollingTabOrbitPositions(): void {
+  private updateRollingTabOrbitPositions(emitAudioOnFrontChange = false): void {
     const cards = Array.from(
       this.chromiumOrbitStageEl.querySelectorAll<HTMLElement>('.orbit-tab-card'),
     );
     if (cards.length === 0) return;
     const layout = computeRollingTabOrbitLayout(cards.length, this.portalOrbitAngle);
-    const radiusX = Math.min(340, Math.max(175, this.chromiumOrbitStageEl.clientWidth * 0.34));
-    const radiusY = Math.min(92, Math.max(48, this.chromiumOrbitStageEl.clientHeight * 0.22));
+    const stageW = this.chromiumOrbitStageEl.clientWidth || 860;
+    const stageH = this.chromiumOrbitStageEl.clientHeight || 420;
+    const radiusX = Math.min(410, Math.max(210, stageW * 0.38));
+    const radiusY = Math.min(138, Math.max(66, stageH * 0.31));
 
+    let currentFrontIdx = this.lastOrbitFrontIdx;
     for (let i = 0; i < cards.length; i++) {
       const card = cards[i];
       const node = layout[i];
       if (!node) continue;
       const tx = (node.xNorm * radiusX).toFixed(1);
       const ty = (node.yNorm * radiusY).toFixed(1);
-      const tz = (node.zDepth * 145).toFixed(1);
-      card.style.transform = `translate3d(-50%, -50%, 0) translate3d(${tx}px, ${ty}px, ${tz}px) rotateY(${node.rotateYDeg}deg) scale(${node.scale})`;
+      const tz = (node.zDepth * 165).toFixed(1);
+      const rx = (node.rotateXDeg + this.portalOrbitPitchDeg * 0.45).toFixed(1);
+      card.style.transform = `translate3d(-50%, -50%, 0) translate3d(${tx}px, ${ty}px, ${tz}px) rotateY(${node.rotateYDeg}deg) rotateX(${rx}deg) scale(${node.scale})`;
       card.style.opacity = String(node.opacity);
       card.style.zIndex = String(node.zIndex);
+      card.style.setProperty('--mirror-reflect-alpha', String(node.reflectionAlpha));
       card.classList.toggle('is-front', node.isFront);
+      card.dataset.tier = String(node.tier);
+      if (node.isFront) {
+        currentFrontIdx = i;
+      }
     }
+
+    if (emitAudioOnFrontChange && currentFrontIdx !== this.lastOrbitFrontIdx && currentFrontIdx >= 0) {
+      this.triggerMirrorShimmerForTab(currentFrontIdx, 'orbit');
+    }
+    this.lastOrbitFrontIdx = currentFrontIdx;
   }
 
-  public openPortalBrowserModal(variant?: PortalVariant): void {
+  public openPortalBrowserModal(variant?: PortalVariant, portalKey?: string): void {
     if (variant) {
       this.game.portalBrowser.setActivePortalVariant(variant);
     }
-    // Always open into the 3D Rolling Tab Otherworld so every tab is visibly rolling around!
-    this.portalWorldOrbitMode = true;
+    const nextPortalKey = portalKey || this.activePortalKey || 'spawn-guard-portal-a';
+    const isFreshPortalEntry = Boolean(portalKey);
+    this.activePortalKey = nextPortalKey;
+
+    const mission = this.game.portalMissions.getMissionForPortal(this.activePortalKey);
+    this.resetMissionSession(mission);
+
+    // Stepping physically into an uncompleted 3D portal opens its unique Mission Trial first
+    // (with 1-click access to the 360° Mirror-House & Chromium Web Browser right beside it!).
+    // Pressing [G] or entering a cleared portal opens into the 360° Mirror-House Tab World.
+    const shouldOpenMission =
+      isFreshPortalEntry &&
+      !nextPortalKey.startsWith('portal-hotkey-') &&
+      !this.game.portalMissions.isPortalCompleted(nextPortalKey);
+
+    this.portalMissionViewMode = shouldOpenMission;
+    this.portalBrowserSettingsMode = false;
+    this.portalWorldOrbitMode = !shouldOpenMission;
+    this.portalProfilePopoverOpen = false;
+    this.chromiumProfilePopoverEl.classList.add('hidden');
+    this.portalBrowserStandalone = this.game.portalBrowser.getSettings().standaloneFullscreen;
+    this.portalBrowserModal.classList.toggle('is-standalone', this.portalBrowserStandalone);
     this.portalBrowserModal.classList.remove('hidden');
+    this.syncSoulClockBadge();
     this.renderPortalChromiumBrowser(false);
     this.startPortalOrbitAnimation();
     this.syncModalFreeze();
@@ -3617,14 +6274,24 @@ export class GameUI {
   public closePortalBrowserModal(): void {
     if (this.portalBrowserModal.classList.contains('hidden')) return;
     this.portalBrowserModal.classList.add('hidden');
+    this.portalBrowserModal.classList.remove('is-standalone');
+    this.portalBrowserStandalone = false;
+    this.portalBrowserSettingsMode = false;
+    this.portalProfilePopoverOpen = false;
+    this.chromiumProfilePopoverEl.classList.add('hidden');
     if (this.portalOrbitRafId) {
       window.cancelAnimationFrame(this.portalOrbitRafId);
       this.portalOrbitRafId = 0;
     }
     this.portalBrowserPip = false;
     this.portalBrowserModal.classList.remove('is-pip');
-    this.chromiumPipBtn.textContent = '⧉ PiP Dock';
+    this.chromiumPipBtn.textContent = '⧉ PiP';
     this.syncModalFreeze();
+    if (this.pendingReemergenceShift) {
+      const reemerge = this.pendingReemergenceShift;
+      this.pendingReemergenceShift = null;
+      this.game.triggerPortalReemergenceRipple(reemerge.newX, reemerge.newZ, reemerge.soulAwarded);
+    }
     this.game.sound.playClick();
   }
 
@@ -3638,22 +6305,89 @@ export class GameUI {
 
   private renderPortalChromiumBrowser(forceReloadIframe = false): void {
     const mgr = this.game.portalBrowser;
+    const settings = mgr.getSettings();
     const allTabs = mgr.getTabs();
     const activeTab = mgr.getActiveTab();
     const activeVariant = mgr.getActivePortalVariant();
+    const activeProfile = mgr.getActiveProfile();
+    const allProfiles = mgr.getProfiles();
+    const mission = this.game.portalMissions.getMissionForPortal(this.activePortalKey);
+
+    this.syncSoulClockBadge();
+    this.renderChromiumBookmarksBar();
+    this.applyBrowserViewportZoom();
+
+    // Update top-right Browser Profile button
+    const avatarEl = this.chromiumProfileBtn.querySelector('#chromiumProfileAvatar');
+    const nameEl = this.chromiumProfileBtn.querySelector('#chromiumProfileName');
+    if (avatarEl) avatarEl.textContent = activeProfile.avatarEmoji;
+    if (nameEl) nameEl.textContent = activeProfile.name;
+    this.chromiumProfileBtn.style.borderColor = activeProfile.accentHex;
+
+    if (this.portalProfilePopoverOpen) {
+      this.renderProfilePopover();
+    }
+
+    // Update quick profile switcher strip inside the Mirror-House Otherworld
+    this.chromiumOtherworldProfileStripEl.innerHTML = allProfiles
+      .map((p) => {
+        const isAct = p.id === activeProfile.id;
+        return `
+          <button
+            type="button"
+            class="otherworld-profile-chip ${isAct ? 'is-active' : ''}"
+            data-switch-profile="${p.id}"
+            style="--prof-accent:${p.accentHex}"
+            title="Switch to ${p.name} (${p.realmBadge})"
+          >
+            <span>${p.avatarEmoji}</span>
+            <span>${p.name}</span>
+            ${isAct ? `<span class="ow-prof-count">${allTabs.length} Mirrors</span>` : ''}
+          </button>
+        `;
+      })
+      .join('');
 
     this.chromiumPortalABtn.classList.toggle('active-a', activeVariant === 'A');
     this.chromiumPortalBBtn.classList.toggle('active-b', activeVariant === 'B');
-    this.chromiumOrbitToggleBtn.classList.toggle('is-active', this.portalWorldOrbitMode);
-    this.chromiumOrbitToggleBtn.textContent = this.portalWorldOrbitMode
-      ? `🌌 Orbiting (${allTabs.length} Tabs)`
-      : `🌌 Rolling Tab World (${allTabs.length})`;
+    this.chromiumMissionToggleBtn.classList.toggle('is-active', this.portalMissionViewMode);
+    this.chromiumMissionToggleBtn.textContent = this.game.portalMissions.isPortalCompleted(this.activePortalKey)
+      ? `✓ Floor ${mission.floorNumber} Trial`
+      : `⚔️ Floor ${mission.floorNumber} Mission`;
 
-    this.chromiumOtherworldEl.classList.toggle('hidden', !this.portalWorldOrbitMode);
+    this.chromiumOrbitToggleBtn.classList.toggle(
+      'is-active',
+      this.portalWorldOrbitMode && !this.portalMissionViewMode && !this.portalBrowserSettingsMode,
+    );
+    this.chromiumOrbitToggleBtn.textContent =
+      this.portalWorldOrbitMode && !this.portalMissionViewMode && !this.portalBrowserSettingsMode
+        ? `🪞 Mirror House (${allTabs.length} Tabs)`
+        : `🪞 Mirror-House World (${allTabs.length})`;
+
+    this.chromiumSettingsBtn.classList.toggle('is-active', this.portalBrowserSettingsMode);
+    this.chromiumStandaloneBtn.textContent = this.portalBrowserStandalone ? '⤡ Windowed' : '⛶ Fullscreen';
+
+    this.chromiumMissionPanelEl.classList.toggle('hidden', !this.portalMissionViewMode);
+    this.chromiumSettingsPanelEl.classList.toggle('hidden', !this.portalBrowserSettingsMode);
+    this.chromiumOtherworldEl.classList.toggle(
+      'hidden',
+      this.portalMissionViewMode || this.portalBrowserSettingsMode || !this.portalWorldOrbitMode,
+    );
+
+    if (this.portalMissionViewMode) {
+      this.renderPortalMissionPanel();
+    }
+    if (this.portalBrowserSettingsMode) {
+      this.renderBrowserSettingsPanel();
+    }
 
     this.chromiumTabListEl.innerHTML = allTabs
       .map((t) => {
-        const isAct = t.id === activeTab.id && !this.portalWorldOrbitMode;
+        const isAct =
+          t.id === activeTab.id &&
+          !this.portalWorldOrbitMode &&
+          !this.portalMissionViewMode &&
+          !this.portalBrowserSettingsMode;
         const vClass = t.portalVariant === 'A' ? 'variant-a' : 'variant-b';
         const safeTitle = t.title.replace(/[<>&"]/g, '');
         return `
@@ -3666,23 +6400,33 @@ export class GameUI {
       })
       .join('');
 
-    // Render 3D Rolling Tab Cards inside the Otherworld Orbit Stage
+    // Render 360-degree 3-Tier Hall-of-Mirrors Tab Cards inside the Otherworld Orbit Stage
+    const tierNames: Record<number, string> = {
+      1: 'UPPER GALLERY',
+      0: 'GRAND ROTUNDA',
+      '-1': 'REFLECTION GALLERY',
+    };
+    const previewLayout = computeRollingTabOrbitLayout(allTabs.length, this.portalOrbitAngle);
+
     this.chromiumOrbitStageEl.innerHTML = `
       <div class="otherworld-wormhole-core" aria-hidden="true">
         <div class="wormhole-core-ring"></div>
-        <span class="wormhole-core-label">PORTAL ${activeVariant} SINGULARITY</span>
+        <span class="wormhole-core-label">${activeProfile.avatarEmoji} ${activeProfile.name.toUpperCase()} · PORTAL ${activeVariant}</span>
       </div>
       ${allTabs
         .map((t, idx) => {
           const isAct = t.id === activeTab.id;
           const vClass = t.portalVariant === 'A' ? 'variant-a' : 'variant-b';
           const safeTitle = t.title.replace(/[<>&"]/g, '');
-          const cleanHost = t.displayUrl.replace(/^https?:\/\//, '').slice(0, 34);
+          const cleanHost = t.displayUrl.replace(/^https?:\/\//, '').slice(0, 32);
+          const nodeTier = previewLayout[idx]?.tier ?? 0;
+          const tierLabel = tierNames[nodeTier] || 'MIRROR HALL';
           return `
-            <div class="orbit-tab-card ${vClass} ${isAct ? 'is-active-tab' : ''}" data-tabid="${t.id}" data-orbitidx="${idx}">
+            <div class="orbit-tab-card mirror-house-panel ${vClass} ${isAct ? 'is-active-tab' : ''}" data-tabid="${t.id}" data-orbitidx="${idx}" data-tier="${nodeTier}">
+              <div class="mirror-glass-sheen" aria-hidden="true"></div>
               <div class="orbit-card-top">
-                <span class="orbit-portal-pill">● PORTAL ${t.portalVariant} · TAB #${idx + 1}</span>
-                <button type="button" class="orbit-tab-close" data-closeid="${t.id}" title="Close Tab World" aria-label="Close Tab">×</button>
+                <span class="orbit-portal-pill">🪞 #${idx + 1} · ${tierLabel} · P-${t.portalVariant}</span>
+                <button type="button" class="orbit-tab-close" data-closeid="${t.id}" title="Shatter Mirror Tab" aria-label="Close Tab">×</button>
               </div>
               <div class="orbit-card-body">
                 <div class="orbit-card-emblem">${t.url.startsWith('chrome://') ? '⛰' : '🌐'}</div>
@@ -3690,40 +6434,695 @@ export class GameUI {
                 <div class="orbit-card-url">${cleanHost}</div>
               </div>
               <div class="orbit-card-footer">
-                <span class="orbit-enter-cta">⚡ SELECT TO ENTER WORLD ➔</span>
+                <span class="orbit-enter-cta">⚡ STEP THROUGH MIRROR ➔</span>
+              </div>
+              <div class="mirror-floor-reflection" aria-hidden="true">
+                <span>${safeTitle}</span>
               </div>
             </div>
           `;
         })
         .join('')}
     `;
-    this.updateRollingTabOrbitPositions();
+    this.updateRollingTabOrbitPositions(false);
 
     if (document.activeElement !== this.chromiumOmniboxInput) {
-      this.chromiumOmniboxInput.value = activeTab.displayUrl;
+      this.chromiumOmniboxInput.value = this.portalBrowserSettingsMode
+        ? this.portalBrowserSettingsTab === 'history'
+          ? 'chrome://history'
+          : 'chrome://settings'
+        : activeTab.displayUrl;
     }
+
+    const bookmarked = mgr.isBookmarked(activeTab.displayUrl);
+    this.chromiumBookmarkBtn.textContent = bookmarked ? '★' : '☆';
+    this.chromiumBookmarkBtn.classList.toggle('is-saved', bookmarked);
 
     this.chromiumBackBtn.disabled = !mgr.canGoBack();
     this.chromiumFwdBtn.disabled = !mgr.canGoForward();
 
-    this.chromiumProxyBtn.textContent = activeTab.proxyMode ? 'Proxy: ON' : 'Direct Embed';
+    this.chromiumProxyBtn.textContent = activeTab.proxyMode ? 'Proxy: ON' : 'Direct';
     this.chromiumProxyBtn.classList.toggle('is-on', activeTab.proxyMode);
 
-    this.chromiumStatusTextEl.textContent = this.portalWorldOrbitMode
-      ? `🌌 Portal ${activeVariant} Pocket Dimension · ${allTabs.length} Tab Worlds Rolling in 3D Orbit — Click Any Tab to Enter`
-      : `${CHROMIUM_ENGINE_META.engineVersion} · Active World: ${activeTab.title}`;
+    const engineName = SEARCH_ENGINE_CATALOG[settings.searchEngine]?.name ?? 'DuckDuckGo Lite';
+    const shieldTag = settings.trackerShield ? 'Shield On' : 'Shield Off';
+    this.chromiumStatusTextEl.textContent = this.portalBrowserSettingsMode
+      ? `Portal Chromium Settings · Search: ${engineName} · ${shieldTag} · Zoom ${settings.zoomPercent}%`
+      : this.portalMissionViewMode
+        ? `${mission.floorLabel}: ${mission.title} · Souls ${this.game.portalMissions.getCollectedSouls()}/${SOUL_TARGET_COUNT} · Clock ${this.game.portalMissions.getFormattedClock()}`
+        : this.portalWorldOrbitMode
+          ? `${activeProfile.name} · ${allTabs.length} Mirror-House Tabs · Search: ${engineName} · ${shieldTag}`
+          : `${activeProfile.name} · ${engineName} · ${shieldTag} · Zoom ${settings.zoomPercent}% · ${activeTab.title}`;
 
-    const frameTarget = mgr.getIframeSrcForTab(activeTab);
-    const frameKey = `${activeTab.id}|${activeTab.url}|${activeTab.proxyMode ? 'proxy' : 'direct'}`;
+    const newTabCtx =
+      activeTab.url === 'chrome://newtab' ? this.game.getNewTabCultivationSnapshot() : undefined;
+    const frameTarget = mgr.getIframeSrcForTab(activeTab, newTabCtx);
+    const newTabSig = newTabCtx
+      ? `|ntp:${newTabCtx.level}:${newTabCtx.xp}:${newTabCtx.shrinesConquered}:${newTabCtx.soulsCollected}:${newTabCtx.archivesUnlocked}:${newTabCtx.bestiaryDiscovered}:${newTabCtx.cultivationMult.toFixed(2)}:${newTabCtx.rareMaterialsCount}:${mgr.getTotalPortalVisitCount()}:${mgr.getAllBookmarks().length}:${settings.searchEngine}`
+      : '';
+    const frameKey = `${activeProfile.id}|${activeTab.id}|${activeTab.url}|${activeTab.proxyMode ? 'proxy' : 'direct'}|${settings.trackerShield ? '1' : '0'}|${settings.userAgentPreset}${newTabSig}`;
     if (forceReloadIframe || this.lastLoadedIframeKey !== frameKey) {
       this.lastLoadedIframeKey = frameKey;
       if (frameTarget.srcdoc !== undefined) {
+        this.chromiumLoadingBarEl.classList.add('hidden');
         this.chromiumViewportFrame.removeAttribute('src');
         this.chromiumViewportFrame.srcdoc = frameTarget.srcdoc;
       } else if (frameTarget.src) {
+        this.chromiumLoadingBarEl.classList.remove('hidden');
         this.chromiumViewportFrame.removeAttribute('srcdoc');
         this.chromiumViewportFrame.src = frameTarget.src;
       }
     }
+  }
+
+  // ==================== CELESTIAL GLOBAL RANKING SANCTUARY ====================
+
+  private escapeHtmlText(raw: string): string {
+    return raw
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  private bindGlobalRankingEvents(): void {
+    subscribeAuthState((user) => {
+      this.rankingAuthUser = user;
+      if (user && !this.rankingCallsignDirty) {
+        this.rankingCallsignInput.value = sanitizeCallsign(user.displayName || 'Jade Cultivator');
+      }
+      if (!this.globalRankingModal.classList.contains('hidden')) {
+        this.renderGlobalRankingModal();
+      }
+    });
+
+    this.root.querySelector('#closeGlobalRankingBtn')!.addEventListener('click', () => {
+      this.closeGlobalRankingModal();
+    });
+
+    this.globalRankingModal.addEventListener('click', (e) => {
+      if (e.target === this.globalRankingModal) {
+        this.closeGlobalRankingModal();
+      }
+    });
+
+    this.root.querySelector('#rankingRefreshBtn')!.addEventListener('click', () => {
+      void this.refreshGlobalRankingsOnce();
+    });
+
+    this.rankingCallsignInput.addEventListener('input', () => {
+      this.rankingCallsignDirty = true;
+    });
+
+    this.rankingAuthBarEl.addEventListener('click', (e) => {
+      const target = e.target as HTMLElement;
+      const signInBtn = target.closest<HTMLButtonElement>('[data-rank-auth="signin"]');
+      if (signInBtn) {
+        void this.handleGlobalRankingSignIn();
+        return;
+      }
+      const signOutBtn = target.closest<HTMLButtonElement>('[data-rank-auth="signout"]');
+      if (signOutBtn) {
+        void this.handleGlobalRankingSignOut();
+      }
+    });
+
+    this.rankingSubmitBtn.addEventListener('click', () => {
+      void this.handleGlobalRankingSubmit();
+    });
+
+    this.rankingDeleteOwnBtn.addEventListener('click', () => {
+      void this.handleGlobalRankingDeleteOwn();
+    });
+
+    this.root.querySelectorAll<HTMLButtonElement>('.ranking-sort-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const nextMode = (btn.dataset.rsort as RankingSortMode) || 'score';
+        this.rankingSortMode = nextMode;
+        this.root.querySelectorAll<HTMLButtonElement>('.ranking-sort-btn').forEach((b) => {
+          const active = b.dataset.rsort === nextMode;
+          b.classList.toggle('active', active);
+          b.setAttribute('aria-selected', active ? 'true' : 'false');
+        });
+        this.renderGlobalRankingModal();
+      });
+    });
+
+    this.rankingRowsEl.addEventListener('click', (e) => {
+      const btn = (e.target as HTMLElement).closest<HTMLElement>('[data-compare-uid]');
+      if (!btn?.dataset.compareUid) return;
+      const uid = btn.dataset.compareUid;
+      this.rankingSelectedRivalUid = this.rankingSelectedRivalUid === uid ? null : uid;
+      this.renderGlobalRankingModal();
+    });
+
+    this.rankingCompareEl.addEventListener('click', (e) => {
+      if ((e.target as HTMLElement).closest('[data-close-compare="1"]')) {
+        this.rankingSelectedRivalUid = null;
+        this.renderGlobalRankingModal();
+      }
+    });
+  }
+
+  public openGlobalRankingModal(enteredViaPortal = false): void {
+    this.rankingEnteredViaPortal = enteredViaPortal;
+    this.rankingStatusMsg = '';
+    this.rankingStatusTone = 'neutral';
+    this.rankingErrorMsg = '';
+    if (!this.rankingCallsignDirty) {
+      const defaultName = this.rankingAuthUser?.displayName || 'Jade Cultivator';
+      this.rankingCallsignInput.value = sanitizeCallsign(defaultName);
+    }
+
+    this.globalRankingModal.classList.remove('hidden');
+    this.syncModalFreeze();
+    this.attachGlobalRankingsListener();
+    this.renderGlobalRankingModal();
+  }
+
+  public closeGlobalRankingModal(): void {
+    if (this.globalRankingModal.classList.contains('hidden')) return;
+    this.globalRankingModal.classList.add('hidden');
+    if (this.rankingUnsubscribe) {
+      this.rankingUnsubscribe();
+      this.rankingUnsubscribe = null;
+    }
+    this.syncModalFreeze();
+  }
+
+  public toggleGlobalRankingModal(): void {
+    if (this.globalRankingModal.classList.contains('hidden')) {
+      this.openGlobalRankingModal(false);
+    } else {
+      this.closeGlobalRankingModal();
+    }
+  }
+
+  private attachGlobalRankingsListener(): void {
+    if (this.rankingUnsubscribe) {
+      this.rankingUnsubscribe();
+      this.rankingUnsubscribe = null;
+    }
+    if (!isFirebaseReady()) {
+      this.rankingErrorMsg = 'Global Ranking service is unavailable right now.';
+      this.rankingLoading = false;
+      this.renderGlobalRankingModal();
+      return;
+    }
+    this.rankingLoading = true;
+    this.rankingUnsubscribe = subscribeGlobalRankings(
+      (entries) => {
+        this.rankingEntries = entries;
+        this.rankingLoading = false;
+        this.rankingErrorMsg = '';
+        if (!this.globalRankingModal.classList.contains('hidden')) {
+          this.renderGlobalRankingModal();
+        }
+      },
+      (errMsg) => {
+        this.rankingLoading = false;
+        this.rankingErrorMsg = errMsg.includes('Quota exceeded')
+          ? 'Daily Firestore free-tier quota reached; leaderboard will reset tomorrow.'
+          : 'Unable to sync Global Rankings right now. Try refreshing in a moment.';
+        if (!this.globalRankingModal.classList.contains('hidden')) {
+          this.renderGlobalRankingModal();
+        }
+      },
+      50,
+    );
+  }
+
+  private async refreshGlobalRankingsOnce(): Promise<void> {
+    if (!isFirebaseReady()) return;
+    this.rankingLoading = true;
+    this.rankingErrorMsg = '';
+    this.renderGlobalRankingModal();
+    try {
+      this.rankingEntries = await fetchGlobalRankings(50);
+    } catch {
+      this.rankingErrorMsg = 'Could not refresh Global Rankings right now.';
+    } finally {
+      this.rankingLoading = false;
+      this.renderGlobalRankingModal();
+    }
+  }
+
+  private async handleGlobalRankingSignIn(): Promise<void> {
+    try {
+      this.rankingStatusMsg = 'Opening Google Sign-In...';
+      this.rankingStatusTone = 'neutral';
+      this.renderGlobalRankingModal();
+      const user = await signInWithGooglePopup();
+      this.rankingAuthUser = user;
+      if (!this.rankingCallsignDirty || !this.rankingCallsignInput.value.trim()) {
+        this.rankingCallsignInput.value = sanitizeCallsign(user.displayName || 'Jade Cultivator');
+      }
+      this.rankingStatusMsg = `Signed in as ${sanitizeCallsign(user.displayName || 'Jade Cultivator')}. Ready to inscribe your cultivation progress!`;
+      this.rankingStatusTone = 'success';
+      this.renderGlobalRankingModal();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes('popup-closed-by-user') || msg.includes('cancelled-popup-request')) {
+        this.rankingStatusMsg = 'Sign-in cancelled. Sign in with Google whenever you are ready to submit.';
+        this.rankingStatusTone = 'neutral';
+      } else {
+        this.rankingStatusMsg = 'Sign-in could not complete. Please allow popups and try again.';
+        this.rankingStatusTone = 'error';
+      }
+      this.renderGlobalRankingModal();
+    }
+  }
+
+  private async handleGlobalRankingSignOut(): Promise<void> {
+    await signOutCultivator();
+    this.rankingAuthUser = null;
+    this.rankingStatusMsg = 'Signed out. You can still browse Global Rankings anytime.';
+    this.rankingStatusTone = 'neutral';
+    this.renderGlobalRankingModal();
+  }
+
+  private async handleGlobalRankingSubmit(): Promise<void> {
+    if (this.rankingSubmitting) return;
+    if (!this.rankingAuthUser) {
+      await this.handleGlobalRankingSignIn();
+      if (!this.rankingAuthUser) return;
+    }
+
+    this.rankingSubmitting = true;
+    this.rankingStatusMsg = 'Inscribing your cultivation record onto the Celestial Stele...';
+    this.rankingStatusTone = 'neutral';
+    this.renderGlobalRankingModal();
+
+    try {
+      const sanitizedName = sanitizeCallsign(
+        this.rankingCallsignInput.value || this.rankingAuthUser.displayName || 'Jade Cultivator',
+      );
+      this.rankingCallsignInput.value = sanitizedName;
+      const snapshot = this.game.getCultivationSubmissionSnapshot(sanitizedName);
+      const saved = await submitCultivationRanking(snapshot);
+      const reward = this.game.handleGlobalRankingSubmitted(this.rankingEnteredViaPortal);
+      const bonusNote =
+        reward.bonusXpAwarded > 0
+          ? ` (+${reward.bonusXpAwarded} Essence XP & +200 Score Portal Bonus!)`
+          : '';
+      this.rankingStatusMsg = `Record inscribed for ${saved.displayName} — Score ${saved.score.toLocaleString()} · Lv.${saved.level} ${saved.stageTitle}${bonusNote}`;
+      this.rankingStatusTone = 'success';
+      // Ensure immediate local visibility while real-time snapshot settles
+      const existingIdx = this.rankingEntries.findIndex((e) => e.userId === saved.userId);
+      if (existingIdx >= 0) {
+        this.rankingEntries[existingIdx] = saved;
+      } else {
+        this.rankingEntries = [...this.rankingEntries, saved];
+      }
+    } catch (err) {
+      const raw = err instanceof Error ? err.message : String(err);
+      this.rankingStatusMsg = raw.includes('Quota exceeded')
+        ? 'Firestore free-tier daily quota exceeded. Please try again tomorrow.'
+        : 'Could not inscribe record. Ensure your Google account is signed in and verified.';
+      this.rankingStatusTone = 'error';
+    } finally {
+      this.rankingSubmitting = false;
+      this.renderGlobalRankingModal();
+    }
+  }
+
+  private async handleGlobalRankingDeleteOwn(): Promise<void> {
+    if (!this.rankingAuthUser || this.rankingSubmitting) return;
+    this.rankingSubmitting = true;
+    try {
+      await deleteOwnRankingRecord();
+      this.rankingEntries = this.rankingEntries.filter((e) => e.userId !== this.rankingAuthUser?.uid);
+      this.rankingStatusMsg = 'Your public record has been removed from the Global Ranking Stele.';
+      this.rankingStatusTone = 'neutral';
+    } catch {
+      this.rankingStatusMsg = 'Could not remove your record right now.';
+      this.rankingStatusTone = 'error';
+    } finally {
+      this.rankingSubmitting = false;
+      this.renderGlobalRankingModal();
+    }
+  }
+
+  private renderGlobalRankingModal(): void {
+    const portalState = this.game.getGlobalRankingPortalState();
+    const myStats = this.game.getCultivationSubmissionSnapshot(
+      this.rankingCallsignInput.value || this.rankingAuthUser?.displayName || 'Jade Cultivator',
+    );
+    const uid = this.rankingAuthUser?.uid ?? null;
+    const sorted = sortRankingEntries(this.rankingEntries, this.rankingSortMode);
+    const standing = computePlayerStanding(sorted, myStats.score, uid);
+    const ownEntry = uid ? this.rankingEntries.find((e) => e.userId === uid) ?? null : null;
+
+    // 1. Portal Banner
+    if (this.rankingEnteredViaPortal && portalState.active) {
+      this.rankingPortalBannerEl.className = 'ranking-portal-banner is-active';
+      this.rankingPortalBannerEl.innerHTML = `
+        <span>👑 <strong>Entered Sovereign Global Ranking Portal</strong> · Wave #${portalState.wave}</span>
+        <span>${Math.ceil(portalState.timeRemainingSec)}s remaining · ${portalState.submittedThisWave ? 'Wave Bonus Claimed' : '+150 XP & +200 Score Inscription Bonus Ready'}</span>
+      `;
+    } else if (portalState.active) {
+      this.rankingPortalBannerEl.className = 'ranking-portal-banner is-active';
+      this.rankingPortalBannerEl.innerHTML = `
+        <span>★ <strong>Global Ranking Portal Active on Map</strong> · Wave #${portalState.wave} (${Math.round(portalState.distToPlayer)}m away)</span>
+        <span>Follow the golden star on radar · ${Math.ceil(portalState.timeRemainingSec)}s left</span>
+      `;
+    } else {
+      this.rankingPortalBannerEl.className = 'ranking-portal-banner';
+      this.rankingPortalBannerEl.innerHTML = `
+        <span>✦ Periodic Global Ranking Portal Manifestation</span>
+        <span>Next Golden Portal appears on the continent in ~${Math.max(1, Math.ceil(portalState.nextSpawnInSec))}s</span>
+      `;
+    }
+
+    // 2. Auth Bar
+    if (this.rankingAuthUser) {
+      const safeUser = this.escapeHtmlText(
+        sanitizeCallsign(this.rankingAuthUser.displayName || 'Jade Cultivator'),
+      );
+      this.rankingAuthBarEl.innerHTML = `
+        <span class="ranking-auth-chip">✓ ${safeUser}</span>
+        <button type="button" class="ghost-btn compact" data-rank-auth="signout">Sign Out</button>
+      `;
+      this.rankingSubmitBtn.textContent = this.rankingSubmitting
+        ? 'Inscribing...'
+        : ownEntry
+          ? 'Update Global Record'
+          : 'Inscribe Cultivation Progress';
+    } else {
+      this.rankingAuthBarEl.innerHTML = `
+        <button type="button" class="secondary-cta compact" data-rank-auth="signin">Sign in with Google</button>
+      `;
+      this.rankingSubmitBtn.textContent = this.rankingSubmitting
+        ? 'Signing in...'
+        : 'Sign in & Inscribe Progress';
+    }
+    this.rankingSubmitBtn.disabled = this.rankingSubmitting;
+    this.rankingDeleteOwnBtn.classList.toggle('hidden', !ownEntry);
+    this.rankingDeleteOwnBtn.disabled = this.rankingSubmitting;
+
+    // 3. Cultivation Dossier Stats
+    this.rankingDossierStatsEl.innerHTML = `
+      <span class="ranking-stat-chip gold">Score <strong>${myStats.score.toLocaleString()}</strong></span>
+      <span class="ranking-stat-chip jade">Lv.${myStats.level} <strong>${this.escapeHtmlText(myStats.stageTitle)}</strong></span>
+      <span class="ranking-stat-chip cyan">Realm <strong>${this.escapeHtmlText(myStats.realmName)}</strong></span>
+      <span class="ranking-stat-chip">XP <strong>${myStats.xp.toLocaleString()}</strong></span>
+      <span class="ranking-stat-chip">Shrines <strong>${myStats.shrinesConquered}/12</strong></span>
+      <span class="ranking-stat-chip violet">Souls <strong>${myStats.soulsCollected}/14</strong></span>
+    `;
+
+    // 4. Status / Error Message
+    const statusText = this.rankingErrorMsg || this.rankingStatusMsg;
+    if (statusText) {
+      this.rankingStatusEl.classList.remove('hidden', 'is-success', 'is-error');
+      if (this.rankingErrorMsg || this.rankingStatusTone === 'error') {
+        this.rankingStatusEl.classList.add('is-error');
+      } else if (this.rankingStatusTone === 'success') {
+        this.rankingStatusEl.classList.add('is-success');
+      }
+      this.rankingStatusEl.textContent = statusText;
+    } else {
+      this.rankingStatusEl.classList.add('hidden');
+    }
+
+    // 5. Global Standing Strip
+    const rankLabel = standing.totalEntries === 0
+      ? 'Be #1 to Inscribe'
+      : standing.isSubmitted
+        ? `#${standing.rank} of ${standing.totalEntries}`
+        : `Projected #${standing.rank} of ${standing.totalEntries + 1}`;
+    const gapText = standing.nextRival
+      ? `${standing.scoreGapToNext.toLocaleString()} score to pass ${this.escapeHtmlText(standing.nextRival.displayName)}`
+      : standing.totalEntries > 0
+        ? 'Holding Sovereign #1 Position'
+        : 'First inscription claims the Sovereign Throne';
+    this.rankingStandingEl.innerHTML = `
+      <div class="ranking-standing-item">
+        <span class="ranking-standing-k">GLOBAL STANDING</span>
+        <strong class="ranking-standing-v gold">${rankLabel}</strong>
+      </div>
+      <div class="ranking-standing-item">
+        <span class="ranking-standing-k">TOP PERCENTILE</span>
+        <strong class="ranking-standing-v jade">Top ${standing.percentileTop}%</strong>
+      </div>
+      <div class="ranking-standing-item">
+        <span class="ranking-standing-k">NEXT MILESTONE</span>
+        <strong class="ranking-standing-v">${gapText}</strong>
+      </div>
+    `;
+
+    // 6. Top-3 Podium
+    const topThree = sorted.slice(0, 3);
+    if (topThree.length === 0) {
+      this.rankingPodiumEl.innerHTML = `
+        <div class="ranking-empty-podium">
+          ${this.rankingLoading ? 'Summoning Celestial Stele records...' : 'No cultivators have inscribed yet. Be the first Sovereign on the Global Ranking Stele!'}
+        </div>
+      `;
+    } else {
+      const medals = ['🥇 #1 SOVEREIGN', '🥈 #2 ASCENDANT', '🥉 #3 VANGUARD'];
+      const tierClasses = ['podium-gold', 'podium-silver', 'podium-bronze'];
+      this.rankingPodiumEl.innerHTML = topThree
+        .map((entry, idx) => {
+          const isMe = uid === entry.userId;
+          return `
+            <div class="ranking-podium-card ${tierClasses[idx]}${isMe ? ' is-me' : ''}">
+              <div class="ranking-podium-medal">${medals[idx]}</div>
+              <div class="ranking-podium-name">${this.escapeHtmlText(entry.displayName)}${isMe ? ' (You)' : ''}</div>
+              <div class="ranking-podium-stage">Lv.${entry.level} ${this.escapeHtmlText(entry.stageTitle)} · ${this.escapeHtmlText(entry.realmName)}</div>
+              <div class="ranking-podium-metrics">
+                <span><strong>${entry.score.toLocaleString()}</strong> Score</span>
+                <span><strong>${entry.xp.toLocaleString()}</strong> XP</span>
+                <span><strong>${entry.soulsCollected}/14</strong> Souls</span>
+              </div>
+            </div>
+          `;
+        })
+        .join('');
+    }
+
+    // 7. Side-by-Side Rival Comparison Card
+    const rival = this.rankingSelectedRivalUid
+      ? sorted.find((e) => e.userId === this.rankingSelectedRivalUid) ?? null
+      : null;
+    if (rival) {
+      const fmtDelta = (mine: number, theirs: number, suffix = ''): string => {
+        const diff = mine - theirs;
+        const cls = diff > 0 ? 'delta-pos' : diff < 0 ? 'delta-neg' : 'delta-even';
+        const sign = diff > 0 ? '+' : '';
+        return `<span class="${cls}">${sign}${diff.toLocaleString()}${suffix}</span>`;
+      };
+      this.rankingCompareEl.classList.remove('hidden');
+      this.rankingCompareEl.innerHTML = `
+        <div class="ranking-compare-head">
+          <span>⚔️ <strong>Cultivation Comparison:</strong> You vs. ${this.escapeHtmlText(rival.displayName)} (Lv.${rival.level} ${this.escapeHtmlText(rival.realmName)})</span>
+          <button type="button" class="ghost-btn compact" data-close-compare="1">✕</button>
+        </div>
+        <div class="ranking-compare-grid">
+          <div class="ranking-compare-cell"><span>Score</span><strong>${myStats.score.toLocaleString()} vs ${rival.score.toLocaleString()}</strong>${fmtDelta(myStats.score, rival.score)}</div>
+          <div class="ranking-compare-cell"><span>Level</span><strong>Lv.${myStats.level} vs Lv.${rival.level}</strong>${fmtDelta(myStats.level, rival.level, ' Lv')}</div>
+          <div class="ranking-compare-cell"><span>Essence XP</span><strong>${myStats.xp.toLocaleString()} vs ${rival.xp.toLocaleString()}</strong>${fmtDelta(myStats.xp, rival.xp)}</div>
+          <div class="ranking-compare-cell"><span>Trial Shrines</span><strong>${myStats.shrinesConquered}/12 vs ${rival.shrinesConquered}/12</strong>${fmtDelta(myStats.shrinesConquered, rival.shrinesConquered)}</div>
+          <div class="ranking-compare-cell"><span>Soul Fragments</span><strong>${myStats.soulsCollected}/14 vs ${rival.soulsCollected}/14</strong>${fmtDelta(myStats.soulsCollected, rival.soulsCollected)}</div>
+        </div>
+      `;
+    } else {
+      this.rankingCompareEl.classList.add('hidden');
+      this.rankingCompareEl.innerHTML = '';
+    }
+
+    // 8. Full Leaderboard Table
+    if (sorted.length === 0) {
+      this.rankingRowsEl.innerHTML = `
+        <tr>
+          <td colspan="8" class="ranking-empty-row">
+            ${this.rankingLoading ? 'Loading global cultivators...' : 'Inscribe your cultivation progress above to appear on the Global Leaderboard.'}
+          </td>
+        </tr>
+      `;
+    } else {
+      this.rankingRowsEl.innerHTML = sorted
+        .map((entry, idx) => {
+          const isMe = uid === entry.userId;
+          const isSelected = this.rankingSelectedRivalUid === entry.userId;
+          const rankBadge = idx === 0 ? '👑 1' : idx === 1 ? '🥈 2' : idx === 2 ? '🥉 3' : `#${idx + 1}`;
+          return `
+            <tr class="${isMe ? 'is-me' : ''} ${isSelected ? 'is-selected' : ''}">
+              <td class="rank-col">${rankBadge}</td>
+              <td class="name-col">
+                <strong>${this.escapeHtmlText(entry.displayName)}</strong>
+                ${isMe ? '<span class="ranking-you-tag">YOU</span>' : ''}
+                ${entry.isHuman ? '<span class="ranking-human-tag">HUMAN</span>' : ''}
+              </td>
+              <td class="stage-col">Lv.${entry.level} ${this.escapeHtmlText(entry.stageTitle)} <span class="muted">· ${this.escapeHtmlText(entry.realmName)}</span></td>
+              <td class="num-col gold">${entry.score.toLocaleString()}</td>
+              <td class="num-col">${entry.xp.toLocaleString()}</td>
+              <td class="num-col">${entry.shrinesConquered}/12</td>
+              <td class="num-col violet">${entry.soulsCollected}/14</td>
+              <td class="act-col">
+                <button type="button" class="ranking-cmp-btn${isSelected ? ' active' : ''}" data-compare-uid="${this.escapeHtmlText(entry.userId)}">
+                  ${isSelected ? 'Comparing' : 'Compare'}
+                </button>
+              </td>
+            </tr>
+          `;
+        })
+        .join('');
+    }
+  }
+
+  private renderSoulArchivesModal(): void {
+    const snap: SoulArchiveSnapshot = this.game.getSoulArchiveSnapshot();
+    this.soulArchivesCountEl.textContent = `${snap.unlockedCount} / ${snap.totalCount} Deciphered`;
+
+    this.root.querySelectorAll<HTMLButtonElement>('.archives-filter-btn').forEach((btn) => {
+      const active = btn.dataset.afilter === this.soulArchivesFilter;
+      btn.classList.toggle('active', active);
+      btn.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
+
+    const filtered = snap.entries.filter((entry) => {
+      if (this.soulArchivesFilter === 'sentry') return entry.def.category === 'sentry';
+      if (this.soulArchivesFilter === 'chronicle') return entry.def.category === 'chronicle';
+      if (this.soulArchivesFilter === 'unlocked') return entry.record.unlocked;
+      return true;
+    });
+
+    if (filtered.length > 0 && !filtered.some((e) => e.def.id === this.selectedSoulArchiveId)) {
+      this.selectedSoulArchiveId = filtered[0].def.id;
+    }
+
+    if (filtered.length === 0) {
+      this.soulArchivesListEl.innerHTML = `
+        <div class="archives-empty-list">
+          No entries match this filter yet. Approach patrolling Soul Clan Sentries near portals to decipher their lore.
+        </div>
+      `;
+      this.soulArchivesReaderEl.innerHTML = `
+        <div class="archives-reader-locked">
+          <div class="archives-locked-eyebrow">ARCHIVE SEALED</div>
+          <h3>No Deciphered Entries in Filter</h3>
+          <p>Explore portals guarded by spectral Soul Clan Sentries across the peaks to unlock historical dossiers.</p>
+        </div>
+      `;
+      return;
+    }
+
+    this.soulArchivesListEl.innerHTML = filtered
+      .map(({ def, record }) => {
+        const selected = def.id === this.selectedSoulArchiveId;
+        const unlocked = record.unlocked;
+        const catLabel = def.category === 'sentry' ? 'Sentry Dossier' : 'Chronicle';
+        return `
+          <button
+            type="button"
+            class="archives-row${selected ? ' selected' : ''}${unlocked ? ' unlocked' : ' locked'}"
+            data-entry-id="${this.escapeHtmlText(def.id)}"
+            style="--archive-accent: ${def.accentHex}"
+          >
+            <div class="archives-row-emblem">
+              ${renderSoulArchiveEmblemSvg(def.id, def.accentHex, unlocked)}
+            </div>
+            <div class="archives-row-meta">
+              <div class="archives-row-kicker">${catLabel} · ${unlocked ? this.escapeHtmlText(def.eraLabel) : 'Sealed'}</div>
+              <div class="archives-row-title">${unlocked ? this.escapeHtmlText(def.title) : 'Uncharted Soul Record'}</div>
+              <div class="archives-row-sub">${unlocked ? this.escapeHtmlText(def.subtitle) : this.escapeHtmlText(def.unlockHint)}</div>
+            </div>
+          </button>
+        `;
+      })
+      .join('');
+
+    const current = filtered.find((e) => e.def.id === this.selectedSoulArchiveId) ?? filtered[0];
+    const { def, record } = current;
+    if (!record.unlocked) {
+      this.soulArchivesReaderEl.innerHTML = `
+        <div class="archives-reader-locked" style="--archive-accent: ${def.accentHex}">
+          <div class="archives-reader-emblem-lg locked">
+            ${renderSoulArchiveEmblemSvg(def.id, def.accentHex, false)}
+          </div>
+          <div class="archives-locked-eyebrow">SEALED SOUL RECORD · ${def.category === 'sentry' ? 'SENTRY DOSSIER' : 'HISTORICAL CHRONICLE'}</div>
+          <h3 class="archives-reader-title">Encrypted Nether Tablet</h3>
+          <p class="archives-locked-hint">${this.escapeHtmlText(def.unlockHint)}</p>
+          <div class="archives-locked-tip">
+            Approach portals across the Alpine Continent or Jungle Highlands to sight patrolling Soul Clan Sentries and automatically transcribe their records.
+          </div>
+        </div>
+      `;
+      return;
+    }
+
+    const archetypeProfile = def.archetypeId ? SENTRY_ARCHETYPES[def.archetypeId] : null;
+    const paragraphsHtml = def.bodyParagraphs
+      .map((p: string) => `<p class="archives-lore-para">${this.escapeHtmlText(p)}</p>`)
+      .join('');
+
+    const telemetryHtml =
+      def.category === 'sentry'
+        ? `
+          <div class="archives-telemetry-grid">
+            <div class="archives-stat-cell">
+              <span class="archives-stat-label">Sightings</span>
+              <strong class="archives-stat-val">${record.encounters}</strong>
+            </div>
+            <div class="archives-stat-cell">
+              <span class="archives-stat-label">Searches Triggered</span>
+              <strong class="archives-stat-val">${record.searchesTriggered}</strong>
+            </div>
+            <div class="archives-stat-cell">
+              <span class="archives-stat-label">Evaded Unseen</span>
+              <strong class="archives-stat-val">${record.evadedCount}</strong>
+            </div>
+            <div class="archives-stat-cell">
+              <span class="archives-stat-label">Banished</span>
+              <strong class="archives-stat-val">${record.banishedCount}</strong>
+            </div>
+          </div>
+        `
+        : '';
+
+    const profileSpecsHtml = archetypeProfile
+      ? `
+        <div class="archives-doctrine-box">
+          <div class="archives-section-kicker">PATROL DOCTRINE &amp; SPECS</div>
+          <p class="archives-doctrine-text">${this.escapeHtmlText(archetypeProfile.patrolDoctrine)}</p>
+          <div class="archives-spec-line">
+            <span>Rank: <strong>${this.escapeHtmlText(archetypeProfile.rankLabel)}</strong></span>
+            <span>Sight Cone: <strong>${archetypeProfile.visionRange.toFixed(1)}m</strong></span>
+            <span>Activity Sense: <strong>${archetypeProfile.activitySenseRadius}m</strong></span>
+            <span>Ward Health: <strong>${archetypeProfile.maxHp} Hits</strong></span>
+          </div>
+        </div>
+      `
+      : '';
+
+    this.soulArchivesReaderEl.innerHTML = `
+      <div class="archives-reader-inner" style="--archive-accent: ${def.accentHex}">
+        <div class="archives-reader-head">
+          <div class="archives-reader-emblem-lg">
+            ${renderSoulArchiveEmblemSvg(def.id, def.accentHex, true)}
+          </div>
+          <div>
+            <div class="archives-reader-era">${this.escapeHtmlText(def.eraLabel)}</div>
+            <h3 class="archives-reader-title">${this.escapeHtmlText(def.title)}</h3>
+            <div class="archives-reader-sub">${this.escapeHtmlText(def.subtitle)}</div>
+          </div>
+        </div>
+
+        ${telemetryHtml}
+
+        <div class="archives-lore-body">
+          <div class="archives-section-kicker">HISTORICAL CHRONICLE</div>
+          ${paragraphsHtml}
+        </div>
+
+        ${profileSpecsHtml}
+
+        <div class="archives-fieldnotes-box">
+          <div class="archives-section-kicker">CULTIVATOR COUNTERPLAY NOTES</div>
+          <p class="archives-fieldnotes-text">${this.escapeHtmlText(def.fieldNotes)}</p>
+        </div>
+      </div>
+    `;
   }
 }

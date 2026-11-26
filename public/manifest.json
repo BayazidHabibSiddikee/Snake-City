@@ -8,7 +8,7 @@
   "orientation": "landscape",
   "background_color": "#0a1414",
   "theme_color": "#0a1414",
-  "categories": ["games"],
+  "categories": ["games", "utilities"],
   "lang": "en",
   "icons": [
     {
@@ -27,10 +27,16 @@
   "screenshots": [],
   "shortcuts": [
     {
-      "name": "Play Now",
-      "short_name": "Play",
-      "description": "Jump straight into the game",
+      "name": "Play Serpent Peaks",
+      "short_name": "Play Game",
+      "description": "Jump straight into the 3D mountain cultivation world",
       "url": "/"
+    },
+    {
+      "name": "Launch Portal Browser",
+      "short_name": "Browser",
+      "description": "Open the standalone multi-tab Portal Chromium web browser",
+      "url": "/?mode=browser"
     }
   ]
 }

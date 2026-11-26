@@ -1,5 +1,11 @@
 import { SoundEngine } from './audio';
-import { PortalChromiumManager, PortalVariant } from './browser';
+import {
+  NewTabCultivationSnapshot,
+  NewTabSuggestedPortal,
+  PortalChromiumManager,
+  PortalVariant,
+  derivePortalLandmarkName,
+} from './browser';
 import {
   ComplimentEventKind,
   ComplimentNotice,
@@ -39,15 +45,21 @@ import {
   saveJourneyProgress,
 } from './evolution';
 import {
+  PORTAL_NETWORK_TARGET_COUNT,
   PRESET_FORMATIONS,
+  PortalShiftResult,
   cloneFormation,
   decodeFormationCode,
   encodeFormationCode,
+  generateRandomPortalNetwork,
   loadBestScore,
   loadSavedFormations,
   saveBestScore,
   saveCustomFormation,
+  shiftPortalsAfterMission,
 } from './formations';
+import { PortalLootDrop, PortalLootManager, RARE_MATERIALS_CATALOG } from './loot';
+import { PortalMissionDef, PortalMissionManager, SOUL_TARGET_COUNT } from './missions';
 import {
   MountainLandmark,
   WORLD_LANDMARKS,
@@ -72,12 +84,15 @@ import {
   FormationData,
   FormationProp,
   GameMode,
+  GlobalRankingPortalState,
   GroundFissure,
   HudSnapshot,
   MagicProjectile,
   MinimapSnapshot,
   PropType,
   RollingBoulder,
+  SentryHudAlert,
+  SentryMinimapPoint,
   ShockwaveEffect,
   SoulPresenceState,
   SpeedPreset,
@@ -87,6 +102,27 @@ import {
   WildBeast,
   WorldObstacle,
 } from './types';
+import {
+  CultivationSubmissionInput,
+  GLOBAL_RANKING_PORTAL_CONFIG,
+  pickGlobalRankingPortalLocation,
+} from './ranking';
+import {
+  LoreUnlockNotice,
+  LoreUnlockSource,
+  SOUL_ARCHIVE_CATALOG,
+  SoulArchiveRecord,
+  SoulArchiveSnapshot,
+  SoulSentryEntity,
+  banishSoulSentry,
+  buildSoulArchiveSnapshot,
+  loadSoulArchiveRecords,
+  saveSoulArchiveRecords,
+  selectPortalLoreEntryId,
+  spawnPortalSentries,
+  stepSoulSentry,
+  unlockSoulArchiveEntry,
+} from './sentries';
 import { RenderSnakeState, SnakePose3D, WorldEngine } from './world';
 
 interface PathSample {
@@ -135,8 +171,8 @@ export const SPEED_CONFIG: Record<
   }
 > = {
   chill: {
-    baseSpeed: 3.7,
-    turnRate: 1.72,
+    baseSpeed: 5.4,
+    turnRate: 2.02,
     boulderCount: 9,
     grazeThreshold: 0.72,
     climate: 'mist',
@@ -144,8 +180,8 @@ export const SPEED_CONFIG: Record<
     shiftMaxSec: 50,
   },
   classic: {
-    baseSpeed: 4.5,
-    turnRate: 1.88,
+    baseSpeed: 6.5,
+    turnRate: 2.22,
     boulderCount: 12,
     grazeThreshold: 0.56,
     climate: 'rain',
@@ -153,8 +189,8 @@ export const SPEED_CONFIG: Record<
     shiftMaxSec: 38,
   },
   turbo: {
-    baseSpeed: 5.4,
-    turnRate: 2.02,
+    baseSpeed: 7.7,
+    turnRate: 2.42,
     boulderCount: 15,
     grazeThreshold: 0.42,
     climate: 'storm',
@@ -399,11 +435,43 @@ export class SnakeGameController {
   private onCompliment?: (notice: ComplimentNotice) => void;
   private onCombatTaunt?: (notice: FloatingTauntNotice) => void;
   private onTauntAnchorUpdate?: (pos: { x: number; y: number; visible: boolean }) => void;
-  private onPortalBrowserOpen?: (variant: PortalVariant, hasTwinWarp: boolean) => void;
+  private onPortalBrowserOpen?: (
+    variant: PortalVariant,
+    hasTwinWarp: boolean,
+    portalKey: string,
+  ) => void;
+  private onGlobalRankingPortalOpen?: (ctx: { enteredViaPortal: boolean; wave: number }) => void;
+  private onLoreUnlocked?: (notice: LoreUnlockNotice) => void;
   public readonly portalBrowser = new PortalChromiumManager();
+  public readonly portalMissions = new PortalMissionManager();
+  public readonly portalLoot = new PortalLootManager();
   private pendingPortalWarp: { x: number; z: number; variant: PortalVariant } | null = null;
   private portalTextureAnimAccum = 0;
   private portalWarpSeq = 0;
+  private portalShiftSeq = 0;
+
+  // Periodic Sovereign "Global Ranking" Portal state
+  private globalRankingPortalActive = false;
+  private globalRankingPortalWave = 0;
+  private globalRankingPortalX = 0;
+  private globalRankingPortalZ = -68;
+  private globalRankingPortalY = 4;
+  private globalRankingPortalTimeLeft = 0;
+  private globalRankingPortalDuration: number = GLOBAL_RANKING_PORTAL_CONFIG.activeDurationSec;
+  private globalRankingPortalNextSpawn: number = GLOBAL_RANKING_PORTAL_CONFIG.firstSpawnDelaySec;
+  private globalRankingPortalSubmittedWave = false;
+  private globalRankingPortalTriggerCooldown = 0;
+
+  // Patrolling Soul Clan Sentries, Stealth Veil & Soul Clan Archives Lore Gallery
+  private soulSentries: SoulSentryEntity[] = [];
+  private soulArchiveRecords: Record<string, SoulArchiveRecord> = loadSoulArchiveRecords();
+  private visitedPortalIds = new Set<string>();
+  private stealthHeld = false;
+  private stealthToggled = false;
+  private recentSpellPulse = 0;
+  private spellOriginX = 0;
+  private spellOriginZ = 0;
+  private sentryLockToastCd = 0;
   private climateMessageSeq: Partial<Record<WeatherMode, number>> = {};
   private readonly complimentOracle = new SerpentComplimentOracle();
   private readonly tauntOracle = new SerpentTauntOracle();
@@ -541,7 +609,13 @@ export class SnakeGameController {
     onCompliment?: (notice: ComplimentNotice) => void,
     onCombatTaunt?: (notice: FloatingTauntNotice) => void,
     onTauntAnchorUpdate?: (pos: { x: number; y: number; visible: boolean }) => void,
-    onPortalBrowserOpen?: (variant: PortalVariant, hasTwinWarp: boolean) => void,
+    onPortalBrowserOpen?: (
+      variant: PortalVariant,
+      hasTwinWarp: boolean,
+      portalKey: string,
+    ) => void,
+    onGlobalRankingPortalOpen?: (ctx: { enteredViaPortal: boolean; wave: number }) => void,
+    onLoreUnlocked?: (notice: LoreUnlockNotice) => void,
   ) {
     this.onHudUpdate = onHudUpdate;
     this.onMinimapUpdate = onMinimapUpdate;
@@ -552,6 +626,8 @@ export class SnakeGameController {
     this.onCombatTaunt = onCombatTaunt;
     this.onTauntAnchorUpdate = onTauntAnchorUpdate;
     this.onPortalBrowserOpen = onPortalBrowserOpen;
+    this.onGlobalRankingPortalOpen = onGlobalRankingPortalOpen;
+    this.onLoreUnlocked = onLoreUnlocked;
 
     this.sound = new SoundEngine();
     this.world = new WorldEngine(container);
@@ -699,6 +775,14 @@ export class SnakeGameController {
     return this.weather;
   }
 
+  public getSpeedPreset(): SpeedPreset {
+    return this.speedPreset;
+  }
+
+  public getEvolutionLevel(): number {
+    return this.level;
+  }
+
   private rollNextShiftDelay(): number {
     const cfg = SPEED_CONFIG[this.speedPreset];
     return cfg.shiftMinSec + Math.random() * (cfg.shiftMaxSec - cfg.shiftMinSec);
@@ -803,11 +887,28 @@ export class SnakeGameController {
       });
   }
 
+  private lastThirdPersonCameraMode: CameraMode = 'ant';
+
   public cycleCameraMode(): CameraMode {
-    const order: CameraMode[] = ['ant', 'chase', 'aerial'];
+    const order: CameraMode[] = ['ant', 'fpv', 'chase', 'aerial'];
     const idx = order.indexOf(this.cameraMode);
     const next = order[(idx + 1) % order.length];
+    if (next !== 'fpv') {
+      this.lastThirdPersonCameraMode = next;
+    }
     this.cameraMode = next;
+    this.sound.playClick();
+    this.emitHud();
+    return this.cameraMode;
+  }
+
+  public toggleFpvCameraMode(): CameraMode {
+    if (this.cameraMode === 'fpv') {
+      this.cameraMode = this.lastThirdPersonCameraMode;
+    } else {
+      this.lastThirdPersonCameraMode = this.cameraMode;
+      this.cameraMode = 'fpv';
+    }
     this.sound.playClick();
     this.emitHud();
     return this.cameraMode;
@@ -1147,7 +1248,79 @@ export class SnakeGameController {
     this.steerRightHeld = false;
     this.boostHeld = false;
     this.brakeHeld = false;
+    this.stealthHeld = false;
     this.touchSteerAxis = 0;
+  }
+
+  public isStealthActive(): boolean {
+    return this.stealthHeld || this.stealthToggled;
+  }
+
+  public setStealthHeld(held: boolean): void {
+    const wasActive = this.isStealthActive();
+    this.stealthHeld = held;
+    const nowActive = this.isStealthActive();
+    if (wasActive !== nowActive && this.mode === 'playing') {
+      this.sound.playStealthToggle(nowActive);
+      this.emitHud();
+    }
+  }
+
+  public toggleStealthVeil(): void {
+    if (this.mode !== 'playing') return;
+    const wasActive = this.isStealthActive();
+    this.stealthToggled = !this.stealthToggled;
+    const nowActive = this.isStealthActive();
+    if (wasActive !== nowActive) {
+      this.sound.playStealthToggle(nowActive);
+      this.onToast(
+        nowActive
+          ? 'Veil of Shadow active — sentry sight reduced'
+          : 'Veil of Shadow lifted',
+      );
+      this.emitHud();
+    }
+  }
+
+  public getSoulArchiveSnapshot(): SoulArchiveSnapshot {
+    return buildSoulArchiveSnapshot(this.soulArchiveRecords);
+  }
+
+  private recordArchiveUnlock(
+    entryId: string,
+    metric: 'encounter' | 'search' | 'evade' | 'banish',
+    showToast = true,
+    source?: LoreUnlockSource,
+  ): void {
+    const { newlyUnlocked, def } = unlockSoulArchiveEntry(
+      this.soulArchiveRecords,
+      entryId,
+      metric,
+    );
+    saveSoulArchiveRecords(this.soulArchiveRecords);
+    if (newlyUnlocked && def && showToast) {
+      const unlockedCount = SOUL_ARCHIVE_CATALOG.reduce(
+        (acc, d) => acc + (this.soulArchiveRecords[d.id]?.unlocked ? 1 : 0),
+        0,
+      );
+      const resolvedSource: LoreUnlockSource =
+        source ?? (def.category === 'sentry' ? 'sentry' : 'chronicle');
+      this.sound.playLoreUnlockedChime();
+      if (this.onLoreUnlocked) {
+        this.onLoreUnlocked({
+          entryId: def.id,
+          title: def.title,
+          subtitle: def.subtitle,
+          eraLabel: def.eraLabel,
+          accentHex: def.accentHex,
+          source: resolvedSource,
+          unlockedCount,
+          totalCount: SOUL_ARCHIVE_CATALOG.length,
+        });
+      } else {
+        this.onToast(`New Lore Unlocked: ${def.title} (Press [N])`);
+      }
+    }
   }
 
   // ==================== ESCALATING SERPENT MAGIC COMBAT ====================
@@ -1155,6 +1328,11 @@ export class SnakeGameController {
   public castPrimaryMagic(): void {
     if (this.mode !== 'playing') return;
     if (this.primarySpellCd > 0) return;
+
+    // Spell discharge creates a loud Dou Qi echo that nearby Soul Clan Sentries can investigate
+    this.recentSpellPulse = 1.0;
+    this.spellOriginX = this.headX;
+    this.spellOriginZ = this.headZ;
 
     const magic = getMagicTierForLevel(this.level);
     this.primarySpellMaxCd = magic.boltCooldown;
@@ -1332,6 +1510,31 @@ export class SnakeGameController {
       }
     }
 
+    // Banish patrolling Soul Clan Sentries caught inside the Shockwave cleanse radius
+    let banishedSentryCount = 0;
+    for (const sentry of this.soulSentries) {
+      if (sentry.patrolMode === 'banished') continue;
+      if (Math.hypot(sentry.x - this.headX, sentry.z - this.headZ) <= magic.shockwaveRadius + 5.5) {
+        const sy = terrainHeightAt(sentry.x, sentry.z, this.formation.biome) + 2.4;
+        banishSoulSentry(sentry, 22);
+        banishedSentryCount += 1;
+        this.world.spawnBurst(sentry.x, sy, sentry.z, 0x3de095, 16);
+        this.world.spawnBurst(sentry.x, sy + 0.5, sentry.z, 0xc084fc, 14);
+        this.addScore(150);
+        this.awardXp(120);
+        this.recordArchiveUnlock(sentry.archetype, 'banish', true);
+        this.recordArchiveUnlock('chronicle_ward_breaking', 'banish', true);
+      }
+    }
+    if (banishedSentryCount > 0) {
+      this.sound.playSentryBanish();
+      this.onToast(
+        banishedSentryCount === 1
+          ? 'Soul Clan Sentry banished! Portal threshold cleared (+120 XP)'
+          : `${banishedSentryCount} Soul Clan Sentries banished! (+${banishedSentryCount * 120} XP)`,
+      );
+    }
+
     this.sound.playShockwave(this.level);
     this.world.triggerShake(0.24 + (this.level / 12) * 0.22);
     this.world.spawnBurst(
@@ -1495,6 +1698,26 @@ export class SnakeGameController {
       }
     }
 
+    // Cleanse patrolling Soul Clan Sentries caught in the Heavenly Flame Lotus blast
+    let lotusBanished = 0;
+    for (const sentry of this.soulSentries) {
+      if (sentry.patrolMode === 'banished') continue;
+      if (Math.hypot(sentry.x - this.headX, sentry.z - this.headZ) <= magic.ultimateRadius + 8.0) {
+        const sy = terrainHeightAt(sentry.x, sentry.z, this.formation.biome) + 2.4;
+        banishSoulSentry(sentry, 30);
+        lotusBanished += 1;
+        this.world.spawnBurst(sentry.x, sy, sentry.z, 0xffd24d, 20);
+        this.world.spawnBurst(sentry.x, sy + 0.6, sentry.z, 0xc084fc, 16);
+        this.addScore(250);
+        this.awardXp(200);
+        this.recordArchiveUnlock(sentry.archetype, 'banish', true);
+        this.recordArchiveUnlock('chronicle_ward_breaking', 'banish', true);
+      }
+    }
+    if (lotusBanished > 0) {
+      this.sound.playSentryBanish();
+    }
+
     this.sound.playUltimateLotus(this.level);
     this.world.triggerShake(0.58);
     this.world.spawnBurst(this.headX, this.headY + 1.4, this.headZ, 0xff9f43, 44);
@@ -1576,6 +1799,8 @@ export class SnakeGameController {
     this.world.syncFormation(this.formation);
     this.syncPortalTextures();
     this.rebuildObstacleCache();
+    this.soulSentries = spawnPortalSentries(this.formation.props, this.formation.biome, 10);
+    this.world.syncSoulSentries(this.soulSentries, 0);
   }
 
   public syncPortalTextures(): void {
@@ -1638,6 +1863,132 @@ export class SnakeGameController {
     );
     this.emitHud();
     return true;
+  }
+
+  public warpToPortalByIdOrCoords(
+    portalId: string,
+    fallbackX?: number,
+    fallbackZ?: number,
+    preferredVariant?: PortalVariant,
+  ): boolean {
+    if (this.mode === 'title') {
+      this.startGame();
+    }
+    const portals = this.formation.props.filter(
+      (p) => p.type === 'portalA' || p.type === 'portalB',
+    );
+    let dest = portals.find((p) => p.id === portalId) ?? null;
+    if (!dest && Number.isFinite(fallbackX) && Number.isFinite(fallbackZ) && portals.length > 0) {
+      let bestDist = Infinity;
+      for (const p of portals) {
+        const d = Math.hypot(p.x - (fallbackX as number), p.z - (fallbackZ as number));
+        if (d < bestDist) {
+          bestDist = d;
+          dest = p;
+        }
+      }
+    }
+    if (!dest && preferredVariant) {
+      const targetType: PropType = preferredVariant === 'B' ? 'portalB' : 'portalA';
+      dest = portals.find((p) => p.type === targetType) ?? portals[0] ?? null;
+    }
+    if (!dest) {
+      this.onToast('No active dimensional portal found on this mountain course.');
+      return false;
+    }
+    const variant: PortalVariant = dest.type === 'portalB' ? 'B' : 'A';
+    const mission = this.portalMissions.getMissionForPortal(dest.id);
+    this.portalBrowser.recordPortalVisit({
+      portalId: dest.id,
+      variant,
+      x: dest.x,
+      z: dest.z,
+      floorNumber: mission.floorNumber,
+      missionTitle: mission.title,
+      completed: this.portalMissions.isPortalCompleted(dest.id),
+    });
+    this.world.spawnBurst(this.headX, this.headY + 0.8, this.headZ, 0x2de3ff, 22);
+    this.headX = dest.x + Math.sin(this.heading) * 5.2;
+    this.headZ = dest.z + Math.cos(this.heading) * 5.2;
+    this.headY = terrainHeightAt(this.headX, this.headZ, this.formation.biome);
+    this.portalCooldown = 2.8;
+    this.invulnTimer = 1.1;
+    this.rebuildInitialPathHistory();
+    this.sound.playPortal();
+    this.world.spawnBurst(this.headX, this.headY + 0.8, this.headZ, 0xff6be0, 26);
+    const label = derivePortalLandmarkName(dest.x, dest.z, variant);
+    this.onToast(`Warped to ${label} (${Math.round(dest.x)}, ${Math.round(dest.z)})!`);
+    this.emitHud();
+    return true;
+  }
+
+  public getNewTabCultivationSnapshot(): NewTabCultivationSnapshot {
+    const stage = getStageForLevel(this.level);
+    const nextStage = getNextStage(this.level);
+    const stageStartXp = stage.xpRequired;
+    const nextLevelXp = nextStage ? nextStage.xpRequired : stage.xpRequired;
+    const span = Math.max(1, nextLevelXp - stageStartXp);
+    const xpProgressPct = nextStage
+      ? Math.max(0, Math.min(100, Math.round(((this.xp - stageStartXp) / span) * 100)))
+      : 100;
+
+    const magic = getMagicTierForLevel(this.level);
+    const nextShrine = WORLD_LANDMARKS.find((lm) => !this.visitedLandmarks.has(lm.id));
+    const bestiarySnap = this.getBestiarySnapshot();
+    const archiveSnap = this.getSoulArchiveSnapshot();
+    const lootState = this.portalLoot.getState();
+    const activeBuff = this.portalLoot.getActiveBuff();
+
+    const suggestedPortals: NewTabSuggestedPortal[] = this.formation.props
+      .filter((p) => p.type === 'portalA' || p.type === 'portalB')
+      .map((p) => ({
+        prop: p,
+        dist: Math.hypot(p.x - this.headX, p.z - this.headZ),
+      }))
+      .sort((a, b) => a.dist - b.dist)
+      .slice(0, 5)
+      .map(({ prop }) => {
+        const variant: PortalVariant = prop.type === 'portalB' ? 'B' : 'A';
+        const mission = this.portalMissions.getMissionForPortal(prop.id);
+        return {
+          portalId: prop.id,
+          label: derivePortalLandmarkName(prop.x, prop.z, variant),
+          variant,
+          x: Math.round(prop.x),
+          z: Math.round(prop.z),
+          floorNumber: mission.floorNumber,
+          missionTitle: mission.title,
+          completed: this.portalMissions.isPortalCompleted(prop.id),
+        };
+      });
+
+    return {
+      level: this.level,
+      maxLevel: MAX_EVOLUTION_LEVEL,
+      stageTitle: stage.title,
+      realmName: magic.realmName,
+      xp: Math.round(this.xp),
+      nextLevelXp,
+      xpProgressPct,
+      nextStageTitle: nextStage ? nextStage.title : stage.title,
+      isHuman: this.level >= MAX_EVOLUTION_LEVEL,
+      shrinesConquered: this.visitedLandmarks.size,
+      totalShrines: WORLD_LANDMARKS.length,
+      nextShrineName: nextShrine ? nextShrine.name : 'All 12 Peaks Conquered',
+      soulsCollected: this.portalMissions.getCollectedSouls(),
+      soulTarget: SOUL_TARGET_COUNT,
+      comaClock: this.portalMissions.getFormattedClock(),
+      bestiaryDiscovered: bestiarySnap.discoveredCount,
+      bestiaryTotal: bestiarySnap.totalSpeciesCount,
+      archivesUnlocked: archiveSnap.unlockedCount,
+      archivesTotal: archiveSnap.totalCount,
+      cultivationMult: this.portalLoot.getEffectiveCultivationMultiplier(),
+      activeBuffName: activeBuff ? activeBuff.name : '',
+      rareMaterialsCount: this.portalLoot.getTotalMaterialCount(),
+      discoveredMaterialsCount: lootState.discoveredMaterialIds.length,
+      totalMaterialsCount: RARE_MATERIALS_CATALOG.length,
+      suggestedPortals,
+    };
   }
 
   private cellKey(cx: number, cz: number): string {
@@ -1768,6 +2119,13 @@ export class SnakeGameController {
     this.grazeCooldown = 0;
     this.invulnTimer = 2.0;
 
+    // Reset periodic Sovereign Global Ranking Portal schedule for the new run
+    this.globalRankingPortalActive = false;
+    this.globalRankingPortalTimeLeft = 0;
+    this.globalRankingPortalNextSpawn = GLOBAL_RANKING_PORTAL_CONFIG.firstSpawnDelaySec;
+    this.globalRankingPortalSubmittedWave = false;
+    this.globalRankingPortalTriggerCooldown = 0;
+
     this.score = 0;
     this.combo = 0;
     this.maxCombo = 0;
@@ -1777,11 +2135,272 @@ export class SnakeGameController {
     this.xpLostOnCrash = 0;
     this.isNewBest = false;
 
+    this.formation.props = generateRandomPortalNetwork(
+      this.formation.props,
+      this.formation.biome,
+      PORTAL_NETWORK_TARGET_COUNT,
+    );
+    this.ensurePortalsNearSpawn(this.headX, this.headZ, this.heading, true);
     this.rebuildInitialPathHistory();
     this.world.snapCameraHeading(this.heading);
     this.spawnInitialOrbs();
     this.spawnRollingBoulders();
     this.spawnInitialBeasts();
+  }
+
+  /**
+   * Ensures a pair of colossal Browser Portals (Portal A & Portal B) stands directly
+   * in front of the player's current spawn position (including when resuming at a distant
+   * Trial Peak checkpoint) so the portals are immediately visible on every run.
+   */
+  private ensurePortalsNearSpawn(
+    spawnX: number,
+    spawnZ: number,
+    heading: number,
+    forceApply = false,
+  ): void {
+    const fwdX = Math.sin(heading);
+    const fwdZ = Math.cos(heading);
+    const lookX = spawnX + fwdX * 14;
+    const lookZ = spawnZ + fwdZ * 14;
+
+    const hasNearbyPortal = this.formation.props.some(
+      (p) => (p.type === 'portalA' || p.type === 'portalB') && Math.hypot(p.x - lookX, p.z - lookZ) < 16,
+    );
+    if (hasNearbyPortal) {
+      if (forceApply) {
+        this.applyFormationToWorld(false);
+      }
+      return;
+    }
+
+    this.formation.props = this.formation.props.filter(
+      (p) => p.id !== 'spawn-guard-portal-a' && p.id !== 'spawn-guard-portal-b',
+    );
+
+    const pAX = Math.round((spawnX + fwdX * 14) * 10) / 10;
+    const pAZ = Math.round((spawnZ + fwdZ * 14) * 10) / 10;
+    const rightX = Math.cos(heading);
+    const rightZ = -Math.sin(heading);
+    const pBX = Math.round((spawnX + fwdX * 24 + rightX * 10) * 10) / 10;
+    const pBZ = Math.round((spawnZ + fwdZ * 24 + rightZ * 10) * 10) / 10;
+
+    if (isInWorldBounds(pAX, pAZ) && !isDeepWater(pAX, pAZ, this.formation.biome)) {
+      this.formation.props.push({
+        id: 'spawn-guard-portal-a',
+        type: 'portalA',
+        x: pAX,
+        z: pAZ,
+      });
+    }
+    if (isInWorldBounds(pBX, pBZ) && !isDeepWater(pBX, pBZ, this.formation.biome)) {
+      this.formation.props.push({
+        id: 'spawn-guard-portal-b',
+        type: 'portalB',
+        x: pBX,
+        z: pBZ,
+      });
+    }
+    this.applyFormationToWorld(false);
+  }
+
+  public getActivePortalCount(): number {
+    let count = 0;
+    for (const p of this.formation.props) {
+      if (p.type === 'portalA' || p.type === 'portalB') count++;
+    }
+    return count;
+  }
+
+  /**
+   * Dynamically shifts the completed portal and a wave of additional portals to fresh
+   * coordinates across the 3D continent, rebuilding meshes/lights, spawning rift bursts,
+   * refreshing the minimap, and pointing the next quick-warp at a freshly shifted portal.
+   */
+  public shiftPortalsAfterMissionCompletion(
+    completedPortalKey?: string,
+    soulAwarded = false,
+  ): PortalShiftResult {
+    this.portalShiftSeq += 1;
+    const result = shiftPortalsAfterMission(this.formation.props, this.formation.biome, {
+      completedPortalKey,
+      playerX: this.headX,
+      playerZ: this.headZ,
+      shiftWaveCount: 5,
+      targetPortalCount: PORTAL_NETWORK_TARGET_COUNT,
+      shiftSequence: this.portalShiftSeq,
+    });
+
+    if (result.shifted.length > 0) {
+      this.formation.props = result.nextProps;
+      this.applyFormationToWorld(false);
+
+      // Spawn dimensional collapse bursts at departing coordinates & arrival bursts at new coordinates
+      for (const entry of result.shifted) {
+        const oldY = terrainHeightAt(entry.oldX, entry.oldZ, this.formation.biome);
+        const newY = terrainHeightAt(entry.newX, entry.newZ, this.formation.biome);
+        const colorHex = entry.type === 'portalA' ? 0x2de3ff : 0xff6be0;
+        this.world.spawnBurst(entry.oldX, oldY + 2.2, entry.oldZ, 0xc084fc, 18);
+        this.world.spawnBurst(entry.newX, newY + 2.6, entry.newZ, colorHex, 24);
+      }
+
+      // Aim quick-warp at one of the newly materialized portals so players can jump straight into fresh trials
+      const freshTarget = result.shifted[0];
+      if (freshTarget) {
+        this.pendingPortalWarp = {
+          x: freshTarget.newX,
+          z: freshTarget.newZ,
+          variant: freshTarget.type === 'portalB' ? 'B' : 'A',
+        };
+        const originY = terrainHeightAt(freshTarget.oldX, freshTarget.oldZ, this.formation.biome);
+        this.world.triggerPortalShiftRipple({
+          worldOrigin: { x: freshTarget.oldX, y: originY + 2.4, z: freshTarget.oldZ },
+          soulAwarded,
+          intensity: soulAwarded ? 1.15 : 0.98,
+          durationSec: 1.5,
+        });
+      } else {
+        this.world.triggerPortalShiftRipple({ soulAwarded, intensity: 0.95, durationSec: 1.45 });
+      }
+      this.sound.playPortalShiftRipple(soulAwarded);
+      this.emitMinimap();
+    }
+
+    return result;
+  }
+
+  /**
+   * Plays a crisp 3D WebGL emergence screen ripple centered toward the newly relocated portal
+   * as the player exits the Portal Trial overlay back into the mountain world.
+   */
+  public triggerPortalReemergenceRipple(newX: number, newZ: number, soulAwarded = false): void {
+    const newY = terrainHeightAt(newX, newZ, this.formation.biome);
+    this.world.triggerPortalShiftRipple({
+      worldOrigin: { x: newX, y: newY + 2.6, z: newZ },
+      soulAwarded,
+      intensity: soulAwarded ? 1.05 : 0.92,
+      durationSec: 1.32,
+    });
+  }
+
+  public grantPortalMissionReward(
+    mission: Pick<PortalMissionDef, 'id' | 'title' | 'floorNumber' | 'xpReward'>,
+    soulAwarded: boolean,
+    completedPortalKey?: string,
+  ): { shiftResult: PortalShiftResult; lootDrop: PortalLootDrop; awardedXp: number } {
+    const lootDrop = this.portalLoot.claimMissionLoot(mission, {
+      speedPreset: this.speedPreset,
+      weather: this.weather,
+      level: this.level,
+    });
+    const baseBonusXp = Math.max(80, Math.round(mission.xpReward));
+    const effectiveMult = this.portalLoot.getEffectiveCultivationMultiplier();
+    const awardedXp = Math.round(baseBonusXp * effectiveMult);
+    // Pass baseBonusXp into awardXp which applies the newly activated multiplier cleanly
+    this.awardXp(baseBonusXp);
+    this.score += awardedXp;
+    this.hp = Math.min(this.maxHp, this.hp + this.maxHp * 0.32);
+    this.qi = Math.min(this.maxQi, this.qi + this.maxQi * 0.45);
+    this.stamina = Math.min(1, this.stamina + 0.5);
+    this.world.spawnBurst(
+      this.headX,
+      this.headY + 1.4,
+      this.headZ,
+      soulAwarded ? 0xffe066 : 0x38bdf8,
+      36,
+    );
+    this.portalBrowser.markPortalVisitCompleted(completedPortalKey);
+    const shiftResult = this.shiftPortalsAfterMissionCompletion(completedPortalKey, soulAwarded);
+    const shiftCount = shiftResult.shifted.length;
+    this.sound.playPortal();
+    this.sound.playLootDropChime(lootDrop.highestRarity);
+    const matSummary = lootDrop.materials.map((m) => `${m.quantity}× ${m.name}`).join(', ');
+    this.onToast(
+      soulAwarded
+        ? `Soul Claimed (${this.portalMissions.getCollectedSouls()}/14) · ${lootDrop.multiplierReward.multiplier.toFixed(2)}× Cultivation · ${matSummary} · ${shiftCount} Portals Shifted`
+        : `${mission.title} Cleared (+${awardedXp} XP) · ${lootDrop.multiplierReward.multiplier.toFixed(2)}× Cultivation · ${matSummary}`,
+    );
+    this.emitHud();
+    return { shiftResult, lootDrop, awardedXp };
+  }
+
+  public refinePortalLootRecipe(recipeId: string): boolean {
+    const res = this.portalLoot.refineMaterials(recipeId);
+    if (!res.ok || !res.buff || !res.recipe) return false;
+    this.sound.playLootDropChime(res.buff.rarity);
+    this.onToast(
+      `Refined ${res.buff.name}: ${res.buff.multiplier.toFixed(2)}× cultivation speed active!`,
+    );
+    this.emitHud();
+    return true;
+  }
+
+  public openPortalBrowserOverlay(preferredVariant?: PortalVariant): void {
+    let variant: PortalVariant = preferredVariant ?? 'A';
+    let bestDist = Infinity;
+    let nearestPortal: FormationProp | null = null;
+    for (const p of this.formation.props) {
+      if (p.type !== 'portalA' && p.type !== 'portalB') continue;
+      const d = Math.hypot(p.x - this.headX, p.z - this.headZ);
+      if (d < bestDist) {
+        bestDist = d;
+        nearestPortal = p;
+      }
+    }
+    if (!preferredVariant && nearestPortal) {
+      variant = nearestPortal.type === 'portalB' ? 'B' : 'A';
+    }
+    const dest = this.findNextPortalDestination(
+      nearestPortal ? nearestPortal.x : this.headX,
+      nearestPortal ? nearestPortal.z : this.headZ,
+      variant,
+    );
+    const portalKey = nearestPortal ? nearestPortal.id : `portal-hotkey-${variant}`;
+    if (nearestPortal) {
+      const m = this.portalMissions.getMissionForPortal(nearestPortal.id);
+      this.portalBrowser.recordPortalVisit({
+        portalId: nearestPortal.id,
+        variant,
+        x: nearestPortal.x,
+        z: nearestPortal.z,
+        floorNumber: m.floorNumber,
+        missionTitle: m.title,
+        completed: this.portalMissions.isPortalCompleted(nearestPortal.id),
+      });
+    }
+    this.pendingPortalWarp = dest ? { x: dest.x, z: dest.z, variant } : null;
+    this.portalBrowser.setActivePortalVariant(variant);
+    this.sound.playPortal();
+    this.onPortalBrowserOpen?.(variant, Boolean(dest), portalKey);
+  }
+
+  private updatePortalTemporalDroneAudio(): void {
+    if (this.mode !== 'playing' && this.mode !== 'title') {
+      this.sound.setPortalProximity(Infinity, 'A', 0);
+      return;
+    }
+    let minDist = Infinity;
+    let nearestVariant: PortalVariant = 'A';
+    let nearestX = 0;
+    let nearestZ = 0;
+    for (const prop of this.formation.props) {
+      if (prop.type !== 'portalA' && prop.type !== 'portalB') continue;
+      const d = Math.hypot(this.headX - prop.x, this.headZ - prop.z);
+      if (d < minDist) {
+        minDist = d;
+        nearestVariant = prop.type === 'portalB' ? 'B' : 'A';
+        nearestX = prop.x;
+        nearestZ = prop.z;
+      }
+    }
+    if (!Number.isFinite(minDist)) {
+      this.sound.setPortalProximity(Infinity, 'A', 0);
+      return;
+    }
+    const worldAngle = Math.atan2(nearestX - this.headX, nearestZ - this.headZ);
+    const relBearing = ((worldAngle - this.heading + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
+    const stereoPan = Math.sin(relBearing);
+    this.sound.setPortalProximity(minDist, nearestVariant, stereoPan);
   }
 
   private rebuildInitialPathHistory(): void {
@@ -1955,7 +2574,8 @@ export class SnakeGameController {
 
   private awardXp(amount: number): void {
     if (amount <= 0) return;
-    this.xp += Math.round(amount);
+    const mult = this.portalLoot.getEffectiveCultivationMultiplier();
+    this.xp += Math.round(amount * mult);
     this.checkEvolutionProgress();
     this.persistJourney();
   }
@@ -2134,12 +2754,16 @@ export class SnakeGameController {
       this.level,
       nextLm ? nextLm.id : null,
       this.fissures,
+      this.getGlobalRankingPortalState(),
     );
+    this.world.syncSoulSentries(this.soulSentries, dt);
+    this.world.setStealthVisual(this.mode === 'playing' && this.isStealthActive(), dt);
 
     const altNorm = Math.max(0, Math.min(1, (this.headY - 2) / 52));
     this.world.setWeatherContext(altNorm, this.isSheltered);
     this.sound.setAltitudeFactor(altNorm);
     this.sound.setRainIntensity(this.world.getLiveRainIntensity());
+    this.updatePortalTemporalDroneAudio();
     const lightningStrike = this.world.consumeLightningStrike();
     if (lightningStrike > 0) {
       this.sound.playLightningThunder(lightningStrike);
@@ -2188,6 +2812,15 @@ export class SnakeGameController {
     }
     if (this.boostPadTimer > 0) this.boostPadTimer = Math.max(0, this.boostPadTimer - dt);
     if (this.portalCooldown > 0) this.portalCooldown = Math.max(0, this.portalCooldown - dt);
+    if (this.globalRankingPortalTriggerCooldown > 0) {
+      this.globalRankingPortalTriggerCooldown = Math.max(0, this.globalRankingPortalTriggerCooldown - dt);
+    }
+    this.portalMissions.tickClock(dt);
+    const buffExpired = this.portalLoot.tick(dt);
+    if (buffExpired) {
+      this.onToast('Cultivation speed elixir has faded. Clear a Portal Trial or refine materials to renew it.');
+    }
+    this.updateGlobalRankingPortalSchedule(dt);
     if (this.grazeCooldown > 0) this.grazeCooldown = Math.max(0, this.grazeCooldown - dt);
     if (this.invulnTimer > 0) this.invulnTimer = Math.max(0, this.invulnTimer - dt);
     if (this.hurtInvuln > 0) this.hurtInvuln = Math.max(0, this.hurtInvuln - dt);
@@ -2202,9 +2835,16 @@ export class SnakeGameController {
       this.lastEngagedTimer = Math.max(0, this.lastEngagedTimer - dt);
       if (this.lastEngagedTimer === 0) this.lastEngagedBeastId = null;
     }
+    if (this.recentSpellPulse > 0) {
+      this.recentSpellPulse = Math.max(0, this.recentSpellPulse - dt * 0.9);
+    }
+    if (this.sentryLockToastCd > 0) {
+      this.sentryLockToastCd = Math.max(0, this.sentryLockToastCd - dt);
+    }
 
-    // Dou Qi passive cultivation regeneration
-    const qiRegenRate = 8.5 + this.level * 0.7;
+    // Dou Qi passive cultivation regeneration (accelerated by active Portal Loot cultivation multiplier)
+    const cultMult = this.portalLoot.getEffectiveCultivationMultiplier();
+    const qiRegenRate = (8.5 + this.level * 0.7) * Math.min(2.2, 1 + (cultMult - 1) * 0.55);
     this.qi = Math.min(this.maxQi, this.qi + qiRegenRate * dt);
 
     // Check if player is sheltered inside any conquered Trial Peak Shrine sanctuary
@@ -2293,8 +2933,9 @@ export class SnakeGameController {
       (targetSteerRate - this.currentSteerRate) * (1 - Math.exp(-steerLambda * dt));
     this.heading += this.currentSteerRate * dt;
 
-    // 2. Stamina & boost calculation
-    const usingManualBoost = this.boostHeld && this.stamina > 0.04;
+    // 2. Stamina & boost calculation (Veil of Shadow suppresses loud sprint boost)
+    const stealthActive = this.isStealthActive();
+    const usingManualBoost = !stealthActive && this.boostHeld && this.stamina > 0.04;
     if (usingManualBoost) {
       this.stamina = Math.max(0, this.stamina - (dt * 0.21) / stage.staminaBonus);
     } else {
@@ -2339,6 +2980,8 @@ export class SnakeGameController {
       targetSpeed *= 1.34;
     } else if (this.brakeHeld) {
       targetSpeed *= 0.46;
+    } else if (stealthActive) {
+      targetSpeed *= 0.72;
     }
 
     this.currentSpeed += (targetSpeed - this.currentSpeed) * (1 - Math.exp(-4.2 * dt));
@@ -2445,9 +3088,11 @@ export class SnakeGameController {
     const boulderHit = this.updateRollingBoulders(dt, this.invulnTimer <= 0);
     if (boulderHit) return;
 
-    // 9b. Update Roaming Wild Beasts, Spell Projectiles & Expanding Shockwaves
+    // 9b. Update Roaming Wild Beasts, Patrolling Soul Clan Sentries, Spell Projectiles & Expanding Shockwaves
     const beastFatal = this.updateBeasts(dt, true, boostActive);
     if (beastFatal || this.mode !== 'playing') return;
+
+    this.updateSoulSentries(dt, boostActive);
 
     const spellFatal = this.updateProjectilesAndShockwaves(dt);
     if (spellFatal || this.mode !== 'playing') return;
@@ -2530,8 +3175,50 @@ export class SnakeGameController {
           this.sound.playBoost();
           this.world.spawnBurst(this.headX, this.headY + 0.6, this.headZ, 0xffe066, 16);
         }
-      } else if ((prop.type === 'portalA' || prop.type === 'portalB') && d < 4.2 && this.portalCooldown <= 0) {
+      } else if ((prop.type === 'portalA' || prop.type === 'portalB') && d < 5.2 && this.portalCooldown <= 0) {
+        const guardingSentry = this.soulSentries.find(
+          (s) => s.portalId === prop.id && s.patrolMode !== 'banished',
+        );
+        if (guardingSentry && (guardingSentry.portalLockTimer > 0 || guardingSentry.patrolMode === 'alert')) {
+          // Portal is sealed by an alerted Soul Clan Sentry — deflect player back until banished or lock expires
+          const pushDx = this.headX - prop.x;
+          const pushDz = this.headZ - prop.z;
+          const pushLen = Math.hypot(pushDx, pushDz) || 1;
+          this.headX = prop.x + (pushDx / pushLen) * 5.8;
+          this.headZ = prop.z + (pushDz / pushLen) * 5.8;
+          this.headY = terrainHeightAt(this.headX, this.headZ, this.formation.biome);
+          if (this.sentryLockToastCd <= 0) {
+            this.sentryLockToastCd = 2.4;
+            this.sound.playSentryAlertBell();
+            this.world.spawnBurst(this.headX, this.headY + 1.2, this.headZ, 0xf43f5e, 14);
+            this.onToast(
+              `Portal sealed by ${guardingSentry.name}! Banish with [Q] Shockwave or wait ${Math.ceil(Math.max(1, guardingSentry.portalLockTimer))}s.`,
+            );
+          }
+          continue;
+        }
+
+        if (guardingSentry) {
+          // Slipped past a live patrolling Soul Clan Sentry undetected!
+          this.addScore(150);
+          this.awardXp(100);
+          this.recordArchiveUnlock(guardingSentry.archetype, 'evade', true, 'sentry');
+          this.recordArchiveUnlock('chronicle_shadow_veil', 'evade', true, 'chronicle');
+          this.onToast(`Shadow Infiltration! Slipped past ${guardingSentry.name} (+100 XP)`);
+        }
+
         const variant: PortalVariant = prop.type === 'portalA' ? 'A' : 'B';
+        if (!this.visitedPortalIds.has(prop.id)) {
+          this.visitedPortalIds.add(prop.id);
+          const portalLoreId = selectPortalLoreEntryId(
+            variant,
+            this.visitedPortalIds.size,
+            this.soulArchiveRecords,
+          );
+          if (portalLoreId) {
+            this.recordArchiveUnlock(portalLoreId, 'encounter', true, 'portal');
+          }
+        }
         const dest = this.findNextPortalDestination(prop.x, prop.z, variant);
         this.portalCooldown = 3.4;
         this.invulnTimer = 1.2;
@@ -2543,20 +3230,193 @@ export class SnakeGameController {
           variant === 'A' ? 0x2de3ff : 0xff6be0,
           28,
         );
+        const enteredMission = this.portalMissions.getMissionForPortal(prop.id);
+        this.portalBrowser.recordPortalVisit({
+          portalId: prop.id,
+          variant,
+          x: prop.x,
+          z: prop.z,
+          floorNumber: enteredMission.floorNumber,
+          missionTitle: enteredMission.title,
+          completed: this.portalMissions.isPortalCompleted(prop.id),
+        });
         this.portalBrowser.setActivePortalVariant(variant);
         if (this.onPortalBrowserOpen) {
           this.pendingPortalWarp = dest ? { x: dest.x, z: dest.z, variant } : null;
           // Nudge serpent past the colossal portal ring so closing the browser doesn't immediately re-trigger
-          this.headX += Math.sin(this.heading) * 4.4;
-          this.headZ += Math.cos(this.heading) * 4.4;
+          this.headX += Math.sin(this.heading) * 5.4;
+          this.headZ += Math.cos(this.heading) * 5.4;
           this.headY = terrainHeightAt(this.headX, this.headZ, this.formation.biome);
-          this.onPortalBrowserOpen(variant, Boolean(dest));
+          this.onPortalBrowserOpen(variant, Boolean(dest), prop.id);
         } else if (dest) {
           this.pendingPortalWarp = { x: dest.x, z: dest.z, variant };
           this.executePendingPortalWarp();
         }
       }
     }
+
+    // Check periodic Sovereign Global Ranking Portal entry trigger
+    if (this.globalRankingPortalActive && this.globalRankingPortalTriggerCooldown <= 0) {
+      const dRank = Math.hypot(
+        this.headX - this.globalRankingPortalX,
+        this.headZ - this.globalRankingPortalZ,
+      );
+      if (dRank < GLOBAL_RANKING_PORTAL_CONFIG.triggerRadius) {
+        this.globalRankingPortalTriggerCooldown = 4.5;
+        this.invulnTimer = Math.max(this.invulnTimer, 1.8);
+        this.sound.playPortal();
+        const rankingLoreId = selectPortalLoreEntryId(
+          'ranking',
+          this.visitedPortalIds.size + 1,
+          this.soulArchiveRecords,
+        );
+        if (rankingLoreId) {
+          this.recordArchiveUnlock(rankingLoreId, 'encounter', true, 'portal');
+        }
+        this.world.spawnBurst(this.headX, this.headY + 1.4, this.headZ, 0xffd55a, 34);
+        this.world.spawnBurst(this.headX, this.headY + 1.1, this.headZ, 0x3de095, 16);
+        // Nudge safely past the sovereign archway so closing the Sanctuary does not immediately re-trigger
+        this.headX += Math.sin(this.heading) * 6.6;
+        this.headZ += Math.cos(this.heading) * 6.6;
+        this.headY = terrainHeightAt(this.headX, this.headZ, this.formation.biome);
+        this.onGlobalRankingPortalOpen?.({
+          enteredViaPortal: true,
+          wave: this.globalRankingPortalWave,
+        });
+      }
+    }
+  }
+
+  private updateGlobalRankingPortalSchedule(dt: number): void {
+    if (!this.globalRankingPortalActive) {
+      this.globalRankingPortalNextSpawn -= dt;
+      if (this.globalRankingPortalNextSpawn <= 0) {
+        this.spawnGlobalRankingPortalWave();
+      }
+      return;
+    }
+
+    this.globalRankingPortalTimeLeft -= dt;
+    if (this.globalRankingPortalTimeLeft <= 0) {
+      this.globalRankingPortalActive = false;
+      this.globalRankingPortalTimeLeft = 0;
+      const minCd = GLOBAL_RANKING_PORTAL_CONFIG.cooldownMinSec;
+      const maxCd = GLOBAL_RANKING_PORTAL_CONFIG.cooldownMaxSec;
+      this.globalRankingPortalNextSpawn = minCd + Math.random() * (maxCd - minCd);
+      this.world.spawnBurst(
+        this.globalRankingPortalX,
+        this.globalRankingPortalY + 2.4,
+        this.globalRankingPortalZ,
+        0xffd55a,
+        28,
+      );
+      this.onToast(
+        `✦ Global Ranking Portal dissolved into the astral clouds · Next manifestation in ${Math.round(this.globalRankingPortalNextSpawn)}s`,
+      );
+      this.emitHud();
+      this.emitMinimap();
+    }
+  }
+
+  private spawnGlobalRankingPortalWave(): void {
+    this.globalRankingPortalWave += 1;
+    const spot = pickGlobalRankingPortalLocation(
+      this.headX,
+      this.headZ,
+      this.formation.biome,
+      this.formation.props,
+      this.globalRankingPortalWave,
+    );
+    this.globalRankingPortalX = spot.x;
+    this.globalRankingPortalZ = spot.z;
+    this.globalRankingPortalY = terrainHeightAt(spot.x, spot.z, this.formation.biome);
+    this.globalRankingPortalActive = true;
+    this.globalRankingPortalDuration = GLOBAL_RANKING_PORTAL_CONFIG.activeDurationSec;
+    this.globalRankingPortalTimeLeft = this.globalRankingPortalDuration;
+    this.globalRankingPortalNextSpawn = 0;
+    this.globalRankingPortalSubmittedWave = false;
+
+    this.sound.playGlobalRankingPortalSpawn();
+    this.world.spawnBurst(spot.x, this.globalRankingPortalY + 2.2, spot.z, 0xffd55a, 48);
+    this.world.spawnBurst(spot.x, this.globalRankingPortalY + 1.5, spot.z, 0x3de095, 22);
+
+    const dist = Math.round(Math.hypot(spot.x - this.headX, spot.z - this.headZ));
+    this.onToast(
+      `👑 GLOBAL RANKING PORTAL (Wave #${this.globalRankingPortalWave}) appeared ${dist}m away (${this.globalRankingPortalDuration}s) — Follow the golden star on radar!`,
+    );
+    this.emitHud();
+    this.emitMinimap();
+  }
+
+  public getGlobalRankingPortalState(): GlobalRankingPortalState {
+    const dx = this.globalRankingPortalX - this.headX;
+    const dz = this.globalRankingPortalZ - this.headZ;
+    const dist = this.globalRankingPortalActive ? Math.hypot(dx, dz) : 0;
+    const absBearing = Math.atan2(dx, dz);
+    const bearingRel = this.globalRankingPortalActive
+      ? ((absBearing - this.heading + Math.PI * 3) % (Math.PI * 2)) - Math.PI
+      : 0;
+    return {
+      active: this.globalRankingPortalActive,
+      wave: this.globalRankingPortalWave,
+      x: this.globalRankingPortalX,
+      z: this.globalRankingPortalZ,
+      y: this.globalRankingPortalY,
+      timeRemainingSec: Math.max(0, this.globalRankingPortalTimeLeft),
+      durationSec: this.globalRankingPortalDuration,
+      nextSpawnInSec: Math.max(0, this.globalRankingPortalNextSpawn),
+      submittedThisWave: this.globalRankingPortalSubmittedWave,
+      distToPlayer: dist,
+      bearingRel,
+    };
+  }
+
+  public getCultivationSubmissionSnapshot(displayName: string): CultivationSubmissionInput {
+    const stage = getStageForLevel(this.level);
+    const magic = getMagicTierForLevel(this.level);
+    const bestiarySnap = this.getBestiarySnapshot();
+    return {
+      displayName,
+      score: Math.max(this.score, this.bestScore),
+      level: this.level,
+      xp: Math.round(this.xp),
+      stageTitle: stage.title,
+      realmName: magic.realmName,
+      shrinesConquered: this.visitedLandmarks.size,
+      soulsCollected: this.portalMissions.getCollectedSouls(),
+      bestiaryCount: bestiarySnap.discoveredCount,
+      isHuman: this.hasAscended || this.level >= MAX_EVOLUTION_LEVEL,
+      biome: this.formation.biome,
+      weather: this.weather,
+      speedPreset: this.speedPreset,
+      portalWave: this.globalRankingPortalWave,
+      preserveHigherRecord: true,
+    };
+  }
+
+  public handleGlobalRankingSubmitted(enteredViaPortal: boolean): { bonusXpAwarded: number } {
+    this.sound.playGlobalRankingSubmit();
+    let bonusXpAwarded = 0;
+    if (
+      (enteredViaPortal || this.globalRankingPortalActive) &&
+      !this.globalRankingPortalSubmittedWave
+    ) {
+      this.globalRankingPortalSubmittedWave = true;
+      bonusXpAwarded = GLOBAL_RANKING_PORTAL_CONFIG.portalSubmissionBonusXp;
+      this.awardXp(bonusXpAwarded);
+      this.score += 200;
+      if (this.score > this.bestScore) {
+        this.bestScore = this.score;
+        this.isNewBest = true;
+        saveBestScore(this.bestScore);
+      }
+      this.world.spawnBurst(this.headX, this.headY + 1.5, this.headZ, 0xffd55a, 32);
+      this.onToast(`👑 Cultivation Inscribed! +${bonusXpAwarded} Essence XP & +200 Score Sovereign Bonus`);
+    } else {
+      this.onToast('👑 Cultivation progress updated on the Global Ranking Stele!');
+    }
+    this.emitHud();
+    return { bonusXpAwarded };
   }
 
   private checkStaticObstacles(grazeThreshold: number): boolean {
@@ -3570,6 +4430,79 @@ export class SnakeGameController {
     return false;
   }
 
+  private updateSoulSentries(dt: number, isBoosting: boolean): void {
+    const isStealth = this.isStealthActive();
+    const isDashing = this.dashActiveTimer > 0;
+    const biome = this.formation.biome;
+
+    for (const sentry of this.soulSentries) {
+      const outcome = stepSoulSentry(
+        sentry,
+        {
+          playerX: this.headX,
+          playerZ: this.headZ,
+          playerSpeed: this.currentSpeed,
+          isStealth,
+          isBoosting,
+          isDashing,
+          recentSpellPulse: this.recentSpellPulse,
+          spellOriginX: this.spellOriginX,
+          spellOriginZ: this.spellOriginZ,
+        },
+        dt,
+      );
+
+      if (outcome.encounteredNow) {
+        this.recordArchiveUnlock(sentry.archetype, 'encounter', true);
+      }
+
+      if (outcome.switchedToSearch) {
+        this.sound.playSentrySearchCue();
+        this.recordArchiveUnlock(sentry.archetype, 'search', false);
+        this.recordArchiveUnlock('chronicle_circular_doctrine', 'search', true);
+      }
+
+      if (outcome.triggeredAlert) {
+        this.sound.playSentryAlertBell();
+        this.world.triggerShake(0.32);
+        this.clanHeatValue = Math.min(100, this.clanHeatValue + 14);
+        const sy = terrainHeightAt(sentry.x, sentry.z, biome) + 2.6;
+        this.world.spawnBurst(sentry.x, sy, sentry.z, 0xf43f5e, 18);
+        this.onToast(
+          `Detected by ${sentry.name}! Portal sealed for 10s — banish with [Q] Shockwave!`,
+        );
+      }
+
+      if (outcome.fireAlertBolt) {
+        const sy = terrainHeightAt(sentry.x, sentry.z, biome) + 2.5;
+        const dx = this.headX - sentry.x;
+        const dz = this.headZ - sentry.z;
+        const dist = Math.hypot(dx, dz) || 1;
+        const spd = 20.5;
+        this.projectiles.push({
+          id: this.nextProjectileId++,
+          fromPlayer: false,
+          x: sentry.x + (dx / dist) * 1.2,
+          y: sy,
+          z: sentry.z + (dz / dist) * 1.2,
+          vx: (dx / dist) * spd,
+          vy: (this.headY + 1.0 - sy) * 0.45,
+          vz: (dz / dist) * spd,
+          radius: 0.56,
+          damage: Math.round(14 + this.level * 1.6),
+          colorHex: 0xc084fc,
+          life: 2.3,
+          maxLife: 2.3,
+          homing: true,
+          style: 'soul_chain',
+        });
+        if (this.projectiles.length > 52) {
+          this.projectiles.shift();
+        }
+      }
+    }
+  }
+
   private updateProjectilesAndShockwaves(dt: number): boolean {
     const biome = this.formation.biome;
 
@@ -3676,6 +4609,30 @@ export class SnakeGameController {
             this.projectiles.splice(i, 1);
             hit = true;
             break;
+          }
+        }
+        if (!hit) {
+          for (const sentry of this.soulSentries) {
+            if (sentry.patrolMode === 'banished') continue;
+            if (Math.hypot(sentry.x - p.x, sentry.z - p.z) <= 1.85 + p.radius) {
+              sentry.hp = Math.max(0, sentry.hp - 1);
+              sentry.suspicion = Math.max(0, sentry.suspicion - 0.35);
+              this.world.spawnBurst(p.x, p.y, p.z, 0xc084fc, 12);
+              this.projectiles.splice(i, 1);
+              hit = true;
+              if (sentry.hp <= 0) {
+                const sy = terrainHeightAt(sentry.x, sentry.z, biome) + 2.4;
+                banishSoulSentry(sentry, 18);
+                this.sound.playSentryBanish();
+                this.world.spawnBurst(sentry.x, sy, sentry.z, 0x3de095, 16);
+                this.addScore(120);
+                this.awardXp(100);
+                this.recordArchiveUnlock(sentry.archetype, 'banish', true);
+                this.recordArchiveUnlock('chronicle_ward_breaking', 'banish', true);
+                this.onToast(`${sentry.name} banished! Portal unsealed (+100 XP)`);
+              }
+              break;
+            }
           }
         }
         if (hit) continue;
@@ -4088,7 +5045,50 @@ export class SnakeGameController {
       difficultyHpMult: stageDiff.hpMultiplier,
       difficultyDamageMult: stageDiff.damageMultiplier,
       difficultyTierLabel: stageDiff.tierLabel,
+      globalRankingPortal: this.getGlobalRankingPortalState(),
+      stealthActive: this.isStealthActive(),
+      nearestSentryAlert: this.computeNearestSentryHudAlert(),
+      soulArchivesUnlockedCount: SOUL_ARCHIVE_CATALOG.reduce(
+        (acc, def) => acc + (this.soulArchiveRecords[def.id]?.unlocked ? 1 : 0),
+        0,
+      ),
+      soulArchivesTotalCount: SOUL_ARCHIVE_CATALOG.length,
+      cultivationMult: this.portalLoot.getEffectiveCultivationMultiplier(),
+      cultivationBuffName: this.portalLoot.getActiveBuff()?.name ?? null,
+      cultivationBuffRemainingSec: Math.ceil(this.portalLoot.getActiveBuff()?.remainingSec ?? 0),
+      permanentResonancePct: this.portalLoot.getPermanentResonancePct(),
+      rareMaterialCount: this.portalLoot.getTotalMaterialCount(),
     });
+  }
+
+  private computeNearestSentryHudAlert(): SentryHudAlert | null {
+    let best: { sentry: SoulSentryEntity; dist: number; priority: number } | null = null;
+    for (const s of this.soulSentries) {
+      if (s.patrolMode === 'banished') continue;
+      const dist = Math.hypot(s.x - this.headX, s.z - this.headZ);
+      const maxRange = s.portalLockTimer > 0 || s.patrolMode === 'alert' ? 44 : 34;
+      if (dist > maxRange) continue;
+      const priority =
+        s.patrolMode === 'alert' || s.portalLockTimer > 0
+          ? 3
+          : s.patrolMode === 'search'
+            ? 2
+            : 1;
+      if (!best || priority > best.priority || (priority === best.priority && dist < best.dist)) {
+        best = { sentry: s, dist, priority };
+      }
+    }
+    if (!best) return null;
+    const s = best.sentry;
+    return {
+      id: s.id,
+      name: s.name,
+      subtitle: s.subtitle,
+      patrolMode: s.patrolMode === 'banished' ? 'circular' : s.patrolMode,
+      suspicion: s.suspicion,
+      dist: Math.round(best.dist),
+      portalLockTimer: Math.max(0, s.portalLockTimer),
+    };
   }
 
   private emitMinimap(): void {
@@ -4129,6 +5129,27 @@ export class SnakeGameController {
         fromPlayer: p.fromPlayer,
       })),
       portals,
+      sentries: this.soulSentries
+        .filter((s) => s.patrolMode !== 'banished')
+        .map(
+          (s): SentryMinimapPoint => ({
+            x: s.x,
+            z: s.z,
+            heading: s.heading,
+            patrolMode: s.patrolMode === 'banished' ? 'circular' : s.patrolMode,
+            visionRange: s.visionRange,
+            visionHalfAngle: s.visionHalfAngle,
+            portalLocked: s.portalLockTimer > 0 || s.patrolMode === 'alert',
+          }),
+        ),
+      globalRankingPortal: this.globalRankingPortalActive
+        ? {
+            x: this.globalRankingPortalX,
+            z: this.globalRankingPortalZ,
+            timeRemainingSec: Math.max(0, this.globalRankingPortalTimeLeft),
+            wave: this.globalRankingPortalWave,
+          }
+        : null,
       visitedLandmarkIds: Array.from(this.visitedLandmarks),
       nextLandmarkId: nextLm ? nextLm.id : null,
     });

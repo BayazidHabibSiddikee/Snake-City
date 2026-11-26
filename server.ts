@@ -326,6 +326,18 @@ async function startServer(): Promise<void> {
       return;
     }
 
+    const uaPreset = typeof req.query.ua === 'string' ? req.query.ua : 'serpent_portal';
+    const UA_PRESETS: Record<string, string> = {
+      serpent_portal:
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 SerpentPeaksPortal/2.4',
+      desktop_chrome:
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+      mobile_chrome:
+        'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36',
+    };
+    const resolvedUserAgent = UA_PRESETS[uaPreset] ?? UA_PRESETS.serpent_portal;
+    const shieldEnabled = req.query.shield !== '0';
+
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 9000);
 
@@ -335,11 +347,11 @@ async function startServer(): Promise<void> {
         redirect: 'follow',
         signal: controller.signal,
         headers: {
-          'User-Agent':
-            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 SerpentPeaksPortal/2.4',
+          'User-Agent': resolvedUserAgent,
           Accept:
             'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
           'Accept-Language': 'en-US,en;q=0.9',
+          ...(shieldEnabled ? { DNT: '1', 'Sec-GPC': '1' } : {}),
         },
       });
 
@@ -390,6 +402,27 @@ async function startServer(): Promise<void> {
         }
       } catch (_) {}
     }, true);
+    document.addEventListener('submit', function(e) {
+      var form = e.target;
+      if (!form || form.tagName !== 'FORM') return;
+      var method = (form.getAttribute('method') || 'get').toLowerCase();
+      if (method !== 'get') return;
+      try {
+        var actionAttr = form.getAttribute('action') || ${JSON.stringify(finalUrl)};
+        var targetUrl = new URL(actionAttr, ${JSON.stringify(finalUrl)});
+        var fd = new FormData(form);
+        fd.forEach(function(val, key) {
+          if (typeof val === 'string') targetUrl.searchParams.set(key, val);
+        });
+        if (targetUrl.protocol === 'http:' || targetUrl.protocol === 'https:') {
+          e.preventDefault();
+          window.parent.postMessage({
+            type: 'SERPENT_PORTAL_NAVIGATE',
+            url: targetUrl.toString()
+          }, '*');
+        }
+      } catch (_) {}
+    }, true);
   } catch (_) {}
 })();
 </script>`;
@@ -398,6 +431,14 @@ async function startServer(): Promise<void> {
       let rewrittenHtml = rawText
         .slice(0, 750000)
         .replace(/<meta[^>]+http-equiv=["']?Content-Security-Policy["']?[^>]*>/gi, '');
+
+      // When Privacy Tracker Shield is enabled, strip common third-party analytics/ad script tags
+      if (shieldEnabled) {
+        rewrittenHtml = rewrittenHtml.replace(
+          /<script[^>]+src=["'][^"']*(?:googletagmanager|google-analytics|doubleclick|googlesyndication|adservice|facebook\.net\/[^"']*fbevents|hotjar|segment\.com\/analytics)[^"']*["'][^>]*>\s*<\/script>/gi,
+          '',
+        );
+      }
 
       if (/<head[^>]*>/i.test(rewrittenHtml)) {
         rewrittenHtml = rewrittenHtml.replace(/<head[^>]*>/i, (match) => `${match}${bridgeScript}`);

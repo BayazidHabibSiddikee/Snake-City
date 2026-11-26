@@ -12,12 +12,12 @@
     "skipLibCheck": true,
     "declaration": false,
     "forceConsistentCasingInFileNames": true,
-    "rootDir": "src",
+    "resolveJsonModule": true,
     "sourceMap": true,
     "importHelpers": true,
     "experimentalDecorators": true,
     "useDefineForClassFields": false,
     "types": ["node"]
   },
-  "include": ["src/**/*.ts", "types.d.ts"]
+  "include": ["src/**/*.ts", "types.d.ts", "firebase-applet-config.json"]
 }

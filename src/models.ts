@@ -540,6 +540,205 @@ export function createPortalBlock(res: ModelResources, variant: 'A' | 'B'): THRE
 }
 
 /**
+ * Composite 12-part Sovereign Imperial Gold & Celestial Jade "Global Ranking" Portal Archway.
+ * Features a stepped obsidian dais, twin golden-jade monolith pillars, counter-rotating
+ * Imperial Gold & Jade astrolabe halos, 6 orbiting Jade Seal tablets, floating Crown Spire,
+ * holographic Global Ranking Stele display, soaring skyward golden beam, and dedicated PointLight.
+ */
+export function createGlobalRankingPortal(res: ModelResources): THREE.Group {
+  const group = new THREE.Group();
+
+  const obsidianMat = new THREE.MeshStandardMaterial({
+    color: 0x161b26,
+    roughness: 0.78,
+    metalness: 0.24,
+  });
+  const imperialGoldMat = new THREE.MeshStandardMaterial({
+    color: 0xf7cf62,
+    emissive: 0x996515,
+    emissiveIntensity: 0.55,
+    roughness: 0.18,
+    metalness: 0.94,
+  });
+  const radiantGoldMat = new THREE.MeshStandardMaterial({
+    color: 0xffe484,
+    emissive: 0xf5b324,
+    emissiveIntensity: 2.1,
+    roughness: 0.15,
+    metalness: 0.35,
+  });
+  const celestialJadeMat = new THREE.MeshStandardMaterial({
+    color: 0x3de095,
+    emissive: 0x10b981,
+    emissiveIntensity: 1.55,
+    roughness: 0.22,
+    metalness: 0.28,
+  });
+
+  // 1. Stepped octagonal obsidian & imperial-gold dais (bottom-center grounded at y = 0)
+  const daisLower = new THREE.Mesh(new THREE.CylinderGeometry(1.18, 1.34, 0.14, 8), obsidianMat);
+  daisLower.position.y = 0.07;
+  group.add(daisLower);
+
+  const daisUpper = new THREE.Mesh(new THREE.CylinderGeometry(0.98, 1.08, 0.1, 8), obsidianMat);
+  daisUpper.position.y = 0.19;
+  group.add(daisUpper);
+
+  // 2. Brushed imperial-gold outer threshold ring + glowing mandala floor disc
+  const baseRing = new THREE.Mesh(new THREE.TorusGeometry(1.06, 0.06, 12, 36), imperialGoldMat);
+  baseRing.rotation.x = Math.PI / 2;
+  baseRing.position.y = 0.24;
+  group.add(baseRing);
+
+  const floorPad = new THREE.Mesh(new THREE.CircleGeometry(0.95, 32), radiantGoldMat);
+  floorPad.rotation.x = -Math.PI / 2;
+  floorPad.position.y = 0.252;
+  group.add(floorPad);
+
+  // 3. Twin triumphal obsidian-gold pillars with celestial jade capitals
+  for (const side of [-1, 1]) {
+    const pillar = new THREE.Mesh(new THREE.CylinderGeometry(0.125, 0.175, 2.2, 6), obsidianMat);
+    pillar.position.set(side * 1.12, 1.18, 0);
+    group.add(pillar);
+
+    const lowerCollar = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.195, 0.14, 6), imperialGoldMat);
+    lowerCollar.position.set(side * 1.12, 0.44, 0);
+    group.add(lowerCollar);
+
+    const upperCollar = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.175, 0.14, 6), imperialGoldMat);
+    upperCollar.position.set(side * 1.12, 1.92, 0);
+    group.add(upperCollar);
+
+    const jadeCap = new THREE.Mesh(new THREE.OctahedronGeometry(0.16, 0), celestialJadeMat);
+    jadeCap.position.set(side * 1.12, 2.38, 0);
+    jadeCap.name = side < 0 ? 'rankingPillarCapL' : 'rankingPillarCapR';
+    group.add(jadeCap);
+  }
+
+  // 4. Giant Vertical Spinning Imperial-Gold Sovereign Halo
+  const outerHalo = new THREE.Mesh(new THREE.TorusGeometry(1.04, 0.075, 14, 40), radiantGoldMat);
+  outerHalo.position.y = 1.38;
+  outerHalo.name = 'rankingOuterHalo';
+  group.add(outerHalo);
+
+  // 5. Counter-rotating Celestial Jade Inner Astrolabe Ring
+  const innerHalo = new THREE.Mesh(new THREE.TorusGeometry(0.86, 0.036, 10, 36), celestialJadeMat);
+  innerHalo.position.y = 1.38;
+  innerHalo.name = 'rankingInnerHalo';
+  group.add(innerHalo);
+
+  // 6. Deep Starry Indigo Void Disc behind the holographic stele
+  const voidMat = new THREE.MeshBasicMaterial({
+    color: 0x0a1024,
+    transparent: true,
+    opacity: 0.9,
+    side: THREE.DoubleSide,
+  });
+  const voidDisc = new THREE.Mesh(new THREE.CircleGeometry(0.85, 32), voidMat);
+  voidDisc.position.set(0, 1.38, -0.03);
+  group.add(voidDisc);
+
+  // 7. Holographic Global Ranking Crown Stele Screen (CanvasTexture applied in WorldEngine)
+  const screenMat = new THREE.MeshBasicMaterial({
+    color: 0xffffff,
+    transparent: true,
+    opacity: 0.97,
+    side: THREE.DoubleSide,
+  });
+  const screenMesh = new THREE.Mesh(new THREE.PlaneGeometry(1.32, 1.1), screenMat);
+  screenMesh.position.set(0, 1.38, 0.01);
+  screenMesh.name = 'rankingSteleScreen';
+  group.add(screenMesh);
+
+  // 8. Six Orbiting Golden-Jade Seal Tablets rotating around the archway
+  const orbitGroup = new THREE.Group();
+  orbitGroup.position.set(0, 1.38, 0);
+  orbitGroup.name = 'rankingOrbitGroup';
+  const sealGeo = new THREE.BoxGeometry(0.24, 0.32, 0.032);
+  const sealTrimGeo = new THREE.BoxGeometry(0.26, 0.045, 0.038);
+  const sealMat = new THREE.MeshStandardMaterial({
+    color: 0x172536,
+    roughness: 0.34,
+    metalness: 0.62,
+  });
+  for (let k = 0; k < 6; k++) {
+    const holder = new THREE.Group();
+    const ang = (k * Math.PI * 2) / 6;
+    holder.position.set(Math.cos(ang) * 0.96, Math.sin(ang) * 0.96, (k % 2 === 0 ? 1 : -1) * 0.16);
+    const tablet = new THREE.Mesh(sealGeo, sealMat);
+    const crest = new THREE.Mesh(sealTrimGeo, k % 2 === 0 ? radiantGoldMat : celestialJadeMat);
+    crest.position.y = 0.13;
+    holder.add(tablet, crest);
+    orbitGroup.add(holder);
+  }
+  group.add(orbitGroup);
+
+  // 9. Floating Celestial Crown Spire hovering above the portal apex
+  const crownSpire = new THREE.Mesh(new THREE.OctahedronGeometry(0.24, 0), radiantGoldMat);
+  crownSpire.position.set(0, 2.74, 0);
+  crownSpire.scale.set(0.85, 1.35, 0.85);
+  crownSpire.name = 'rankingCrownSpire';
+  group.add(crownSpire);
+
+  const crownRing = new THREE.Mesh(new THREE.TorusGeometry(0.38, 0.028, 8, 28), celestialJadeMat);
+  crownRing.rotation.x = Math.PI / 2;
+  crownRing.position.set(0, 2.74, 0);
+  crownRing.name = 'rankingCrownRing';
+  group.add(crownRing);
+
+  // 10. Soaring Imperial Gold Skyward Beacon Pillar (visible across the entire 720m continent)
+  const skyBeamHeight = 24.0;
+  const skyBeamMat = new THREE.MeshBasicMaterial({
+    color: 0xffd55a,
+    transparent: true,
+    opacity: 0.34,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    side: THREE.DoubleSide,
+  });
+  const skyBeam = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.22, 0.78, skyBeamHeight, 14, 1, true),
+    skyBeamMat,
+  );
+  skyBeam.position.y = skyBeamHeight * 0.5 + 1.5;
+  skyBeam.name = 'rankingSkyBeam';
+  group.add(skyBeam);
+
+  // 11. Expanding Ground Aura Ring around the dais
+  const auraRingMat = new THREE.MeshBasicMaterial({
+    color: 0xf7cf62,
+    transparent: true,
+    opacity: 0.45,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    side: THREE.DoubleSide,
+  });
+  const auraRing = new THREE.Mesh(new THREE.RingGeometry(1.16, 1.44, 36), auraRingMat);
+  auraRing.rotation.x = -Math.PI / 2;
+  auraRing.position.y = 0.08;
+  auraRing.name = 'rankingAuraRing';
+  group.add(auraRing);
+
+  // 12. Dedicated Sovereign Golden PointLight at the heart of the archway
+  const portalLight = new THREE.PointLight(0xffd55a, 32, 56, 1.35);
+  portalLight.position.set(0, 1.5, 0);
+  portalLight.castShadow = false;
+  portalLight.name = 'rankingPortalLight';
+  group.add(portalLight);
+
+  enableShadows(group, res.castShadows);
+  floorPad.castShadow = false;
+  voidDisc.castShadow = false;
+  screenMesh.castShadow = false;
+  screenMesh.receiveShadow = false;
+  skyBeam.castShadow = false;
+  skyBeam.receiveShadow = false;
+  auraRing.castShadow = false;
+  auraRing.receiveShadow = false;
+  return group;
+}
+
+/**
  * Composite 4-part Jade/Gold Boost Rune Pad.
  */
 export function createBoostBlock(res: ModelResources): THREE.Group {
@@ -2177,3 +2376,202 @@ export function createTraversalWakeRig(): TraversalWakeRig {
     moteMat,
   };
 }
+
+export interface SoulSentryRig {
+  root: THREE.Group;
+  bodyGroup: THREE.Group;
+  lanternPivot: THREE.Group;
+  haloRing: THREE.Mesh;
+  visionConeMesh: THREE.Mesh;
+  visionConeMat: THREE.MeshBasicMaterial;
+  searchRingMesh: THREE.Mesh;
+  searchRingMat: THREE.MeshBasicMaterial;
+  cloakMat: THREE.MeshStandardMaterial;
+  accentMat: THREE.MeshStandardMaterial;
+  lanternGlowMat: THREE.MeshStandardMaterial;
+}
+
+/**
+ * Composite 10-part 3D Soul Clan Sentry spirit ghost that hovers near portals with
+ * a live projecting spectral vision cone (Circular Violet -> Search Amber -> Alert Crimson).
+ */
+export function createSoulSentryRig(contactShadowMap: THREE.Texture): SoulSentryRig {
+  const root = new THREE.Group();
+  const bodyGroup = new THREE.Group();
+  root.add(bodyGroup);
+
+  const cloakMat = new THREE.MeshStandardMaterial({
+    color: 0x1c1430,
+    roughness: 0.78,
+    metalness: 0.22,
+    flatShading: true,
+    transparent: true,
+    opacity: 0.92,
+  });
+
+  const boneMat = new THREE.MeshStandardMaterial({
+    color: 0xe2e8f0,
+    roughness: 0.34,
+    metalness: 0.2,
+  });
+
+  const ironMat = new THREE.MeshStandardMaterial({
+    color: 0x334155,
+    roughness: 0.42,
+    metalness: 0.82,
+  });
+
+  const accentMat = new THREE.MeshStandardMaterial({
+    color: 0xc084fc,
+    emissive: 0xa855f7,
+    emissiveIntensity: 1.75,
+    roughness: 0.16,
+    metalness: 0.38,
+  });
+
+  const lanternGlowMat = new THREE.MeshStandardMaterial({
+    color: 0xf5d0fe,
+    emissive: 0xc084fc,
+    emissiveIntensity: 2.2,
+    roughness: 0.14,
+    metalness: 0.25,
+  });
+
+  // 1. Tattered floating spectral cloak skirt
+  const cloakSkirt = new THREE.Mesh(new THREE.ConeGeometry(0.76, 1.85, 7, 1, true), cloakMat);
+  cloakSkirt.material.side = THREE.DoubleSide;
+  cloakSkirt.position.set(0, 1.35, 0);
+  bodyGroup.add(cloakSkirt);
+
+  // 2. Sculpted upper mantle & inner void soul core
+  const upperMantle = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.56, 0.95, 6), cloakMat);
+  upperMantle.position.set(0, 2.28, 0);
+  bodyGroup.add(upperMantle);
+
+  const soulCore = new THREE.Mesh(new THREE.OctahedronGeometry(0.26, 0), accentMat);
+  soulCore.position.set(0, 2.25, 0.34);
+  bodyGroup.add(soulCore);
+
+  // 3. Faceted bone shoulder pauldrons
+  const pauldronGeo = new THREE.BoxGeometry(0.42, 0.26, 0.52);
+  for (const side of [-1, 1]) {
+    const p = new THREE.Mesh(pauldronGeo, boneMat);
+    p.position.set(side * 0.54, 2.66, 0);
+    p.rotation.z = side * -0.26;
+    bodyGroup.add(p);
+  }
+
+  // 4. Hooded cowl + horned porcelain spirit mask
+  const hood = new THREE.Mesh(new THREE.ConeGeometry(0.48, 0.88, 6), cloakMat);
+  hood.position.set(0, 3.12, -0.06);
+  hood.rotation.x = 0.22;
+  bodyGroup.add(hood);
+
+  const mask = new THREE.Mesh(new THREE.OctahedronGeometry(0.28, 0), boneMat);
+  mask.scale.set(0.84, 1.15, 0.72);
+  mask.position.set(0, 2.94, 0.28);
+  bodyGroup.add(mask);
+
+  // 5. Twin spectral horn crests & glowing eyes
+  const hornGeo = new THREE.ConeGeometry(0.065, 0.52, 5);
+  const eyeGeo = new THREE.SphereGeometry(0.065, 8, 8);
+  for (const side of [-1, 1]) {
+    const horn = new THREE.Mesh(hornGeo, ironMat);
+    horn.position.set(side * 0.24, 3.44, 0.14);
+    horn.rotation.z = side * -0.34;
+    horn.rotation.x = 0.18;
+    bodyGroup.add(horn);
+
+    const eye = new THREE.Mesh(eyeGeo, lanternGlowMat);
+    eye.position.set(side * 0.11, 2.97, 0.46);
+    bodyGroup.add(eye);
+  }
+
+  // 6. Counter-rotating runic halo behind the hood
+  const haloRing = new THREE.Mesh(new THREE.TorusGeometry(0.74, 0.045, 8, 24), accentMat);
+  haloRing.position.set(0, 2.95, -0.32);
+  bodyGroup.add(haloRing);
+
+  // 7. Chained Soul Bell / Spirit Lantern orbiting the sentry's front flank
+  const lanternPivot = new THREE.Group();
+  lanternPivot.position.set(0.78, 2.45, 0.42);
+  const chainStem = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, 0.44, 6), ironMat);
+  chainStem.position.y = -0.22;
+  const bellCap = new THREE.Mesh(new THREE.ConeGeometry(0.22, 0.26, 6), ironMat);
+  bellCap.position.y = -0.48;
+  const bellFlame = new THREE.Mesh(new THREE.OctahedronGeometry(0.16, 0), lanternGlowMat);
+  bellFlame.position.y = -0.66;
+  lanternPivot.add(chainStem, bellCap, bellFlame);
+  bodyGroup.add(lanternPivot);
+
+  // 8. Grounded spectral contact shadow
+  const shadowGeo = new THREE.PlaneGeometry(2.6, 2.6);
+  shadowGeo.rotateX(-Math.PI / 2);
+  const shadowMat = new THREE.MeshBasicMaterial({
+    map: contactShadowMap,
+    transparent: true,
+    opacity: 0.46,
+    depthWrite: false,
+  });
+  const shadowMesh = new THREE.Mesh(shadowGeo, shadowMat);
+  shadowMesh.position.y = 0.06;
+  root.add(shadowMesh);
+
+  // 9. Projecting Spectral Vision Cone sector (unit radius 1, pointing toward +Z, scaled to visionRange)
+  const coneShape = new THREE.Shape();
+  coneShape.moveTo(0, 0);
+  const halfAng = 0.56;
+  const arcSteps = 18;
+  for (let i = 0; i <= arcSteps; i++) {
+    const a = -halfAng + (i / arcSteps) * (halfAng * 2);
+    // Shape sits in XY; after rotateX(-PI/2), +Y maps to -Z, so use -cos(a) -> +Z after rotation
+    coneShape.lineTo(Math.sin(a), -Math.cos(a));
+  }
+  coneShape.lineTo(0, 0);
+  const visionConeGeo = new THREE.ShapeGeometry(coneShape);
+  visionConeGeo.rotateX(-Math.PI / 2);
+  const visionConeMat = new THREE.MeshBasicMaterial({
+    color: 0xc084fc,
+    transparent: true,
+    opacity: 0.24,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    polygonOffset: true,
+    polygonOffsetFactor: -1,
+    polygonOffsetUnits: -1,
+  });
+  const visionConeMesh = new THREE.Mesh(visionConeGeo, visionConeMat);
+  visionConeMesh.position.y = 0.24;
+  root.add(visionConeMesh);
+
+  // 10. Active Search / Alert radar sweep ring on the ground
+  const searchRingGeo = new THREE.RingGeometry(1.15, 1.48, 28);
+  searchRingGeo.rotateX(-Math.PI / 2);
+  const searchRingMat = new THREE.MeshBasicMaterial({
+    color: 0xf59e0b,
+    transparent: true,
+    opacity: 0,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  });
+  const searchRingMesh = new THREE.Mesh(searchRingGeo, searchRingMat);
+  searchRingMesh.position.y = 0.28;
+  root.add(searchRingMesh);
+
+  return {
+    root,
+    bodyGroup,
+    lanternPivot,
+    haloRing,
+    visionConeMesh,
+    visionConeMat,
+    searchRingMesh,
+    searchRingMat,
+    cloakMat,
+    accentMat,
+    lanternGlowMat,
+  };
+}
+

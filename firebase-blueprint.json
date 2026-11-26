@@ -1,0 +1,129 @@
+{
+  "entities": {
+    "GlobalRankingEntry": {
+      "title": "Global Ranking Entry",
+      "description": "Public cultivation leaderboard record submitted by a player through the periodic Global Ranking Portal. Contains zero PII.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Authenticated Firebase UID matching the document ID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "displayName": {
+          "type": "string",
+          "description": "Public cultivator callsign displayed on the Global Ranking stele.",
+          "minLength": 1,
+          "maxLength": 32,
+          "pattern": "^[a-zA-Z0-9_ \\-'.!()\\[\\]]{1,32}$"
+        },
+        "score": {
+          "type": "number",
+          "description": "Best or submitted run score (0 to 100000000)."
+        },
+        "level": {
+          "type": "number",
+          "description": "Cultivation stage level from 1 (Valley Hatchling) to 12 (Ascended Human)."
+        },
+        "xp": {
+          "type": "number",
+          "description": "Cumulative Essence XP earned across the ascension journey."
+        },
+        "stageTitle": {
+          "type": "string",
+          "description": "Cultivation stage title (e.g., Valley Hatchling, Sovereign Dragon, Ascended Human).",
+          "minLength": 1,
+          "maxLength": 48
+        },
+        "realmName": {
+          "type": "string",
+          "description": "Cultivation realm tier (e.g., Dou Zhe, Dou Ling, Dou Di).",
+          "minLength": 1,
+          "maxLength": 40
+        },
+        "shrinesConquered": {
+          "type": "number",
+          "description": "Number of Trial Peak Shrines conquered (0 to 12)."
+        },
+        "soulsCollected": {
+          "type": "number",
+          "description": "Number of Soul Fragments recovered from Portal Trials (0 to 14)."
+        },
+        "bestiaryCount": {
+          "type": "number",
+          "description": "Number of Bestiary species cataloged (0 to 20)."
+        },
+        "isHuman": {
+          "type": "boolean",
+          "description": "Whether the cultivator has achieved Ascended Human form (Level 12)."
+        },
+        "biome": {
+          "type": "string",
+          "description": "Biome active when the record was inscribed.",
+          "enum": ["jungle", "mountain"],
+          "maxLength": 16
+        },
+        "weather": {
+          "type": "string",
+          "description": "Climate difficulty active when the record was inscribed.",
+          "enum": ["clear", "mist", "fog", "rain", "storm", "blizzard", "ashstorm"],
+          "maxLength": 16
+        },
+        "speedPreset": {
+          "type": "string",
+          "description": "Speed difficulty preset active when inscribed.",
+          "enum": ["chill", "classic", "turbo"],
+          "maxLength": 16
+        },
+        "submissionsCount": {
+          "type": "number",
+          "description": "Total number of portal inscriptions submitted by this cultivator."
+        },
+        "portalWave": {
+          "type": "number",
+          "description": "Global Ranking Portal manifestation wave number during inscription."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the cultivator first inscribed on the Global Ranking stele."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of the latest cultivation inscription."
+        }
+      },
+      "required": [
+        "userId",
+        "displayName",
+        "score",
+        "level",
+        "xp",
+        "stageTitle",
+        "realmName",
+        "shrinesConquered",
+        "soulsCollected",
+        "bestiaryCount",
+        "isHuman",
+        "biome",
+        "weather",
+        "speedPreset",
+        "submissionsCount",
+        "portalWave",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/globalRankings/{userId}": {
+      "schema": {
+        "$ref": "#/entities/GlobalRankingEntry"
+      },
+      "description": "Public Global Ranking leaderboard documents keyed by Firebase Auth UID. Any player may read bounded top entries to compare cultivation progress; only the verified owner may create, update, or remove their own record."
+    }
+  }
+}

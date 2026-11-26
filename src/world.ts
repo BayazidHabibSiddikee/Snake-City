@@ -7,11 +7,13 @@ import {
   BeastRig,
   GroundFissureRig,
   PlayerAuraRig,
+  SoulSentryRig,
   TraversalWakeRig,
   createAscensionAvatar,
   createBeastModel,
   createBoostBlock,
   createFruitModel,
+  createGlobalRankingPortal,
   createGroundFissureVisual,
   createLandmarkShrine,
   createPlayerAuraRig,
@@ -19,11 +21,13 @@ import {
   createRollingBoulder,
   createSerpentHead,
   createSerpentSegment,
+  createSoulSentryRig,
   createTotemBlock,
   createTraversalWakeRig,
   createWallBlock,
   ModelResources,
 } from './models';
+import { SENTRY_ARCHETYPES, SoulSentryEntity } from './sentries';
 import {
   WORLD_LAKES,
   WORLD_LANDMARKS,
@@ -46,6 +50,7 @@ import {
   CollectibleOrb,
   FormationData,
   GameMode,
+  GlobalRankingPortalState,
   GroundFissure,
   MagicProjectile,
   RollingBoulder,
@@ -241,6 +246,132 @@ export function computePortalClimateLightState(
     wave01: Number(wave01.toFixed(4)),
     intensity,
     distance,
+  };
+}
+
+export interface PortalShiftRippleParams {
+  active: boolean;
+  progress: number;
+  radius: number;
+  secondaryRadius: number;
+  amplitude: number;
+  chromaticAberration: number;
+  crestGlow: number;
+  primaryColorHex: number;
+  secondaryColorHex: number;
+}
+
+/**
+ * Pure screen-space refractive ripple envelope solver for mission-completion portal shifts.
+ * Produces an expanding primary wavefront, a delayed harmonic aftershock ring, smooth
+ * attack/decay refraction amplitude, and chromatic crest glow matching DESIGN.md accents.
+ */
+export function computePortalShiftRippleParams(
+  progress01: number,
+  intensity = 1,
+  soulAwarded = false,
+): PortalShiftRippleParams {
+  const p = Math.max(0, Math.min(1, progress01));
+  const clampedIntensity = Math.max(0, Math.min(1.5, intensity));
+  const primaryColorHex = soulAwarded ? 0xf2c14e : 0x58e1ff;
+  const secondaryColorHex = soulAwarded ? 0xc084fc : 0x3de095;
+
+  if (p <= 0.0001 || p >= 0.9999 || clampedIntensity <= 0.0001) {
+    return {
+      active: false,
+      progress: p,
+      radius: p >= 0.9999 ? 1.48 : 0.02,
+      secondaryRadius: p >= 0.9999 ? 1.36 : 0,
+      amplitude: 0,
+      chromaticAberration: 0,
+      crestGlow: 0,
+      primaryColorHex,
+      secondaryColorHex,
+    };
+  }
+
+  // Smooth cubic-like ease-out expansion across the full viewport diagonal
+  const eased = 1 - Math.pow(1 - p, 2.15);
+  const radius = Number((0.02 + eased * 1.46).toFixed(4));
+
+  // Delayed secondary harmonic aftershock wave trailing behind the primary front
+  const secondaryP = Math.max(0, Math.min(1, (p - 0.14) / 0.86));
+  const secondaryEased = secondaryP > 0 ? 1 - Math.pow(1 - secondaryP, 2.0) : 0;
+  const secondaryRadius = Number((secondaryEased * 1.36).toFixed(4));
+
+  // Fast tactile attack (0 -> 0.11) followed by graceful exponential-like decay to 0
+  const attack = Math.min(1, p / 0.11);
+  const decay = Math.pow(1 - p, 1.65);
+  const envelope = attack * decay;
+
+  const amplitude = Number((0.044 * clampedIntensity * envelope).toFixed(5));
+  const chromaticAberration = Number((amplitude * 0.58).toFixed(5));
+  const crestGlow = Number(Math.min(1, 0.94 * clampedIntensity * attack * Math.pow(1 - p, 1.25)).toFixed(4));
+
+  return {
+    active: true,
+    progress: Number(p.toFixed(4)),
+    radius,
+    secondaryRadius,
+    amplitude,
+    chromaticAberration,
+    crestGlow,
+    primaryColorHex,
+    secondaryColorHex,
+  };
+}
+
+export interface FpvCameraPoseParams {
+  eyeHeight: number;
+  forwardOffset: number;
+  lookAheadDist: number;
+  headBobY: number;
+  bankRollRad: number;
+  fovDeg: number;
+}
+
+/**
+ * Pure First-Person View (FPV) camera pose solver scaled across all 12 Serpent-to-Human
+ * evolution stages. Starts at predatory serpent eye-level (~0.92m) and rises to upright
+ * Naga (~1.5m) and Ascended Human eye-level (~2.02m), with speed-driven stride/slither bob,
+ * subtle carving bank roll, and boost FOV expansion.
+ */
+export function computeFpvCameraPose(
+  evolutionLevel: number,
+  speedRatio: number,
+  boostActive: boolean,
+  elapsedSec: number,
+  steerNorm = 0,
+): FpvCameraPoseParams {
+  const stage = getStageForLevel(evolutionLevel);
+  const clampedSpeed = Math.max(0, Math.min(1.6, speedRatio));
+  const clampedSteer = Math.max(-1, Math.min(1, steerNorm));
+
+  // Eye height rises naturally as the serpent evolves upright into a Naga & Ascended Human
+  const eyeHeight = Number(
+    (0.92 + stage.nagaTorsoBlend * 0.56 + stage.legsBlend * 0.54).toFixed(3),
+  );
+  // Sit slightly forward of the head/neck pivot so the avatar's body never clips the near plane,
+  // while keeping the Half-Human right-hand Runic Hand Cannon visible in the lower-right foreground
+  const forwardOffset = Number((stage.humanFaceBlend > 0.25 ? 0.32 : 0.48).toFixed(3));
+  const lookAheadDist = 14.5;
+
+  // Organic slither/stride head-bob
+  const bobFreq = stage.legsBlend > 0.3 ? 8.2 : 6.4;
+  const bobAmp = (stage.legsBlend > 0.3 ? 0.068 : 0.045) * (0.25 + clampedSpeed * 0.75);
+  const headBobY = Number((Math.sin(elapsedSec * bobFreq) * bobAmp).toFixed(4));
+
+  // Subtle carving bank roll into mountain switchbacks
+  const bankRollRad = Number((-clampedSteer * 0.068 * (0.45 + clampedSpeed * 0.55)).toFixed(4));
+  const fovDeg = boostActive ? 85 : 76;
+
+  return {
+    eyeHeight,
+    forwardOffset,
+    lookAheadDist,
+    headBobY,
+    bankRollRad,
+    fovDeg,
   };
 }
 
@@ -815,6 +946,18 @@ export class WorldEngine {
   private frostBufferSize = new THREE.Vector2(0, 0);
   private frostSizeScratch = new THREE.Vector2(0, 0);
 
+  // Dedicated Shader-Based Dimensional Portal Shift Screen Ripple Pass (uses FramebufferTexture)
+  private portalRippleOverlayScene!: THREE.Scene;
+  private portalRippleOverlayMesh!: THREE.Mesh;
+  private portalRippleOverlayMat!: THREE.ShaderMaterial;
+  private portalRippleActive = false;
+  private portalRippleElapsed = 0;
+  private portalRippleDuration = 1.48;
+  private portalRippleIntensity = 1.0;
+  private portalRippleSoulAwarded = false;
+  private portalRippleColorAScratch = new THREE.Color(0x58e1ff);
+  private portalRippleColorBScratch = new THREE.Color(0x3de095);
+
   // Soul Clan Skill VFX: temporary purple screen-space distortion + 3D vortex particle burst
   private soulSkillPulse = 0;
   private soulSkillPhase = 0;
@@ -884,6 +1027,8 @@ export class WorldEngine {
     wraith: [],
     soul_elder: [],
   };
+  private soulSentryPool: SoulSentryRig[] = [];
+  private stealthCloakBlend = 0;
   private groundFissurePool: GroundFissureRig[] = [];
   private projectilePool: Array<{
     group: THREE.Group;
@@ -908,6 +1053,7 @@ export class WorldEngine {
   // Animated player-placed props
   private animatedTotems: Array<{ core: THREE.Object3D; ring: THREE.Object3D; baseY: number }> = [];
   private animatedPortals: Array<{
+    root: THREE.Group;
     halo: THREE.Object3D;
     innerWheel?: THREE.Object3D | null;
     orbitGroup?: THREE.Object3D | null;
@@ -924,6 +1070,26 @@ export class WorldEngine {
   private portalCanvasB: HTMLCanvasElement | null = null;
   private portalTexA: THREE.CanvasTexture | null = null;
   private portalTexB: THREE.CanvasTexture | null = null;
+
+  // Periodic Sovereign "Global Ranking" Portal (pooled 12-part 3D archway)
+  private globalRankingPortalRoot: THREE.Group | null = null;
+  private globalRankingPortalParts: {
+    outerHalo: THREE.Object3D | null;
+    innerHalo: THREE.Object3D | null;
+    orbitGroup: THREE.Object3D | null;
+    crownSpire: THREE.Object3D | null;
+    crownRing: THREE.Object3D | null;
+    skyBeam: THREE.Mesh | null;
+    auraRing: THREE.Mesh | null;
+    portalLight: THREE.PointLight | null;
+    pillarCapL: THREE.Object3D | null;
+    pillarCapR: THREE.Object3D | null;
+    screenMesh: THREE.Mesh | null;
+  } | null = null;
+  private globalRankingPortalScale = 0.001;
+  private globalRankingCanvas: HTMLCanvasElement | null = null;
+  private globalRankingTex: THREE.CanvasTexture | null = null;
+  private globalRankingTexAccum = 0;
 
   // Builder hover ghost & raycaster
   private hoverGhost!: THREE.Group;
@@ -984,6 +1150,7 @@ export class WorldEngine {
   private gunScreenShakeVelY = 0;
   private gunScreenRoll = 0;
   private gunScreenRollVel = 0;
+  private fpvBankRoll = 0;
   private gunScreenFovKick = 0;
   private gunScreenPulse = 0;
   private gunShotParity = 1;
@@ -1035,7 +1202,7 @@ export class WorldEngine {
       (container.clientWidth || window.innerWidth) /
         Math.max(1, container.clientHeight || window.innerHeight),
       0.2,
-      940,
+      1500,
     );
     this.camera.position.set(0, 18, 26);
 
@@ -2846,6 +3013,120 @@ export class WorldEngine {
     this.frostOverlayMesh = new THREE.Mesh(frostGeo, this.frostOverlayMat);
     this.frostOverlayMesh.frustumCulled = false;
     this.frostOverlayScene.add(this.frostOverlayMesh);
+
+    // 7. Dedicated Shader-Based Dimensional Portal Shift Screen Ripple Pass
+    this.portalRippleOverlayScene = new THREE.Scene();
+    this.portalRippleOverlayMat = new THREE.ShaderMaterial({
+      uniforms: {
+        tScene: { value: null },
+        uHasSceneTex: { value: 0 },
+        uTime: { value: 0 },
+        uAspect: { value: w / h },
+        uCenter: { value: new THREE.Vector2(0.5, 0.5) },
+        uProgress: { value: 0 },
+        uRadius: { value: 0.02 },
+        uSecondaryRadius: { value: 0 },
+        uAmplitude: { value: 0 },
+        uChromatic: { value: 0 },
+        uCrestGlow: { value: 0 },
+        uColorA: { value: new THREE.Color(0x58e1ff) },
+        uColorB: { value: new THREE.Color(0x3de095) },
+      },
+      vertexShader: `
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          gl_Position = vec4(position.xy, 0.0, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform sampler2D tScene;
+        uniform float uHasSceneTex;
+        uniform float uTime;
+        uniform float uAspect;
+        uniform vec2 uCenter;
+        uniform float uProgress;
+        uniform float uRadius;
+        uniform float uSecondaryRadius;
+        uniform float uAmplitude;
+        uniform float uChromatic;
+        uniform float uCrestGlow;
+        uniform vec3 uColorA;
+        uniform vec3 uColorB;
+
+        varying vec2 vUv;
+
+        void main() {
+          if (uAmplitude <= 0.00015 && uCrestGlow <= 0.001) discard;
+
+          vec2 delta = vUv - uCenter;
+          vec2 aspectDelta = vec2(delta.x * uAspect, delta.y);
+          float dist = length(aspectDelta);
+          float angle = atan(aspectDelta.y, aspectDelta.x);
+          vec2 dir = dist > 0.0005 ? normalize(delta) : vec2(0.0, 0.0);
+
+          // Subtle organic angular modulation so the shockwave feels like liquid starlight
+          float angularShimmer = 0.86 + 0.14 * sin(angle * 7.0 + uTime * 5.2) * cos(angle * 3.0 - uTime * 3.1);
+
+          // Primary concentric refractive wave ring
+          float d1 = dist - uRadius;
+          float env1 = exp(-(d1 * d1) / 0.0125);
+          float wave1 = sin(d1 * 44.0 - uProgress * 7.5) * env1;
+          float crest1 = exp(-(d1 * d1) / 0.0019) * angularShimmer;
+
+          // Secondary harmonic aftershock wave ring trailing behind the primary front
+          float d2 = dist - uSecondaryRadius;
+          float secGate = smoothstep(0.01, 0.09, uSecondaryRadius);
+          float env2 = exp(-(d2 * d2) / 0.0095) * secGate;
+          float wave2 = sin(d2 * 56.0 - uProgress * 10.0) * env2 * 0.56;
+          float crest2 = exp(-(d2 * d2) / 0.0015) * secGate * 0.62 * angularShimmer;
+
+          float combinedWave = wave1 + wave2;
+          float combinedCrest = clamp(crest1 + crest2, 0.0, 1.0);
+          float bandMask = clamp(env1 + env2 * 0.72, 0.0, 1.0);
+
+          if (bandMask <= 0.004 && combinedCrest <= 0.004) discard;
+
+          vec3 iridescent = mix(uColorA, uColorB, 0.5 + 0.5 * sin(angle * 2.0 + dist * 14.0 - uTime * 4.5));
+
+          if (uHasSceneTex > 0.5) {
+            // Physical radial lens displacement + subtle prismatic RGB dispersion along the wave crest
+            vec2 offset = dir * combinedWave * uAmplitude * vec2(1.0 / max(0.5, uAspect), 1.0);
+            vec2 caOffset = dir * (crest1 + crest2 * 0.7) * uChromatic * vec2(1.0 / max(0.5, uAspect), 1.0);
+
+            vec2 uvR = clamp(vUv + offset + caOffset, vec2(0.002), vec2(0.998));
+            vec2 uvG = clamp(vUv + offset, vec2(0.002), vec2(0.998));
+            vec2 uvB = clamp(vUv + offset - caOffset, vec2(0.002), vec2(0.998));
+
+            vec3 refracted = vec3(
+              texture2D(tScene, uvR).r,
+              texture2D(tScene, uvG).g,
+              texture2D(tScene, uvB).b
+            );
+
+            // Specular luminous shimmer hugging the wavefront crest
+            float highlight = combinedCrest * uCrestGlow * 0.52;
+            float specularEdge = pow(combinedCrest, 2.4) * uCrestGlow * 0.35;
+            vec3 finalRgb = refracted + iridescent * highlight + vec3(1.0, 0.98, 0.94) * specularEdge;
+            float alpha = clamp(smoothstep(0.004, 0.22, bandMask) * 0.98, 0.0, 1.0);
+            gl_FragColor = vec4(finalRgb, alpha);
+          } else {
+            // Software WebGL fallback: crisp translucent concentric dimensional wavefront rings
+            float ringAlpha = clamp((combinedCrest * 0.56 + bandMask * 0.14) * uCrestGlow, 0.0, 0.72);
+            vec3 ringCol = mix(iridescent, vec3(1.0, 0.99, 0.95), pow(combinedCrest, 2.2) * 0.45);
+            gl_FragColor = vec4(ringCol, ringAlpha);
+          }
+        }
+      `,
+      transparent: true,
+      depthTest: false,
+      depthWrite: false,
+    });
+
+    const portalRippleGeo = new THREE.PlaneGeometry(2, 2);
+    this.portalRippleOverlayMesh = new THREE.Mesh(portalRippleGeo, this.portalRippleOverlayMat);
+    this.portalRippleOverlayMesh.frustumCulled = false;
+    this.portalRippleOverlayScene.add(this.portalRippleOverlayMesh);
   }
 
   private ensureFrostFrameTexture(): THREE.FramebufferTexture {
@@ -3556,9 +3837,9 @@ export class WorldEngine {
 
     const isJungle = this.biome === 'jungle';
 
-    // 1. Colossal Explorable 3D Mountain Continent (680 x 680 units, 220 x 220 resolution)
-    const terrainSize = 680;
-    const terrainSegs = this.isSoftwareGl ? 124 : 220;
+    // 1. Colossal Explorable 3D Mountain Continent (960 x 960 units covering 720m playable diameter)
+    const terrainSize = WORLD_PLAY_RADIUS * 2 + 240;
+    const terrainSegs = this.isSoftwareGl ? 136 : 244;
     const terrainGeo = new THREE.PlaneGeometry(terrainSize, terrainSize, terrainSegs, terrainSegs);
     terrainGeo.rotateX(-Math.PI / 2);
 
@@ -3613,7 +3894,7 @@ export class WorldEngine {
     terrainGeo.computeVertexNormals();
 
     const terrainTex = createTerrainTexture(this.biome, this.maxAnisotropy);
-    terrainTex.repeat.set(64, 64);
+    terrainTex.repeat.set(92, 92);
     const terrainMat = new THREE.MeshStandardMaterial({
       map: terrainTex,
       vertexColors: true,
@@ -3655,10 +3936,10 @@ export class WorldEngine {
     };
 
     const treePlacements: Array<{ x: number; y: number; z: number; s: number; rot: number; tint: number }> = [];
-    const targetTrees = this.isSoftwareGl ? 360 : 740;
+    const targetTrees = this.isSoftwareGl ? 460 : 960;
 
     let attempts = 0;
-    while (treePlacements.length < targetTrees && attempts < 12000) {
+    while (treePlacements.length < targetTrees && attempts < 18000) {
       attempts++;
       const angle = rand() * Math.PI * 2;
       const dist = 14 + Math.sqrt(rand()) * (WORLD_PLAY_RADIUS + 26);
@@ -3884,7 +4165,7 @@ export class WorldEngine {
       } else if (prop.type === 'portalA' || prop.type === 'portalB') {
         const variant = prop.type === 'portalA' ? 'A' : 'B';
         block = createPortalBlock(res, variant);
-        block.scale.setScalar(3.4);
+        block.scale.setScalar(4.2);
         const halo = block.getObjectByName('portalHalo');
         const innerWheel = block.getObjectByName('portalInnerWheel');
         const orbitGroup = block.getObjectByName('portalOrbitGroup');
@@ -3906,6 +4187,7 @@ export class WorldEngine {
         }
         if (halo && s1 && s2) {
           this.animatedPortals.push({
+            root: block,
             halo,
             innerWheel,
             orbitGroup,
@@ -4027,6 +4309,7 @@ export class WorldEngine {
     evolutionLevel = 1,
     nextLandmarkId: string | null = null,
     fissures: GroundFissure[] = [],
+    globalRankingPortal: GlobalRankingPortalState | null = null,
   ): void {
     this.elapsed += dt;
     this.activeEvolutionLevel = evolutionLevel;
@@ -4048,7 +4331,8 @@ export class WorldEngine {
     const isAshTraversal =
       (snake.traversalClimate ?? this.weather) === 'ashstorm';
 
-    const showSerpentHead = stage.humanFaceBlend < 0.85 && stage.serpentScale > 0.05;
+    const isFpvActive = cameraMode === 'fpv' && gameMode === 'playing';
+    const showSerpentHead = !isFpvActive && stage.humanFaceBlend < 0.85 && stage.serpentScale > 0.05;
     this.snakeHeadGroup.visible = showSerpentHead;
     if (showSerpentHead) {
       const headScale = stage.serpentScale * (1 - stage.humanFaceBlend * 0.45);
@@ -4111,7 +4395,7 @@ export class WorldEngine {
     const bodyScaleBase = Math.max(0.55, stage.serpentScale);
     for (let i = 0; i < MAX_SNAKE_SEGMENTS; i++) {
       const segMesh = this.snakeBodyPool[i];
-      if (i >= segCount) {
+      if (i >= segCount || (isFpvActive && i < 2)) {
         segMesh.visible = false;
         continue;
       }
@@ -4321,15 +4605,15 @@ export class WorldEngine {
       _color.setHex(stage.humanFaceBlend > 0.65 ? 0xe6b992 : 0x74b898);
       rig.skinMat.color.lerp(_color, 1 - Math.exp(-4 * dt));
 
-      // Human head emerges at Lv 8+
-      rig.humanHeadGroup.visible = stage.humanFaceBlend > 0.15;
+      // Human head emerges at Lv 8+ (hidden in FPV to avoid self-head clipping while keeping right-hand gun visible!)
+      rig.humanHeadGroup.visible = !isFpvActive && stage.humanFaceBlend > 0.15;
       if (rig.humanHeadGroup.visible) {
         rig.humanHeadGroup.scale.setScalar(0.55 + stage.humanFaceBlend * 0.48);
         rig.humanHeadGroup.rotation.y = Math.sin(t * 1.4) * 0.06;
       }
 
       // Cloak appears on Naga & Human forms and billows back with speed + storm gusts
-      rig.cloak.visible = stage.nagaTorsoBlend >= 0.8;
+      rig.cloak.visible = !isFpvActive && stage.nagaTorsoBlend >= 0.8;
       if (rig.cloak.visible) {
         rig.cloak.rotation.x =
           0.18 +
@@ -4356,7 +4640,7 @@ export class WorldEngine {
       }
 
       // Golden Ascension Halo
-      rig.auraRing.visible = stage.auraIntensity > 0.2;
+      rig.auraRing.visible = !isFpvActive && stage.auraIntensity > 0.2;
       if (rig.auraRing.visible) {
         rig.auraRing.rotation.z = t * 1.1;
         rig.auraRing.scale.setScalar(0.65 + stage.auraIntensity * 0.5);
@@ -4683,17 +4967,53 @@ export class WorldEngine {
       tm.ring.rotation.z = -t * 1.5;
     }
     const portalLightLerp = 1 - Math.exp(-5.5 * dt);
+    // Keep dynamic Three.js PointLights active on the 6 nearest portals so 28+ colossal portals
+    // across the expanded 720m continent stay 60fps without exceeding WebGL uniform limits!
+    const nearestPortalIndices = new Set<number>();
+    if (this.animatedPortals.length <= 6) {
+      for (let i = 0; i < this.animatedPortals.length; i++) nearestPortalIndices.add(i);
+    } else {
+      const ranked: Array<{ idx: number; d2: number }> = [];
+      for (let i = 0; i < this.animatedPortals.length; i++) {
+        const root = this.animatedPortals[i].root;
+        const dx = snake.head.x - (root ? root.position.x : 0);
+        const dz = snake.head.z - (root ? root.position.z : 0);
+        ranked.push({ idx: i, d2: dx * dx + dz * dz });
+      }
+      ranked.sort((a, b) => a.d2 - b.d2);
+      for (let k = 0; k < Math.min(6, ranked.length); k++) {
+        nearestPortalIndices.add(ranked[k].idx);
+      }
+    }
+
     for (let i = 0; i < this.animatedPortals.length; i++) {
       const pt = this.animatedPortals[i];
       const sway = Math.sin(t * 0.9 + i) * 0.24;
       const lightState = computePortalClimateLightState(this.weather, t, i, this.lightningFlash);
       _color.setHex(lightState.colorHex).lerp(_levelTintColor.setHex(lightState.pulseTintHex), lightState.wave01 * 0.45);
 
+      // Orient the portal archway smoothly toward the approaching serpent so the holographic screen faces the player
+      if (pt.root) {
+        const pdx = snake.head.x - pt.root.position.x;
+        const pdz = snake.head.z - pt.root.position.z;
+        if (pdx * pdx + pdz * pdz < 110 * 110 && pdx * pdx + pdz * pdz > 0.25) {
+          const faceYaw = Math.atan2(pdx, pdz);
+          const diffYaw = ((faceYaw - pt.root.rotation.y + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
+          pt.root.rotation.y += diffYaw * (1 - Math.exp(-4.2 * dt));
+        }
+      }
+
       if (pt.climateLight) {
-        pt.climateLight.color.lerp(_color, portalLightLerp);
-        pt.climateLight.intensity = lightState.intensity;
-        pt.climateLight.distance = lightState.distance;
-        pt.climateLight.position.y = 1.18 + Math.sin(t * 2.2 + i) * 0.04;
+        if (nearestPortalIndices.has(i)) {
+          pt.climateLight.visible = true;
+          pt.climateLight.color.lerp(_color, portalLightLerp);
+          pt.climateLight.intensity = lightState.intensity;
+          pt.climateLight.distance = lightState.distance;
+          pt.climateLight.position.y = 1.18 + Math.sin(t * 2.2 + i) * 0.04;
+        } else {
+          pt.climateLight.intensity = 0;
+          pt.climateLight.visible = false;
+        }
       }
       if (pt.climateCore && pt.climateCore.material instanceof THREE.MeshBasicMaterial) {
         pt.climateCore.material.color.lerp(_color, portalLightLerp);
@@ -4740,6 +5060,9 @@ export class WorldEngine {
       bs.core.rotation.y = t * 2.4 + i;
       bs.ring.scale.setScalar(0.92 + Math.sin(t * 4.5 + i) * 0.08);
     }
+
+    // 6b. Animate Periodic Sovereign "Global Ranking" Portal (emergence, rotation, golden PointLight, stele timer)
+    this.updateGlobalRankingPortalVisual(globalRankingPortal, dt, t, snake.head.x, snake.head.z);
 
     // 7. Animate Alpine Lakes & Floating Snow / Fireflies (wrapping smoothly around the player)
     for (const wm of this.waterMeshes) {
@@ -4875,59 +5198,88 @@ export class WorldEngine {
       targetFov = 48;
       dampLambda = 5.5;
     } else {
-      // Smooth heading follow with shortest-arc wrapping
+      // Smooth heading follow with shortest-arc wrapping (tighter lock in FPV!)
       const angleDiff =
         ((snake.head.heading - this.smoothHeading + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
-      this.smoothHeading += angleDiff * (1 - Math.exp(-6.0 * dt));
+      const headingLambda = cameraMode === 'fpv' ? 14.5 : 6.0;
+      this.smoothHeading += angleDiff * (1 - Math.exp(-headingLambda * dt));
 
       const dirX = Math.sin(this.smoothHeading);
       const dirZ = Math.cos(this.smoothHeading);
 
-      if (cameraMode === 'ant') {
-        // ANT VIEW: low-to-the-ground wide GTA chase hugging the mountainside so peaks & pines tower overhead!
-        const backDist = 5.6;
-        const camX = snake.head.x - dirX * backDist;
-        const camZ = snake.head.z - dirZ * backDist;
-        const groundBehind = terrainHeightAt(camX, camZ, this.biome);
-        const camY = Math.max(snake.head.y + 2.15, groundBehind + 1.65);
+      if (cameraMode === 'fpv') {
+        // FIRST-PERSON VIEW (FPV): directly through the serpent/human's eyes!
+        const fpv = computeFpvCameraPose(
+          this.activeEvolutionLevel,
+          snake.speedRatio,
+          snake.boostActive,
+          this.elapsed,
+          snake.steerRateNorm ?? 0,
+        );
+        const camX = snake.head.x + dirX * fpv.forwardOffset;
+        const camZ = snake.head.z + dirZ * fpv.forwardOffset;
+        const camY = snake.head.y + fpv.eyeHeight + fpv.headBobY;
 
-        const lookAheadDist = 9.0;
-        const lookX = snake.head.x + dirX * lookAheadDist;
-        const lookZ = snake.head.z + dirZ * lookAheadDist;
+        const lookX = camX + dirX * fpv.lookAheadDist;
+        const lookZ = camZ + dirZ * fpv.lookAheadDist;
         const lookGround = terrainHeightAt(lookX, lookZ, this.biome);
-        const lookY = Math.max(snake.head.y + 1.45, lookGround + 1.35);
+        // Pitch naturally along mountain slopes while keeping horizon wide and commanding
+        const slopeFollowY = lookGround + fpv.eyeHeight * 0.85;
+        const lookY = THREE.MathUtils.lerp(camY - 0.15, slopeFollowY, 0.58);
 
         this.cameraTargetPos.set(camX, camY, camZ);
         this.cameraLookAt.set(lookX, lookY, lookZ);
-        targetFov = snake.boostActive ? 65 : 60;
-        dampLambda = 6.2;
-      } else if (cameraMode === 'chase') {
-        // GTA MOUNTAIN CHASE: commanding cinematic 3rd-person view over slopes & valleys
-        const backDist = 11.8;
-        const camX = snake.head.x - dirX * backDist;
-        const camZ = snake.head.z - dirZ * backDist;
-        const groundBehind = terrainHeightAt(camX, camZ, this.biome);
-        const camY = Math.max(snake.head.y + 5.4, groundBehind + 2.6);
-
-        const lookAheadDist = 8.5;
-        const lookX = snake.head.x + dirX * lookAheadDist;
-        const lookZ = snake.head.z + dirZ * lookAheadDist;
-        const lookGround = terrainHeightAt(lookX, lookZ, this.biome);
-        const lookY = Math.max(snake.head.y + 1.2, lookGround + 0.8);
-
-        this.cameraTargetPos.set(camX, camY, camZ);
-        this.cameraLookAt.set(lookX, lookY, lookZ);
-        targetFov = snake.boostActive ? 57 : 52;
-        dampLambda = 5.4;
+        this.fpvBankRoll = THREE.MathUtils.damp(this.fpvBankRoll, fpv.bankRollRad, 8.5, dt);
+        targetFov = fpv.fovDeg;
+        dampLambda = 16.5;
       } else {
-        // EAGLE MAP VIEW: high soaring alpine panorama following your serpent
-        const camX = snake.head.x - dirX * 16;
-        const camZ = snake.head.z - dirZ * 16;
-        const camY = Math.max(snake.head.y + 30, terrainHeightAt(camX, camZ, this.biome) + 22);
-        this.cameraTargetPos.set(camX, camY, camZ);
-        this.cameraLookAt.set(snake.head.x + dirX * 5, snake.head.y + 1, snake.head.z + dirZ * 5);
-        targetFov = 48;
-        dampLambda = 4.6;
+        this.fpvBankRoll = THREE.MathUtils.damp(this.fpvBankRoll, 0, 10, dt);
+        if (cameraMode === 'ant') {
+          // ANT VIEW: low-to-the-ground wide GTA chase hugging the mountainside so peaks & pines tower overhead!
+          const backDist = 5.6;
+          const camX = snake.head.x - dirX * backDist;
+          const camZ = snake.head.z - dirZ * backDist;
+          const groundBehind = terrainHeightAt(camX, camZ, this.biome);
+          const camY = Math.max(snake.head.y + 2.15, groundBehind + 1.65);
+
+          const lookAheadDist = 9.0;
+          const lookX = snake.head.x + dirX * lookAheadDist;
+          const lookZ = snake.head.z + dirZ * lookAheadDist;
+          const lookGround = terrainHeightAt(lookX, lookZ, this.biome);
+          const lookY = Math.max(snake.head.y + 1.45, lookGround + 1.35);
+
+          this.cameraTargetPos.set(camX, camY, camZ);
+          this.cameraLookAt.set(lookX, lookY, lookZ);
+          targetFov = snake.boostActive ? 65 : 60;
+          dampLambda = 6.2;
+        } else if (cameraMode === 'chase') {
+          // GTA MOUNTAIN CHASE: commanding cinematic 3rd-person view over slopes & valleys
+          const backDist = 11.8;
+          const camX = snake.head.x - dirX * backDist;
+          const camZ = snake.head.z - dirZ * backDist;
+          const groundBehind = terrainHeightAt(camX, camZ, this.biome);
+          const camY = Math.max(snake.head.y + 5.4, groundBehind + 2.6);
+
+          const lookAheadDist = 8.5;
+          const lookX = snake.head.x + dirX * lookAheadDist;
+          const lookZ = snake.head.z + dirZ * lookAheadDist;
+          const lookGround = terrainHeightAt(lookX, lookZ, this.biome);
+          const lookY = Math.max(snake.head.y + 1.2, lookGround + 0.8);
+
+          this.cameraTargetPos.set(camX, camY, camZ);
+          this.cameraLookAt.set(lookX, lookY, lookZ);
+          targetFov = snake.boostActive ? 57 : 52;
+          dampLambda = 5.4;
+        } else {
+          // EAGLE MAP VIEW: high soaring alpine panorama following your serpent
+          const camX = snake.head.x - dirX * 16;
+          const camZ = snake.head.z - dirZ * 16;
+          const camY = Math.max(snake.head.y + 30, terrainHeightAt(camX, camZ, this.biome) + 22);
+          this.cameraTargetPos.set(camX, camY, camZ);
+          this.cameraLookAt.set(snake.head.x + dirX * 5, snake.head.y + 1, snake.head.z + dirZ * 5);
+          targetFov = 48;
+          dampLambda = 4.6;
+        }
       }
     }
 
@@ -4976,7 +5328,8 @@ export class WorldEngine {
 
     // Safety clamp so damped camera never dips inside a hillside
     if (gameMode !== 'title') {
-      const floorY = terrainHeightAt(this.camera.position.x, this.camera.position.z, this.biome) + 1.2;
+      const floorOffset = cameraMode === 'fpv' ? 0.55 : 1.2;
+      const floorY = terrainHeightAt(this.camera.position.x, this.camera.position.z, this.biome) + floorOffset;
       if (this.camera.position.y < floorY) {
         this.camera.position.y = floorY;
       }
@@ -5004,7 +5357,10 @@ export class WorldEngine {
       this.camera.lookAt(this.currentLookAt);
     }
 
-    // Apply 2D screen-space camera roll & NDC projection matrix shake offset
+    // Apply FPV carving roll and 2D screen-space camera roll & NDC projection matrix shake offset
+    if (Math.abs(this.fpvBankRoll) > 0.0004) {
+      this.camera.rotation.z += this.fpvBankRoll;
+    }
     if (hasScreenSpaceShake) {
       this.camera.rotation.z += this.gunScreenRoll;
       this.camera.updateProjectionMatrix();
@@ -5090,6 +5446,92 @@ export class WorldEngine {
       }
       this.renderer.render(this.frostOverlayScene, this.overlayCamera);
     }
+
+    // Shader-based Dimensional Portal Shift Screen Ripple pass (zero cost when idle)
+    if (this.portalRippleActive && this.portalRippleOverlayMat) {
+      if (!this.isSoftwareGl) {
+        const sceneTex = this.ensureFrostFrameTexture();
+        this.renderer.copyFramebufferToTexture(sceneTex);
+        this.portalRippleOverlayMat.uniforms.tScene.value = sceneTex;
+        this.portalRippleOverlayMat.uniforms.uHasSceneTex.value = 1.0;
+      } else {
+        this.portalRippleOverlayMat.uniforms.uHasSceneTex.value = 0.0;
+      }
+      this.renderer.render(this.portalRippleOverlayScene, this.overlayCamera);
+    }
+  }
+
+  /**
+   * Triggers a full-screen WebGL refractive shockwave ripple across the 3D viewport when
+   * a mission is completed and a dimensional portal shifts to a new mountain coordinate.
+   */
+  public triggerPortalShiftRipple(options?: {
+    worldOrigin?: { x: number; y: number; z: number };
+    soulAwarded?: boolean;
+    intensity?: number;
+    durationSec?: number;
+  }): void {
+    const reducedMotion =
+      typeof window !== 'undefined' &&
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    const rawIntensity = options?.intensity ?? 1.0;
+    this.portalRippleIntensity = reducedMotion ? Math.min(0.38, rawIntensity * 0.4) : rawIntensity;
+    this.portalRippleDuration = Math.max(0.65, options?.durationSec ?? 1.48);
+    this.portalRippleSoulAwarded = Boolean(options?.soulAwarded);
+    this.portalRippleElapsed = 0;
+    this.portalRippleActive = true;
+
+    // Anchor the ripple epicenter to the projected 3D portal coordinate if visible in front of camera
+    let centerX = 0.5;
+    let centerY = 0.5;
+    if (options?.worldOrigin) {
+      _vec3A.set(options.worldOrigin.x, options.worldOrigin.y, options.worldOrigin.z);
+      _vec3A.project(this.camera);
+      if (_vec3A.z >= -1 && _vec3A.z <= 1) {
+        centerX = Math.max(0.22, Math.min(0.78, _vec3A.x * 0.5 + 0.5));
+        centerY = Math.max(0.24, Math.min(0.76, _vec3A.y * 0.5 + 0.5));
+      }
+    }
+
+    if (this.portalRippleOverlayMat) {
+      (this.portalRippleOverlayMat.uniforms.uCenter.value as THREE.Vector2).set(centerX, centerY);
+      this.updatePortalShiftRipple(0.016);
+    }
+
+    if (!reducedMotion) {
+      this.shakeIntensity = Math.max(this.shakeIntensity, 0.18 * this.portalRippleIntensity);
+    }
+  }
+
+  private updatePortalShiftRipple(dt: number): void {
+    if (!this.portalRippleActive || !this.portalRippleOverlayMat) return;
+    this.portalRippleElapsed += dt;
+    const progress = this.portalRippleElapsed / this.portalRippleDuration;
+    const params = computePortalShiftRippleParams(
+      progress,
+      this.portalRippleIntensity,
+      this.portalRippleSoulAwarded,
+    );
+    const u = this.portalRippleOverlayMat.uniforms;
+    u.uTime.value = this.elapsed;
+    u.uProgress.value = params.progress;
+    u.uRadius.value = params.radius;
+    u.uSecondaryRadius.value = params.secondaryRadius;
+    u.uAmplitude.value = params.amplitude;
+    u.uChromatic.value = params.chromaticAberration;
+    u.uCrestGlow.value = params.crestGlow;
+    this.portalRippleColorAScratch.setHex(params.primaryColorHex);
+    this.portalRippleColorBScratch.setHex(params.secondaryColorHex);
+    (u.uColorA.value as THREE.Color).copy(this.portalRippleColorAScratch);
+    (u.uColorB.value as THREE.Color).copy(this.portalRippleColorBScratch);
+
+    if (!params.active || progress >= 1) {
+      this.portalRippleActive = false;
+      u.uAmplitude.value = 0;
+      u.uCrestGlow.value = 0;
+    }
   }
 
   private tickHardware = (): void => {
@@ -5100,6 +5542,7 @@ export class WorldEngine {
     const dt = Math.min(Math.max(rawDt, 0.001), 0.05);
 
     this.onFrameCallback?.(dt);
+    this.updatePortalShiftRipple(dt);
     this.renderFrame();
   };
 
@@ -5135,6 +5578,7 @@ export class WorldEngine {
     const dt = Math.min(Math.max(rawDt, 0.001), 0.05);
 
     this.onFrameCallback?.(dt);
+    this.updatePortalShiftRipple(dt);
     this.renderFrame();
     this.afterDraw(this.tickSoftware);
   };
@@ -5151,6 +5595,9 @@ export class WorldEngine {
     }
     if (this.frostOverlayMat) {
       this.frostOverlayMat.uniforms.uAspect.value = w / h;
+    }
+    if (this.portalRippleOverlayMat) {
+      this.portalRippleOverlayMat.uniforms.uAspect.value = w / h;
     }
     this.csm?.updateFrustums();
   };
@@ -5301,11 +5748,350 @@ export class WorldEngine {
     this.weatherOverlayMat?.dispose();
     this.frostOverlayMesh?.geometry.dispose();
     this.frostOverlayMat?.dispose();
+    this.portalRippleOverlayMesh?.geometry.dispose();
+    this.portalRippleOverlayMat?.dispose();
     this.frostFrameTexture?.dispose();
     this.soulVortexPoints?.geometry.dispose();
     this.soulVortexMat?.dispose();
     this.soulVortexRingMesh?.geometry.dispose();
     this.soulVortexRingMat?.dispose();
+    this.globalRankingTex?.dispose();
     this.renderer.dispose();
+  }
+
+  private ensureGlobalRankingPortalVisual(): void {
+    if (this.globalRankingPortalRoot) return;
+    const res = this.getModelResources();
+    const root = createGlobalRankingPortal(res);
+    root.visible = false;
+    root.scale.setScalar(0.001);
+
+    const screenMesh = root.getObjectByName('rankingSteleScreen') as THREE.Mesh | null;
+    if (screenMesh && typeof document !== 'undefined') {
+      this.globalRankingCanvas = document.createElement('canvas');
+      this.globalRankingCanvas.width = 512;
+      this.globalRankingCanvas.height = 426;
+      this.globalRankingTex = new THREE.CanvasTexture(this.globalRankingCanvas);
+      this.globalRankingTex.colorSpace = THREE.SRGBColorSpace;
+      this.globalRankingTex.anisotropy = this.renderer.capabilities.getMaxAnisotropy();
+      if (screenMesh.material instanceof THREE.MeshBasicMaterial) {
+        screenMesh.material.map = this.globalRankingTex;
+        screenMesh.material.needsUpdate = true;
+      }
+      this.drawGlobalRankingSteleCanvas(1, 75, 0);
+    }
+
+    this.globalRankingPortalRoot = root;
+    this.globalRankingPortalParts = {
+      outerHalo: root.getObjectByName('rankingOuterHalo') ?? null,
+      innerHalo: root.getObjectByName('rankingInnerHalo') ?? null,
+      orbitGroup: root.getObjectByName('rankingOrbitGroup') ?? null,
+      crownSpire: root.getObjectByName('rankingCrownSpire') ?? null,
+      crownRing: root.getObjectByName('rankingCrownRing') ?? null,
+      skyBeam: (root.getObjectByName('rankingSkyBeam') as THREE.Mesh | null) ?? null,
+      auraRing: (root.getObjectByName('rankingAuraRing') as THREE.Mesh | null) ?? null,
+      portalLight: (root.getObjectByName('rankingPortalLight') as THREE.PointLight | null) ?? null,
+      pillarCapL: root.getObjectByName('rankingPillarCapL') ?? null,
+      pillarCapR: root.getObjectByName('rankingPillarCapR') ?? null,
+      screenMesh,
+    };
+
+    this.registerCsmMaterials(root);
+    this.scene.add(root);
+  }
+
+  private drawGlobalRankingSteleCanvas(wave: number, timeRemainingSec: number, phase: number): void {
+    if (!this.globalRankingCanvas || !this.globalRankingTex) return;
+    const ctx = this.globalRankingCanvas.getContext('2d');
+    if (!ctx) return;
+
+    const w = this.globalRankingCanvas.width;
+    const h = this.globalRankingCanvas.height;
+
+    const bg = ctx.createRadialGradient(w * 0.5, h * 0.45, 22, w * 0.5, h * 0.5, w * 0.58);
+    bg.addColorStop(0, '#2a1f08');
+    bg.addColorStop(0.55, '#0e1828');
+    bg.addColorStop(1, '#050914');
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, w, h);
+
+    // Subtle concentric celestial mandala rings
+    ctx.save();
+    ctx.translate(w * 0.5, h * 0.5);
+    ctx.strokeStyle = 'rgba(247, 207, 98, 0.24)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(0, 0, 172, 0, Math.PI * 2);
+    ctx.stroke();
+
+    ctx.strokeStyle = 'rgba(61, 224, 149, 0.28)';
+    ctx.setLineDash([12, 8]);
+    ctx.rotate(phase * 0.35);
+    ctx.beginPath();
+    ctx.arc(0, 0, 148, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+
+    // Ornate golden border
+    ctx.strokeStyle = '#f2c14e';
+    ctx.lineWidth = 5;
+    ctx.strokeRect(14, 14, w - 28, h - 28);
+    ctx.strokeStyle = 'rgba(61, 224, 149, 0.55)';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(24, 24, w - 48, h - 48);
+
+    // Celestial Crown Emblem
+    ctx.save();
+    ctx.translate(w * 0.5, 96);
+    ctx.fillStyle = '#ffe066';
+    ctx.beginPath();
+    ctx.moveTo(-48, 22);
+    ctx.lineTo(-56, -16);
+    ctx.lineTo(-24, 4);
+    ctx.lineTo(0, -30);
+    ctx.lineTo(24, 4);
+    ctx.lineTo(56, -16);
+    ctx.lineTo(48, 22);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = '#fff5cc';
+    ctx.lineWidth = 2.5;
+    ctx.stroke();
+    ctx.restore();
+
+    // Title Typography
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#ffe484';
+    ctx.font = 'bold 34px Georgia, serif';
+    ctx.fillText('GLOBAL RANKING', w * 0.5, 174);
+
+    ctx.fillStyle = '#3de095';
+    ctx.font = 'bold 19px sans-serif';
+    ctx.fillText(`CELESTIAL STELE · WAVE #${Math.max(1, wave)}`, w * 0.5, 210);
+
+    // Three podium rank bars
+    const bars = [
+      { label: '#2', x: w * 0.5 - 92, bh: 44, color: '#cbd5e1' },
+      { label: '#1', x: w * 0.5, bh: 64, color: '#f2c14e' },
+      { label: '#3', x: w * 0.5 + 92, bh: 34, color: '#d97706' },
+    ];
+    for (const bar of bars) {
+      ctx.fillStyle = bar.color;
+      ctx.fillRect(bar.x - 28, 304 - bar.bh, 56, bar.bh);
+      ctx.fillStyle = '#09111b';
+      ctx.font = 'bold 20px sans-serif';
+      ctx.fillText(bar.label, bar.x, 304 - bar.bh + 24);
+    }
+
+    // Countdown Footer
+    const secLeft = Math.max(0, Math.ceil(timeRemainingSec));
+    ctx.fillStyle = secLeft <= 15 ? '#fb7185' : '#fef3c7';
+    ctx.font = 'bold 24px monospace';
+    ctx.fillText(`ENTER TO INSCRIBE · ${secLeft}s`, w * 0.5, 368);
+
+    this.globalRankingTex.needsUpdate = true;
+  }
+
+  private updateGlobalRankingPortalVisual(
+    state: GlobalRankingPortalState | null,
+    dt: number,
+    t: number,
+    snakeHeadX: number,
+    snakeHeadZ: number,
+  ): void {
+    const isActive = Boolean(state?.active);
+    if (isActive && !this.globalRankingPortalRoot) {
+      this.ensureGlobalRankingPortalVisual();
+    }
+    if (!this.globalRankingPortalRoot || !this.globalRankingPortalParts) return;
+
+    const targetScale = isActive ? 4.85 : 0.001;
+    const damp = 1 - Math.exp(-(isActive ? 3.8 : 6.0) * dt);
+    this.globalRankingPortalScale += (targetScale - this.globalRankingPortalScale) * damp;
+
+    if (!isActive && this.globalRankingPortalScale < 0.04) {
+      this.globalRankingPortalRoot.visible = false;
+      if (this.globalRankingPortalParts.portalLight) {
+        this.globalRankingPortalParts.portalLight.visible = false;
+        this.globalRankingPortalParts.portalLight.intensity = 0;
+      }
+      return;
+    }
+
+    this.globalRankingPortalRoot.visible = true;
+    this.globalRankingPortalRoot.scale.setScalar(this.globalRankingPortalScale);
+
+    if (state) {
+      const groundY = terrainHeightAt(state.x, state.z, this.biome);
+      this.globalRankingPortalRoot.position.set(state.x, groundY - 0.14, state.z);
+
+      // Smoothly rotate the archway toward the approaching player
+      const dx = snakeHeadX - state.x;
+      const dz = snakeHeadZ - state.z;
+      if (dx * dx + dz * dz > 0.25) {
+        const faceYaw = Math.atan2(dx, dz);
+        const diffYaw =
+          ((faceYaw - this.globalRankingPortalRoot.rotation.y + Math.PI * 3) % (Math.PI * 2)) -
+          Math.PI;
+        this.globalRankingPortalRoot.rotation.y += diffYaw * (1 - Math.exp(-3.6 * dt));
+      }
+
+      this.globalRankingTexAccum += dt;
+      if (this.globalRankingTexAccum >= 0.45) {
+        this.globalRankingTexAccum = 0;
+        this.drawGlobalRankingSteleCanvas(state.wave, state.timeRemainingSec, t);
+      }
+    }
+
+    const parts = this.globalRankingPortalParts;
+    const pulse = 0.5 + 0.5 * Math.sin(t * 3.1);
+    const sway = Math.sin(t * 1.1) * 0.18;
+
+    if (parts.outerHalo) {
+      parts.outerHalo.rotation.y = sway;
+      parts.outerHalo.rotation.z = t * 0.72;
+    }
+    if (parts.innerHalo) {
+      parts.innerHalo.rotation.y = sway;
+      parts.innerHalo.rotation.z = -t * 1.55;
+    }
+    if (parts.orbitGroup) {
+      parts.orbitGroup.rotation.y = sway;
+      const spin = t * 1.05;
+      parts.orbitGroup.rotation.z = spin;
+      for (let i = 0; i < parts.orbitGroup.children.length; i++) {
+        parts.orbitGroup.children[i].rotation.z = -spin;
+      }
+    }
+    if (parts.crownSpire) {
+      parts.crownSpire.rotation.y = t * 1.9;
+      parts.crownSpire.position.y = 2.74 + Math.sin(t * 2.6) * 0.12;
+    }
+    if (parts.crownRing) {
+      parts.crownRing.rotation.z = -t * 2.2;
+      parts.crownRing.position.y = 2.74 + Math.sin(t * 2.6) * 0.12;
+    }
+    if (parts.pillarCapL && parts.pillarCapR) {
+      parts.pillarCapL.rotation.y = t * 1.8;
+      parts.pillarCapR.rotation.y = -t * 1.8;
+      const capBob = Math.sin(t * 3.0) * 0.08;
+      parts.pillarCapL.position.y = 2.38 + capBob;
+      parts.pillarCapR.position.y = 2.38 - capBob;
+    }
+    if (parts.skyBeam && parts.skyBeam.material instanceof THREE.MeshBasicMaterial) {
+      const beamScale = 0.88 + pulse * 0.24;
+      parts.skyBeam.scale.set(beamScale, 1, beamScale);
+      parts.skyBeam.material.opacity = 0.26 + pulse * 0.18;
+    }
+    if (parts.auraRing && parts.auraRing.material instanceof THREE.MeshBasicMaterial) {
+      const auraWave = (t * 0.65) % 1;
+      parts.auraRing.scale.setScalar(1.0 + auraWave * 0.55);
+      parts.auraRing.material.opacity = (1 - auraWave) * 0.5;
+    }
+    if (parts.portalLight) {
+      parts.portalLight.visible = true;
+      parts.portalLight.intensity = (24 + pulse * 14) * Math.min(1, this.globalRankingPortalScale / 4.85);
+      parts.portalLight.distance = 62;
+    }
+  }
+
+  /**
+   * Applies subtle jade-shadow translucent shimmer on the serpent/human materials
+   * when Stealth Veil (Shift / X) is active so players can immediately feel cloaked.
+   */
+  public setStealthVisual(active: boolean, dt: number): void {
+    const target = active ? 1 : 0;
+    this.stealthCloakBlend = THREE.MathUtils.damp(this.stealthCloakBlend, target, 8.5, dt);
+    const b = this.stealthCloakBlend;
+    if (this.snakeHeadMat && this.snakeBodyMat) {
+      const op = 1 - b * 0.44;
+      const wantTrans = b > 0.04;
+      if (this.snakeHeadMat.transparent !== wantTrans) {
+        this.snakeHeadMat.transparent = wantTrans;
+        this.snakeHeadMat.needsUpdate = true;
+      }
+      if (this.snakeBodyMat.transparent !== wantTrans) {
+        this.snakeBodyMat.transparent = wantTrans;
+        this.snakeBodyMat.needsUpdate = true;
+      }
+      this.snakeHeadMat.opacity = op;
+      this.snakeBodyMat.opacity = op;
+    }
+  }
+
+  /**
+   * Synchronizes pooled 3D Soul Clan Sentry spirit ghosts, hovering animations, and
+   * real-time spectral vision cones (Violet = Circular, Amber = Search, Crimson = Alert).
+   */
+  public syncSoulSentries(sentries: readonly SoulSentryEntity[], dt: number): void {
+    while (this.soulSentryPool.length < sentries.length) {
+      const rig = createSoulSentryRig(this.contactShadowMap);
+      rig.root.visible = false;
+      this.worldRoot.add(rig.root);
+      this.soulSentryPool.push(rig);
+    }
+
+    const t = this.elapsed;
+    for (let i = 0; i < this.soulSentryPool.length; i++) {
+      const rig = this.soulSentryPool[i];
+      const s = sentries[i];
+      if (!s) {
+        rig.root.visible = false;
+        continue;
+      }
+
+      if (s.patrolMode === 'banished') {
+        rig.root.visible = false;
+        continue;
+      }
+
+      rig.root.visible = true;
+      const groundY = terrainHeightAt(s.x, s.z, this.biome);
+      rig.root.position.set(s.x, groundY, s.z);
+      rig.root.rotation.y = s.heading;
+
+      // Floating spectral levitation + lantern swing + runic halo spin
+      const hoverBob = Math.sin(s.hoverPhase) * 0.34;
+      rig.bodyGroup.position.y = 0.52 + hoverBob;
+      const spinSpeed = s.patrolMode === 'alert' ? 3.8 : s.patrolMode === 'search' ? 2.4 : 1.1;
+      rig.haloRing.rotation.z += dt * spinSpeed;
+      rig.lanternPivot.rotation.z = Math.sin(t * (s.patrolMode === 'search' ? 4.8 : 2.3) + i) * 0.24;
+      rig.lanternPivot.rotation.x = Math.cos(t * 2.1 + i) * 0.14;
+
+      const profile = SENTRY_ARCHETYPES[s.archetype];
+      rig.cloakMat.color.setHex(profile.cloakColorNum);
+
+      // State-reactive color telegraphing across vision cone, halo, and spirit lantern
+      let coneHex = profile.accentColorNum;
+      let coneOpacity = 0.19 + s.suspicion * 0.14;
+      if (s.patrolMode === 'search') {
+        coneHex = 0xf59e0b; // Searching Amber
+        coneOpacity = 0.26 + Math.sin(t * 6.5) * 0.05 + s.suspicion * 0.14;
+      } else if (s.patrolMode === 'alert') {
+        coneHex = 0xf43f5e; // Alert Crimson
+        coneOpacity = 0.38 + Math.sin(t * 11.0) * 0.08;
+      }
+
+      rig.accentMat.color.setHex(coneHex);
+      rig.accentMat.emissive.setHex(coneHex);
+      rig.lanternGlowMat.emissive.setHex(coneHex);
+      rig.visionConeMat.color.setHex(coneHex);
+      rig.visionConeMat.opacity = Math.max(0.12, Math.min(0.55, coneOpacity));
+
+      // Scale unit vision cone sector accurately to the sentry's live range & cone width
+      const angleScale = s.visionHalfAngle / 0.56;
+      rig.visionConeMesh.scale.set(s.visionRange * angleScale, 1, s.visionRange);
+
+      // Pulse expanding ground scan ring during Search & Alert modes
+      if (s.patrolMode === 'search' || s.patrolMode === 'alert') {
+        const wave = (t * (s.patrolMode === 'alert' ? 1.55 : 0.95) + i * 0.23) % 1;
+        rig.searchRingMesh.visible = true;
+        rig.searchRingMesh.scale.setScalar(0.85 + wave * 3.8);
+        rig.searchRingMat.color.setHex(s.patrolMode === 'alert' ? 0xf43f5e : 0xf59e0b);
+        rig.searchRingMat.opacity = (1 - wave) * (s.patrolMode === 'alert' ? 0.55 : 0.38);
+      } else {
+        rig.searchRingMesh.visible = false;
+      }
+    }
   }
 }

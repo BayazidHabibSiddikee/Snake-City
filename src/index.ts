@@ -37,13 +37,25 @@ document.addEventListener('DOMContentLoaded', () => {
     (anchorPos) => {
       ui?.updateTauntBubblePosition(anchorPos);
     },
-    (portalVariant) => {
-      ui?.openPortalBrowserModal(portalVariant);
+    (portalVariant, _hasTwinWarp, portalKey) => {
+      ui?.openPortalBrowserModal(portalVariant, portalKey);
+    },
+    (ctx) => {
+      ui?.openGlobalRankingModal(ctx.enteredViaPortal);
+    },
+    (notice) => {
+      ui?.showLoreUnlockedToast(notice);
     },
   );
 
   ui = new GameUI(root, game);
   game.emitHud();
+
+  // Dual Browser + Game Release: launch straight into Standalone Portal Browser if configured or opened via /?mode=browser
+  const urlMode = new URLSearchParams(window.location.search).get('mode');
+  if (urlMode === 'browser' || game.portalBrowser.getSettings().startupMode === 'browser') {
+    ui.launchStandaloneBrowser();
+  }
 
   // Start procedural ambient mountain/jungle soundscape on first user gesture
   const unlockAmbientOnce = () => {
@@ -89,6 +101,24 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (e.code === 'KeyK') {
       ui?.toggleBestiaryModal();
+      return;
+    }
+
+    if (e.code === 'KeyL' && !e.repeat) {
+      e.preventDefault();
+      ui?.toggleGlobalRankingModal();
+      return;
+    }
+
+    if (e.code === 'KeyN' && !e.repeat) {
+      e.preventDefault();
+      ui?.toggleSoulArchivesModal();
+      return;
+    }
+
+    if (e.code === 'KeyI' && !e.repeat) {
+      e.preventDefault();
+      ui?.toggleLootReliquaryModal();
       return;
     }
 
@@ -138,6 +168,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (e.code === 'KeyC' && (mode === 'playing' || mode === 'paused')) {
       game.cycleCameraMode();
+      return;
+    }
+
+    if (e.code === 'KeyV' && (mode === 'playing' || mode === 'paused')) {
+      game.toggleFpvCameraMode();
       return;
     }
 
@@ -198,6 +233,16 @@ document.addEventListener('DOMContentLoaded', () => {
           e.preventDefault();
           game.castUltimateLotus();
           break;
+        case 'ShiftLeft':
+        case 'ShiftRight':
+          game.setStealthHeld(true);
+          break;
+        case 'KeyX':
+          if (!e.repeat) {
+            e.preventDefault();
+            game.toggleStealthVeil();
+          }
+          break;
       }
     }
   });
@@ -220,6 +265,10 @@ document.addEventListener('DOMContentLoaded', () => {
       case 'ArrowDown':
       case 'KeyS':
         game.setBrakeHeld(false);
+        break;
+      case 'ShiftLeft':
+      case 'ShiftRight':
+        game.setStealthHeld(false);
         break;
     }
   });

@@ -1,0 +1,183 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Pillar 1 / Global Safety Net: Default-deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Reusable Hardened Primitives ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    // --- Pillar 2: Validation Blueprint for GlobalRankingEntry ---
+    // Synchronized verbatim with firebase-blueprint.json
+    function isValidGlobalRanking(data) {
+      return data.keys().hasAll([
+          'userId',
+          'displayName',
+          'score',
+          'level',
+          'xp',
+          'stageTitle',
+          'realmName',
+          'shrinesConquered',
+          'soulsCollected',
+          'bestiaryCount',
+          'isHuman',
+          'biome',
+          'weather',
+          'speedPreset',
+          'submissionsCount',
+          'portalWave',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'userId',
+          'displayName',
+          'score',
+          'level',
+          'xp',
+          'stageTitle',
+          'realmName',
+          'shrinesConquered',
+          'soulsCollected',
+          'bestiaryCount',
+          'isHuman',
+          'biome',
+          'weather',
+          'speedPreset',
+          'submissionsCount',
+          'portalWave',
+          'createdAt',
+          'updatedAt'
+        ])
+        && isValidId(data.userId)
+        && data.userId == request.auth.uid
+        && data.displayName is string
+        && data.displayName.size() >= 1
+        && data.displayName.size() <= 32
+        && data.displayName.matches('^[a-zA-Z0-9_ \\-\'.!()\\[\\]]{1,32}$')
+        && data.score is number
+        && data.score >= 0
+        && data.score <= 100000000
+        && data.level is int
+        && data.level >= 1
+        && data.level <= 12
+        && data.xp is number
+        && data.xp >= 0
+        && data.xp <= 100000000
+        && data.stageTitle is string
+        && data.stageTitle.size() >= 1
+        && data.stageTitle.size() <= 48
+        && data.realmName is string
+        && data.realmName.size() >= 1
+        && data.realmName.size() <= 40
+        && data.shrinesConquered is int
+        && data.shrinesConquered >= 0
+        && data.shrinesConquered <= 12
+        && data.soulsCollected is int
+        && data.soulsCollected >= 0
+        && data.soulsCollected <= 14
+        && data.bestiaryCount is int
+        && data.bestiaryCount >= 0
+        && data.bestiaryCount <= 20
+        && data.isHuman is bool
+        && data.biome is string
+        && data.biome.size() <= 16
+        && data.biome in ['jungle', 'mountain']
+        && data.weather is string
+        && data.weather.size() <= 16
+        && data.weather in ['clear', 'mist', 'fog', 'rain', 'storm', 'blizzard', 'ashstorm']
+        && data.speedPreset is string
+        && data.speedPreset.size() <= 16
+        && data.speedPreset in ['chill', 'classic', 'turbo']
+        && data.submissionsCount is int
+        && data.submissionsCount >= 1
+        && data.submissionsCount <= 100000
+        && data.portalWave is int
+        && data.portalWave >= 0
+        && data.portalWave <= 100000
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // --- Public Global Rankings Collection (Zero PII) ---
+    match /globalRankings/{userId} {
+      // Single-document read with Path Variable Hardening (Pillar 3); safely handles non-existent docs
+      allow get: if isValidId(userId) && (resource == null || existing().score >= 0);
+
+      // Bounded leaderboard query (Pillar 8: evaluates resource.data + query limit cap, no get() inside list)
+      allow list: if existing().score >= 0 && request.query.limit <= 100;
+
+      // Create: Auth -> Static Validation -> Identity & Server Timestamp Integrity
+      allow create: if isVerifiedUser()
+        && isValidId(userId)
+        && isValidGlobalRanking(incoming())
+        && isOwner(userId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && incoming().submissionsCount == 1;
+
+      // Update: Validation blueprint first + Action-Based affectedKeys allowlist + Immutable userId/createdAt
+      allow update: if isVerifiedUser()
+        && isValidId(userId)
+        && isValidGlobalRanking(incoming())
+        && isOwner(userId)
+        && incoming().userId == existing().userId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          // Action: Submit Updated Cultivation Progress via Global Ranking Portal
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'displayName',
+            'score',
+            'level',
+            'xp',
+            'stageTitle',
+            'realmName',
+            'shrinesConquered',
+            'soulsCollected',
+            'bestiaryCount',
+            'isHuman',
+            'biome',
+            'weather',
+            'speedPreset',
+            'submissionsCount',
+            'portalWave',
+            'updatedAt'
+          ])
+          && incoming().submissionsCount >= existing().submissionsCount
+          && incoming().submissionsCount <= existing().submissionsCount + 1
+        );
+
+      // Delete: Verified owner may remove their own leaderboard entry
+      allow delete: if isVerifiedUser()
+        && isValidId(userId)
+        && isOwner(userId);
+    }
+  }
+}

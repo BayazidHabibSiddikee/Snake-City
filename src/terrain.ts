@@ -38,10 +38,18 @@ export const WORLD_LAKES: MountainLake[] = [
     radius: 17,
     depth: 10.5,
   },
+  {
+    nameAlpine: 'Mirror Spire Basin',
+    nameJungle: 'Lotus Mist Caldera',
+    x: 196,
+    z: -168,
+    radius: 20,
+    depth: 11.2,
+  },
 ];
 
 /**
- * Twelve monumental climbable Trial Peaks spiraling outward across the massive 480-unit continent,
+ * Twelve monumental climbable Trial Peaks spiraling outward across the massive 720-unit continent,
  * culminating at Tier 12: Crown of Humanity at the soaring northern roof of the world.
  */
 export const WORLD_LANDMARKS: MountainLandmark[] = [
@@ -51,7 +59,7 @@ export const WORLD_LANDMARKS: MountainLandmark[] = [
     name: 'Whispering Foothill',
     region: 'Inner Foothills',
     x: 0,
-    z: -48,
+    z: -52,
     radius: 10.5,
     accentHex: 0x5ef2a8,
     xpReward: 260,
@@ -61,8 +69,8 @@ export const WORLD_LANDMARKS: MountainLandmark[] = [
     tier: 2,
     name: 'Pinecrest Lookout',
     region: 'Eastern Timberline',
-    x: 66,
-    z: -24,
+    x: 78,
+    z: -28,
     radius: 10.5,
     accentHex: 0x7be0ff,
     xpReward: 360,
@@ -72,8 +80,8 @@ export const WORLD_LANDMARKS: MountainLandmark[] = [
     tier: 3,
     name: 'Tarn Overlook',
     region: 'Basin Rim',
-    x: 64,
-    z: 64,
+    x: 76,
+    z: 74,
     radius: 10.5,
     accentHex: 0x38bdf8,
     xpReward: 480,
@@ -83,8 +91,8 @@ export const WORLD_LANDMARKS: MountainLandmark[] = [
     tier: 4,
     name: 'Misty Highland Pass',
     region: 'Cloudstep Valley',
-    x: -64,
-    z: 58,
+    x: -74,
+    z: 68,
     radius: 10.5,
     accentHex: 0xc084fc,
     xpReward: 620,
@@ -94,8 +102,8 @@ export const WORLD_LANDMARKS: MountainLandmark[] = [
     tier: 5,
     name: 'Ironback Crag',
     region: 'Western Escarpment',
-    x: -84,
-    z: -38,
+    x: -98,
+    z: -46,
     radius: 11.0,
     accentHex: 0x4ade80,
     xpReward: 780,
@@ -105,8 +113,8 @@ export const WORLD_LANDMARKS: MountainLandmark[] = [
     tier: 6,
     name: 'Grand Glacier Peak',
     region: 'Northern Icefield',
-    x: -4,
-    z: -122,
+    x: -6,
+    z: -158,
     radius: 11.5,
     accentHex: 0x7dd3fc,
     xpReward: 980,
@@ -116,8 +124,8 @@ export const WORLD_LANDMARKS: MountainLandmark[] = [
     tier: 7,
     name: 'Sunstone Citadel',
     region: 'Golden High-Mesa',
-    x: 138,
-    z: -74,
+    x: 196,
+    z: -98,
     radius: 11.5,
     accentHex: 0xfbbf24,
     xpReward: 1220,
@@ -127,8 +135,8 @@ export const WORLD_LANDMARKS: MountainLandmark[] = [
     tier: 8,
     name: 'Thunderhorn Spire',
     region: 'Eastern Colossi',
-    x: 152,
-    z: 82,
+    x: 218,
+    z: 118,
     radius: 11.5,
     accentHex: 0xf97316,
     xpReward: 1500,
@@ -138,8 +146,8 @@ export const WORLD_LANDMARKS: MountainLandmark[] = [
     tier: 9,
     name: 'Obsidian Saddle',
     region: 'Southern Abyss',
-    x: 10,
-    z: 164,
+    x: 14,
+    z: 248,
     radius: 12.0,
     accentHex: 0xf43f5e,
     xpReward: 1850,
@@ -149,8 +157,8 @@ export const WORLD_LANDMARKS: MountainLandmark[] = [
     tier: 10,
     name: 'Frostfang Bastion',
     region: 'SW Frozen Peaks',
-    x: -156,
-    z: 96,
+    x: -228,
+    z: 142,
     radius: 12.0,
     accentHex: 0xa78bfa,
     xpReward: 2250,
@@ -160,8 +168,8 @@ export const WORLD_LANDMARKS: MountainLandmark[] = [
     tier: 11,
     name: 'Dragonspine Spire',
     region: 'NW Stormwall',
-    x: -154,
-    z: -98,
+    x: -224,
+    z: -144,
     radius: 12.5,
     accentHex: 0x2dd4bf,
     xpReward: 2750,
@@ -172,8 +180,8 @@ export const WORLD_LANDMARKS: MountainLandmark[] = [
     name: 'Crown of Humanity',
     region: 'Roof of the World',
     x: 0,
-    z: -206,
-    radius: 14.0,
+    z: -304,
+    radius: 14.5,
     accentHex: 0xffe066,
     xpReward: 3800,
   },
@@ -191,9 +199,9 @@ function ridge(x: number, z: number, freq: number, amp: number): number {
 }
 
 /**
- * Massive continuous 3D mountain continent heightfield (480-unit playable diameter, 680-unit mesh).
+ * Massive continuous 3D mountain continent heightfield (720-unit playable diameter, 960-unit mesh).
  * Elevates dramatically from the central foothills outward toward the 12 soaring Trial Peaks
- * and the colossal 66-unit-tall Crown of Humanity in the far north.
+ * and the colossal Crown of Humanity in the far north.
  */
 export function terrainHeightAt(x: number, z: number, biome: BiomeId): number {
   const scale = biome === 'jungle' ? 0.88 : 1.0;
@@ -201,58 +209,65 @@ export function terrainHeightAt(x: number, z: number, biome: BiomeId): number {
   let h = 2.8;
 
   // --- Inner Ring Peaks (Tiers 1-5) ---
-  h += gaussian(x - 0, z + 48, 22, 22.0 * scale); // Whispering Foothill
-  h += gaussian(x - 66, z + 24, 24, 26.0 * scale); // Pinecrest Lookout
-  h += gaussian(x - 64, z - 64, 24, 27.5 * scale); // Tarn Overlook
-  h += gaussian(x + 64, z - 58, 25, 25.5 * scale); // Misty Highland Pass
-  h += gaussian(x + 84, z + 38, 25, 30.0 * scale); // Ironback Crag
+  h += gaussian(x - 0, z + 52, 24, 22.0 * scale); // Whispering Foothill
+  h += gaussian(x - 78, z + 28, 26, 26.5 * scale); // Pinecrest Lookout
+  h += gaussian(x - 76, z - 74, 26, 28.0 * scale); // Tarn Overlook
+  h += gaussian(x + 74, z - 68, 27, 26.0 * scale); // Misty Highland Pass
+  h += gaussian(x + 98, z + 46, 28, 30.5 * scale); // Ironback Crag
 
   // --- Mid & Outer Colossal Mountain Peaks (Tiers 6-11) ---
-  h += gaussian(x + 4, z + 122, 30, 40.5 * scale); // Grand Glacier Peak
-  h += gaussian(x - 138, z + 74, 32, 43.0 * scale); // Sunstone Citadel
-  h += gaussian(x - 152, z - 82, 33, 45.5 * scale); // Thunderhorn Spire
-  h += gaussian(x - 10, z - 164, 34, 44.0 * scale); // Obsidian Saddle
-  h += gaussian(x + 156, z - 96, 34, 47.0 * scale); // Frostfang Bastion
-  h += gaussian(x + 154, z + 98, 35, 51.0 * scale); // Dragonspine Spire
+  h += gaussian(x + 6, z + 158, 36, 41.5 * scale); // Grand Glacier Peak
+  h += gaussian(x - 196, z + 98, 40, 44.5 * scale); // Sunstone Citadel
+  h += gaussian(x - 218, z - 118, 42, 46.5 * scale); // Thunderhorn Spire
+  h += gaussian(x - 14, z - 248, 44, 45.5 * scale); // Obsidian Saddle
+  h += gaussian(x + 228, z - 142, 44, 48.5 * scale); // Frostfang Bastion
+  h += gaussian(x + 224, z + 144, 45, 52.5 * scale); // Dragonspine Spire
 
   // --- Tier 12 Final Monumental Summit: Crown of Humanity ---
-  h += gaussian(x - 0, z + 206, 40, 62.0 * scale);
+  h += gaussian(x - 0, z + 304, 52, 66.0 * scale);
 
-  // --- Connecting High-Altitude Mountain Saddles & Traversable Passes ---
-  h += gaussian(x - 36, z + 36, 18, 11.5 * scale);
-  h += gaussian(x + 42, z + 38, 19, 12.5 * scale);
-  h += gaussian(x - 74, z + 96, 26, 18.0 * scale);
-  h += gaussian(x + 78, z + 104, 26, 19.0 * scale);
-  h += gaussian(x - 106, z - 10, 24, 15.5 * scale);
-  h += gaussian(x + 114, z - 12, 24, 16.5 * scale);
-  h += gaussian(x - 84, z - 124, 28, 18.5 * scale);
-  h += gaussian(x + 84, z - 126, 28, 19.5 * scale);
-  h += gaussian(x - 2, z + 162, 24, 26.0 * scale); // High sky-bridge saddle to Crown of Humanity!
+  // --- Connecting High-Altitude Mountain Saddles & Outer Frontier Ridges ---
+  h += gaussian(x - 40, z + 40, 20, 11.5 * scale);
+  h += gaussian(x + 44, z + 42, 21, 12.5 * scale);
+  h += gaussian(x - 94, z + 124, 32, 18.5 * scale);
+  h += gaussian(x + 98, z + 132, 32, 19.5 * scale);
+  h += gaussian(x - 142, z - 14, 30, 16.5 * scale);
+  h += gaussian(x + 150, z - 16, 30, 17.5 * scale);
+  h += gaussian(x - 118, z - 178, 36, 20.5 * scale);
+  h += gaussian(x + 118, z - 180, 36, 21.5 * scale);
+  h += gaussian(x - 2, z + 232, 32, 28.0 * scale); // High sky-bridge saddle to Crown of Humanity!
+  // Outer frontier mesas for the expanded 360m world
+  h += gaussian(x - 285, z + 12, 38, 28.0 * scale);
+  h += gaussian(x + 285, z - 16, 38, 29.0 * scale);
+  h += gaussian(x - 165, z - 245, 36, 27.0 * scale);
+  h += gaussian(x + 165, z - 245, 36, 27.5 * scale);
+  h += gaussian(x - 158, z + 242, 36, 31.0 * scale);
+  h += gaussian(x + 158, z + 242, 36, 32.0 * scale);
 
   // --- Multi-octave continental mountain topography ---
-  h += Math.sin(x * 0.032 + 0.4) * Math.cos(z * 0.03 - 0.3) * 5.2 * scale;
-  h += Math.sin((x - z) * 0.055) * 2.4 * scale;
-  h += ridge(x + 16, z - 11, 0.036, 3.6 * scale);
-  h += Math.cos(x * 0.11 - z * 0.095) * 0.85;
+  h += Math.sin(x * 0.026 + 0.4) * Math.cos(z * 0.025 - 0.3) * 5.6 * scale;
+  h += Math.sin((x - z) * 0.048) * 2.5 * scale;
+  h += ridge(x + 16, z - 11, 0.032, 3.8 * scale);
+  h += Math.cos(x * 0.1 - z * 0.09) * 0.85;
 
   // --- Gentle starting meadow around (0, 0) looking straight up at Whispering Foothill & Crown of Humanity ---
   const spawnDist = Math.hypot(x, z);
-  const spawnBlend = Math.exp(-(spawnDist * spawnDist) / (2 * 14 * 14));
+  const spawnBlend = Math.exp(-(spawnDist * spawnDist) / (2 * 15 * 15));
   h = h * (1 - spawnBlend * 0.58) + 3.2 * (spawnBlend * 0.58);
 
-  // --- Two scenic glacial/lagoon basins ---
+  // --- Scenic glacial/lagoon basins ---
   for (const lake of WORLD_LAKES) {
     h -= gaussian(x - lake.x, z - lake.z, lake.radius * 0.82, lake.depth);
   }
   // Small rocky islet near first lake shore
   h += gaussian(x - 20, z - 22, 6.2, 3.4);
 
-  // --- Colossal Outer Himalayan Rim enclosing the 480-unit continent ---
+  // --- Colossal Outer Himalayan Rim enclosing the 720-unit continent ---
   const radial = Math.hypot(x, z);
-  if (radial > WORLD_PLAY_RADIUS - 8) {
-    const t = Math.max(0, (radial - (WORLD_PLAY_RADIUS - 8)) / 38);
-    const crag = 1 + 0.3 * Math.sin(Math.atan2(z, x) * 15 + radial * 0.09);
-    h += Math.pow(t, 1.8) * 76 * crag;
+  if (radial > WORLD_PLAY_RADIUS - 10) {
+    const t = Math.max(0, (radial - (WORLD_PLAY_RADIUS - 10)) / 46);
+    const crag = 1 + 0.3 * Math.sin(Math.atan2(z, x) * 18 + radial * 0.08);
+    h += Math.pow(t, 1.8) * 84 * crag;
   }
 
   return h;
