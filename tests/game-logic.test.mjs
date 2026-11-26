@@ -2393,3 +2393,234 @@ describe('Browser New Tab Landing Page: Frequent Portals & Cultivation Milestone
     assert.equal(derivePortalLandmarkName(-112, 132, 'A'), 'Dragon Spine Peak · Azure Gate');
   });
 });
+
+// ---------------------------------------------------------------------------
+// 29. Portal Browser History Tracking, Filtering & Time-Bucket Grouping
+// ---------------------------------------------------------------------------
+describe('Portal Browser History Tracking, Filtering & Time-Bucket Grouping', () => {
+  function isTrackableHistoryUrl(rawUrl) {
+    const trimmed = String(rawUrl ?? '').trim();
+    if (!trimmed) return false;
+    const lower = trimmed.toLowerCase();
+    if (
+      lower === 'chrome://newtab' ||
+      lower === 'chrome://settings' ||
+      lower === 'chrome://history' ||
+      lower === 'chrome://bookmarks'
+    ) {
+      return false;
+    }
+    return lower.startsWith('http://') || lower.startsWith('https://') || lower.startsWith('chrome://');
+  }
+
+  function sanitizeHistoryEntry(raw, fallbackIndex = 0) {
+    if (!raw || typeof raw.url !== 'string') return null;
+    const cleanUrl = raw.url.trim().slice(0, 512);
+    if (!isTrackableHistoryUrl(cleanUrl)) return null;
+    const visitedAt =
+      typeof raw.visitedAt === 'number' && Number.isFinite(raw.visitedAt) && raw.visitedAt > 0
+        ? Math.floor(raw.visitedAt)
+        : 1700000000000;
+    return {
+      id: typeof raw.id === 'string' && raw.id.trim() ? raw.id.trim() : `hist-${visitedAt.toString(36)}-${fallbackIndex}`,
+      url: cleanUrl,
+      title: typeof raw.title === 'string' && raw.title.trim() ? raw.title.trim() : cleanUrl,
+      visitedAt,
+      portalVariant: raw.portalVariant === 'B' ? 'B' : 'A',
+      portalLabel: typeof raw.portalLabel === 'string' && raw.portalLabel.trim() ? raw.portalLabel.trim() : 'Portal Session',
+      sessionId: typeof raw.sessionId === 'string' && raw.sessionId.trim() ? raw.sessionId.trim() : 'previous-session',
+      profileId: typeof raw.profileId === 'string' && raw.profileId.trim() ? raw.profileId.trim() : 'serpent-sovereign',
+      visitCount: typeof raw.visitCount === 'number' && Number.isFinite(raw.visitCount) ? Math.max(1, Math.floor(raw.visitCount)) : 1,
+    };
+  }
+
+  function filterBrowserHistory(entries, options = {}) {
+    const query = (options.query ?? '').trim().toLowerCase();
+    const variant = options.portalVariant ?? 'all';
+    const sessionId = (options.sessionId ?? '').trim();
+    return entries.filter((entry) => {
+      if (variant !== 'all' && entry.portalVariant !== variant) return false;
+      if (sessionId && entry.sessionId !== sessionId) return false;
+      if (!query) return true;
+      return `${entry.title} ${entry.url} ${entry.portalLabel} portal ${entry.portalVariant}`.toLowerCase().includes(query);
+    });
+  }
+
+  function groupHistoryByTimeBucket(entries, nowMs) {
+    const nowDate = new Date(nowMs);
+    const startOfToday = new Date(nowDate.getFullYear(), nowDate.getMonth(), nowDate.getDate()).getTime();
+    const msPerDay = 24 * 60 * 60 * 1000;
+    const startOfYesterday = startOfToday - msPerDay;
+    const startOfWeek = startOfToday - 6 * msPerDay;
+    const buckets = { Today: [], Yesterday: [], 'Earlier This Week': [], Older: [] };
+    for (const entry of [...entries].sort((a, b) => b.visitedAt - a.visitedAt)) {
+      if (entry.visitedAt >= startOfToday) buckets.Today.push(entry);
+      else if (entry.visitedAt >= startOfYesterday) buckets.Yesterday.push(entry);
+      else if (entry.visitedAt >= startOfWeek) buckets['Earlier This Week'].push(entry);
+      else buckets.Older.push(entry);
+    }
+    return ['Today', 'Yesterday', 'Earlier This Week', 'Older']
+      .filter((bucket) => buckets[bucket].length > 0)
+      .map((bucket) => ({ bucket, entries: buckets[bucket] }));
+  }
+
+  it('sanitizes legacy and rich history entries while excluding chrome://settings and chrome://newtab', () => {
+    const legacy = sanitizeHistoryEntry({
+      url: 'https://en.m.wikipedia.org/wiki/Serpent',
+      title: 'Serpent - Wikipedia',
+      visitedAt: 1700000123456,
+    }, 2);
+    assert.ok(legacy);
+    assert.equal(legacy.portalVariant, 'A');
+    assert.equal(legacy.portalLabel, 'Portal Session');
+    assert.equal(legacy.sessionId, 'previous-session');
+    assert.equal(legacy.visitCount, 1);
+
+    assert.equal(sanitizeHistoryEntry({ url: 'chrome://newtab', title: 'New Tab' }), null);
+    assert.equal(sanitizeHistoryEntry({ url: 'chrome://settings', title: 'Settings' }), null);
+    assert.equal(sanitizeHistoryEntry({ url: 'chrome://history', title: 'History' }), null);
+    assert.ok(sanitizeHistoryEntry({ url: 'chrome://peaks-atlas', title: 'Peaks Atlas', visitedAt: 1700000200000 }));
+  });
+
+  it('filters browser history by search keyword, active session, and portal channel', () => {
+    const sample = [
+      sanitizeHistoryEntry({ id: 'h1', url: 'https://en.m.wikipedia.org/wiki/Dragon', title: 'Dragon Lore', visitedAt: 1000, portalVariant: 'A', portalLabel: 'Jade Base Valley · Azure Gate', sessionId: 'sess-now' }),
+      sanitizeHistoryEntry({ id: 'h2', url: 'https://news.ycombinator.com/', title: 'Hacker News', visitedAt: 2000, portalVariant: 'B', portalLabel: 'Emerald Mist Ridge · Crimson Gate', sessionId: 'sess-now' }),
+      sanitizeHistoryEntry({ id: 'h3', url: 'https://example.com/', title: 'Example Sandbox', visitedAt: 3000, portalVariant: 'B', portalLabel: 'Standalone Browser', sessionId: 'sess-old' }),
+    ];
+
+    assert.deepEqual(filterBrowserHistory(sample, { sessionId: 'sess-now' }).map((e) => e.id), ['h1', 'h2']);
+    assert.deepEqual(filterBrowserHistory(sample, { portalVariant: 'B' }).map((e) => e.id), ['h2', 'h3']);
+    assert.deepEqual(filterBrowserHistory(sample, { query: 'jade base' }).map((e) => e.id), ['h1']);
+    assert.deepEqual(filterBrowserHistory(sample, { query: 'hacker', portalVariant: 'B' }).map((e) => e.id), ['h2']);
+  });
+
+  it('groups visited URLs chronologically into Today, Yesterday, Earlier This Week, and Older buckets', () => {
+    const now = new Date(2026, 10, 26, 15, 0, 0).getTime();
+    const hour = 60 * 60 * 1000;
+    const day = 24 * hour;
+    const entries = [
+      sanitizeHistoryEntry({ id: 'old', url: 'https://example.com/old', title: 'Old', visitedAt: now - 12 * day }),
+      sanitizeHistoryEntry({ id: 'week', url: 'https://example.com/week', title: 'Week', visitedAt: now - 3 * day }),
+      sanitizeHistoryEntry({ id: 'yest', url: 'https://example.com/yest', title: 'Yest', visitedAt: now - 1 * day }),
+      sanitizeHistoryEntry({ id: 'today1', url: 'https://example.com/t1', title: 'Today Early', visitedAt: now - 2 * hour }),
+      sanitizeHistoryEntry({ id: 'today2', url: 'https://example.com/t2', title: 'Today Late', visitedAt: now - 10 * 60 * 1000 }),
+    ];
+
+    const groups = groupHistoryByTimeBucket(entries, now);
+    assert.deepEqual(groups.map((g) => g.bucket), ['Today', 'Yesterday', 'Earlier This Week', 'Older']);
+    assert.deepEqual(groups[0].entries.map((e) => e.id), ['today2', 'today1']);
+    assert.deepEqual(groups[1].entries.map((e) => e.id), ['yest']);
+    assert.deepEqual(groups[2].entries.map((e) => e.id), ['week']);
+    assert.deepEqual(groups[3].entries.map((e) => e.id), ['old']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 30. Portal URL Bookmarks & Search History Tracking
+// ---------------------------------------------------------------------------
+describe('Portal URL Bookmarks & Search History Tracking', () => {
+  const VALID_ENGINES = new Set(['duckduckgo', 'wikipedia', 'brave', 'ecosia', 'bing', 'google']);
+
+  function normalizeBookmarkUrl(rawInput) {
+    const trimmed = String(rawInput ?? '').trim();
+    if (!trimmed) return null;
+    const lower = trimmed.toLowerCase();
+    if (lower.startsWith('chrome://') || lower.startsWith('serpent://')) {
+      return `chrome://${trimmed.slice(trimmed.indexOf('://') + 3)}`;
+    }
+    if (lower.startsWith('http://') || lower.startsWith('https://')) {
+      return trimmed.slice(0, 512);
+    }
+    if (/^[a-z0-9-]+(\.[a-z0-9-]+)+([/:?#].*)?$/i.test(trimmed)) {
+      return `https://${trimmed}`.slice(0, 512);
+    }
+    return null;
+  }
+
+  function sanitizeSearchHistoryEntry(raw, fallbackIndex = 0) {
+    if (!raw || typeof raw.query !== 'string') return null;
+    const query = raw.query.replace(/\s+/g, ' ').trim().slice(0, 180);
+    if (!query) return null;
+    const searchedAt =
+      typeof raw.searchedAt === 'number' && Number.isFinite(raw.searchedAt) && raw.searchedAt > 0
+        ? Math.floor(raw.searchedAt)
+        : 1700000000000;
+    const engine = typeof raw.engine === 'string' && VALID_ENGINES.has(raw.engine) ? raw.engine : 'duckduckgo';
+    return {
+      id: typeof raw.id === 'string' && raw.id.trim() ? raw.id.trim() : `srch-${searchedAt.toString(36)}-${fallbackIndex}`,
+      query,
+      engine,
+      url: typeof raw.url === 'string' && raw.url.trim() ? raw.url.trim().slice(0, 512) : `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`,
+      searchedAt,
+      portalVariant: raw.portalVariant === 'B' ? 'B' : 'A',
+      portalLabel: typeof raw.portalLabel === 'string' && raw.portalLabel.trim() ? raw.portalLabel.trim() : 'Portal Session',
+      sessionId: typeof raw.sessionId === 'string' && raw.sessionId.trim() ? raw.sessionId.trim() : 'previous-session',
+      searchCount: typeof raw.searchCount === 'number' && Number.isFinite(raw.searchCount) ? Math.max(1, Math.floor(raw.searchCount)) : 1,
+    };
+  }
+
+  function filterSearchHistory(entries, options = {}) {
+    const keyword = (options.query ?? '').trim().toLowerCase();
+    const variant = options.portalVariant ?? 'all';
+    const sessionId = (options.sessionId ?? '').trim();
+    return entries.filter((entry) => {
+      if (variant !== 'all' && entry.portalVariant !== variant) return false;
+      if (sessionId && entry.sessionId !== sessionId) return false;
+      if (!keyword) return true;
+      return `${entry.query} ${entry.engine} ${entry.portalLabel} portal ${entry.portalVariant}`.toLowerCase().includes(keyword);
+    });
+  }
+
+  it('normalizes portal URLs for bookmarks and rejects empty or bare non-URL phrases', () => {
+    assert.equal(normalizeBookmarkUrl('https://threejs.org/docs/'), 'https://threejs.org/docs/');
+    assert.equal(normalizeBookmarkUrl('en.wikipedia.org/wiki/Dragon'), 'https://en.wikipedia.org/wiki/Dragon');
+    assert.equal(normalizeBookmarkUrl('serpent://peaks-atlas'), 'chrome://peaks-atlas');
+    assert.equal(normalizeBookmarkUrl('just a search phrase'), null);
+    assert.equal(normalizeBookmarkUrl('   '), null);
+  });
+
+  it('deduplicates saved bookmarks by normalized URL while placing custom bookmarks first', () => {
+    const defaults = [
+      { id: 'bm-wiki', title: 'Wikipedia', url: 'https://en.m.wikipedia.org/wiki/Main_Page', isCustom: false },
+      { id: 'bm-atlas', title: 'Peaks Atlas', url: 'chrome://peaks-atlas', isCustom: false },
+    ];
+    const custom = [
+      { id: 'cbm-1', title: 'My Wiki Portal', url: 'https://en.m.wikipedia.org/wiki/Main_Page', isCustom: true },
+      { id: 'cbm-2', title: 'Three.js Reference', url: 'https://threejs.org/', isCustom: true },
+    ];
+    const seen = new Set();
+    const merged = [];
+    for (const item of [...custom, ...defaults]) {
+      const key = item.url.trim().toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      merged.push(item);
+    }
+    assert.deepEqual(
+      merged.map((m) => m.id),
+      ['cbm-1', 'cbm-2', 'bm-atlas'],
+    );
+    assert.equal(merged[0].title, 'My Wiki Portal');
+  });
+
+  it('sanitizes and filters search history across queries, search engines, sessions, and portal channels', () => {
+    const entries = [
+      sanitizeSearchHistoryEntry({ id: 's1', query: '  jade   serpent lore  ', engine: 'wikipedia', searchedAt: 5000, portalVariant: 'A', portalLabel: 'Jade Base Valley · Azure Gate', sessionId: 'sess-live', searchCount: 2 }),
+      sanitizeSearchHistoryEntry({ id: 's2', query: 'webgl shadow shaders', engine: 'brave', searchedAt: 6000, portalVariant: 'B', portalLabel: 'Crimson Gate', sessionId: 'sess-live' }),
+      sanitizeSearchHistoryEntry({ id: 's3', query: 'mountain weather', engine: 'invalid_engine', searchedAt: 4000, portalVariant: 'A', portalLabel: 'Standalone Browser', sessionId: 'sess-old' }),
+    ].filter(Boolean);
+
+    assert.equal(entries.length, 3);
+    assert.equal(entries[0].query, 'jade serpent lore');
+    assert.equal(entries[2].engine, 'duckduckgo');
+    assert.equal(sanitizeSearchHistoryEntry({ query: '   ' }), null);
+
+    assert.deepEqual(filterSearchHistory(entries, { sessionId: 'sess-live' }).map((e) => e.id), ['s1', 's2']);
+    assert.deepEqual(filterSearchHistory(entries, { portalVariant: 'B' }).map((e) => e.id), ['s2']);
+    assert.deepEqual(filterSearchHistory(entries, { query: 'wikipedia' }).map((e) => e.id), ['s1']);
+    assert.deepEqual(filterSearchHistory(entries, { query: 'shaders', portalVariant: 'B' }).map((e) => e.id), ['s2']);
+  });
+});
+
+

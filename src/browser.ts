@@ -20,6 +20,8 @@ export interface ResolvedOmniboxTarget {
   displayUrl: string;
   titleGuess: string;
   isInternal: boolean;
+  searchQuery?: string;
+  searchEngine?: SearchEngineId;
 }
 
 export interface PortalBookmark {
@@ -27,6 +29,10 @@ export interface PortalBookmark {
   url: string;
   badge: string;
   accentHex: string;
+  savedAt?: number;
+  portalVariant?: PortalVariant;
+  portalLabel?: string;
+  isCustom?: boolean;
 }
 
 export const CHROMIUM_ENGINE_META = {
@@ -157,10 +163,61 @@ export interface BrowserSettings {
 }
 
 export interface BrowserHistoryEntry {
+  id: string;
   url: string;
   title: string;
   visitedAt: number;
+  portalVariant: PortalVariant;
+  portalLabel: string;
+  sessionId: string;
+  profileId: string;
+  visitCount: number;
 }
+
+export type BrowserHistoryTimeBucket = 'Today' | 'Yesterday' | 'Earlier This Week' | 'Older';
+
+export interface BrowserHistoryFilterOptions {
+  query?: string;
+  portalVariant?: 'all' | PortalVariant;
+  sessionId?: string;
+  profileId?: string;
+}
+
+export interface BrowserHistoryGroup {
+  bucket: BrowserHistoryTimeBucket;
+  entries: BrowserHistoryEntry[];
+}
+
+export interface BrowserHistoryStats {
+  totalEntries: number;
+  sessionEntries: number;
+  uniqueHosts: number;
+  portalAEntries: number;
+  portalBEntries: number;
+  totalSearches: number;
+  customBookmarks: number;
+}
+
+export interface SearchHistoryEntry {
+  id: string;
+  query: string;
+  searchEngine: SearchEngineId;
+  resolvedUrl: string;
+  searchedAt: number;
+  portalVariant: PortalVariant;
+  portalLabel: string;
+  sessionId: string;
+  searchCount: number;
+}
+
+export interface SearchHistoryFilterOptions {
+  query?: string;
+  portalVariant?: 'all' | PortalVariant;
+  sessionId?: string;
+}
+
+export const MAX_BROWSER_HISTORY_ENTRIES = 200;
+export const MAX_SEARCH_HISTORY_ENTRIES = 100;
 
 export interface PortalVisitRecord {
   portalId: string;
@@ -244,6 +301,258 @@ export function rankFrequentPortals(
       return b.lastVisitedAt - a.lastVisitedAt;
     })
     .slice(0, max);
+}
+
+export function isTrackableHistoryUrl(rawUrl: string): boolean {
+  const trimmed = String(rawUrl ?? '').trim();
+  if (!trimmed) return false;
+  const lower = trimmed.toLowerCase();
+  if (
+    lower === 'chrome://newtab' ||
+    lower === 'chrome://settings' ||
+    lower === 'chrome://history' ||
+    lower === 'chrome://bookmarks' ||
+    lower === 'serpent://newtab' ||
+    lower === 'serpent://settings' ||
+    lower === 'serpent://history' ||
+    lower === 'serpent://bookmarks'
+  ) {
+    return false;
+  }
+  return (
+    lower.startsWith('http://') ||
+    lower.startsWith('https://') ||
+    lower.startsWith('chrome://')
+  );
+}
+
+export function extractHistoryHost(rawUrl: string): string {
+  const trimmed = String(rawUrl ?? '').trim();
+  if (trimmed.toLowerCase().startsWith('chrome://')) {
+    return trimmed.toLowerCase().split(/[/?#]/)[0];
+  }
+  try {
+    return new URL(trimmed).hostname.replace(/^www\./, '').toLowerCase();
+  } catch {
+    return trimmed.replace(/^https?:\/\//i, '').split('/')[0].toLowerCase() || 'unknown';
+  }
+}
+
+export function sanitizeHistoryEntry(
+  raw: Partial<BrowserHistoryEntry> | null | undefined,
+  fallbackIndex = 0,
+): BrowserHistoryEntry | null {
+  if (!raw || typeof raw.url !== 'string') return null;
+  const cleanUrl = raw.url.trim().slice(0, 512);
+  if (!isTrackableHistoryUrl(cleanUrl)) return null;
+  const visitedAt =
+    typeof raw.visitedAt === 'number' && Number.isFinite(raw.visitedAt) && raw.visitedAt > 0
+      ? Math.floor(raw.visitedAt)
+      : Date.now();
+  const cleanTitle =
+    typeof raw.title === 'string' && raw.title.trim()
+      ? raw.title.trim().slice(0, 96)
+      : extractHistoryHost(cleanUrl) || cleanUrl.slice(0, 64);
+  const id =
+    typeof raw.id === 'string' && raw.id.trim()
+      ? raw.id.trim().slice(0, 64)
+      : `hist-${visitedAt.toString(36)}-${fallbackIndex}`;
+  const portalVariant: PortalVariant = raw.portalVariant === 'B' ? 'B' : 'A';
+  const portalLabel =
+    typeof raw.portalLabel === 'string' && raw.portalLabel.trim()
+      ? raw.portalLabel.trim().slice(0, 64)
+      : 'Portal Session';
+  const sessionId =
+    typeof raw.sessionId === 'string' && raw.sessionId.trim()
+      ? raw.sessionId.trim().slice(0, 48)
+      : 'previous-session';
+  const profileId =
+    typeof raw.profileId === 'string' && raw.profileId.trim()
+      ? raw.profileId.trim().slice(0, 48)
+      : 'serpent-sovereign';
+  const visitCount =
+    typeof raw.visitCount === 'number' && Number.isFinite(raw.visitCount)
+      ? Math.max(1, Math.floor(raw.visitCount))
+      : 1;
+
+  return {
+    id,
+    url: cleanUrl,
+    title: cleanTitle,
+    visitedAt,
+    portalVariant,
+    portalLabel,
+    sessionId,
+    profileId,
+    visitCount,
+  };
+}
+
+export function filterBrowserHistory(
+  entries: BrowserHistoryEntry[],
+  options: BrowserHistoryFilterOptions = {},
+): BrowserHistoryEntry[] {
+  const query = (options.query ?? '').trim().toLowerCase();
+  const variant = options.portalVariant ?? 'all';
+  const sessionId = options.sessionId?.trim() || '';
+  const profileId = options.profileId?.trim() || '';
+
+  return entries.filter((entry) => {
+    if (variant !== 'all' && entry.portalVariant !== variant) return false;
+    if (sessionId && entry.sessionId !== sessionId) return false;
+    if (profileId && entry.profileId !== profileId) return false;
+    if (!query) return true;
+    const haystack = `${entry.title} ${entry.url} ${entry.portalLabel} portal ${entry.portalVariant}`.toLowerCase();
+    return haystack.includes(query);
+  });
+}
+
+export function groupHistoryByTimeBucket(
+  entries: BrowserHistoryEntry[],
+  nowMs = Date.now(),
+): BrowserHistoryGroup[] {
+  const nowDate = new Date(nowMs);
+  const startOfToday = new Date(
+    nowDate.getFullYear(),
+    nowDate.getMonth(),
+    nowDate.getDate(),
+  ).getTime();
+  const msPerDay = 24 * 60 * 60 * 1000;
+  const startOfYesterday = startOfToday - msPerDay;
+  const startOfWeek = startOfToday - 6 * msPerDay;
+
+  const buckets: Record<BrowserHistoryTimeBucket, BrowserHistoryEntry[]> = {
+    Today: [],
+    Yesterday: [],
+    'Earlier This Week': [],
+    Older: [],
+  };
+
+  const sorted = [...entries].sort((a, b) => b.visitedAt - a.visitedAt);
+  for (const entry of sorted) {
+    if (entry.visitedAt >= startOfToday) {
+      buckets.Today.push(entry);
+    } else if (entry.visitedAt >= startOfYesterday) {
+      buckets.Yesterday.push(entry);
+    } else if (entry.visitedAt >= startOfWeek) {
+      buckets['Earlier This Week'].push(entry);
+    } else {
+      buckets.Older.push(entry);
+    }
+  }
+
+  const order: BrowserHistoryTimeBucket[] = ['Today', 'Yesterday', 'Earlier This Week', 'Older'];
+  const groups: BrowserHistoryGroup[] = [];
+  for (const bucket of order) {
+    if (buckets[bucket].length > 0) {
+      groups.push({ bucket, entries: buckets[bucket] });
+    }
+  }
+  return groups;
+}
+
+export function normalizeBookmarkUrl(rawUrl: string): string | null {
+  const trimmed = String(rawUrl ?? '').trim();
+  if (!trimmed) return null;
+  const lower = trimmed.toLowerCase();
+  if (
+    lower === 'chrome://newtab' ||
+    lower === 'chrome://settings' ||
+    lower === 'chrome://history' ||
+    lower === 'chrome://bookmarks' ||
+    lower === 'serpent://newtab' ||
+    lower === 'serpent://settings' ||
+    lower === 'serpent://history' ||
+    lower === 'serpent://bookmarks'
+  ) {
+    return null;
+  }
+  if (lower.startsWith('chrome://') || lower.startsWith('serpent://')) {
+    return trimmed.replace(/^serpent:\/\//i, 'chrome://').slice(0, 320);
+  }
+  if (/^https?:\/\//i.test(trimmed)) {
+    try {
+      return new URL(trimmed).toString().slice(0, 320);
+    } catch {
+      return null;
+    }
+  }
+  if (!/\s/.test(trimmed) && /^[a-z0-9-]+(\.[a-z0-9-]+)+(\/.*)?$/i.test(trimmed)) {
+    try {
+      return new URL(`https://${trimmed}`).toString().slice(0, 320);
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+export function sanitizeSearchHistoryEntry(
+  raw: Partial<SearchHistoryEntry> | null | undefined,
+  fallbackIndex = 0,
+): SearchHistoryEntry | null {
+  if (!raw || typeof raw.query !== 'string') return null;
+  const cleanQuery = raw.query.trim().slice(0, 140);
+  if (!cleanQuery) return null;
+  const searchedAt =
+    typeof raw.searchedAt === 'number' && Number.isFinite(raw.searchedAt) && raw.searchedAt > 0
+      ? Math.floor(raw.searchedAt)
+      : Date.now();
+  const engine: SearchEngineId =
+    raw.searchEngine && raw.searchEngine in SEARCH_ENGINE_CATALOG
+      ? raw.searchEngine
+      : 'duckduckgo';
+  const resolvedUrl =
+    typeof raw.resolvedUrl === 'string' && raw.resolvedUrl.trim().startsWith('http')
+      ? raw.resolvedUrl.trim().slice(0, 512)
+      : SEARCH_ENGINE_CATALOG[engine].queryTemplate.replace('{q}', encodeURIComponent(cleanQuery));
+  const id =
+    typeof raw.id === 'string' && raw.id.trim()
+      ? raw.id.trim().slice(0, 64)
+      : `srch-${searchedAt.toString(36)}-${fallbackIndex}`;
+  const portalVariant: PortalVariant = raw.portalVariant === 'B' ? 'B' : 'A';
+  const portalLabel =
+    typeof raw.portalLabel === 'string' && raw.portalLabel.trim()
+      ? raw.portalLabel.trim().slice(0, 64)
+      : 'Portal Session';
+  const sessionId =
+    typeof raw.sessionId === 'string' && raw.sessionId.trim()
+      ? raw.sessionId.trim().slice(0, 48)
+      : 'previous-session';
+  const searchCount =
+    typeof raw.searchCount === 'number' && Number.isFinite(raw.searchCount)
+      ? Math.max(1, Math.floor(raw.searchCount))
+      : 1;
+
+  return {
+    id,
+    query: cleanQuery,
+    searchEngine: engine,
+    resolvedUrl,
+    searchedAt,
+    portalVariant,
+    portalLabel,
+    sessionId,
+    searchCount,
+  };
+}
+
+export function filterSearchHistory(
+  entries: SearchHistoryEntry[],
+  options: SearchHistoryFilterOptions = {},
+): SearchHistoryEntry[] {
+  const query = (options.query ?? '').trim().toLowerCase();
+  const variant = options.portalVariant ?? 'all';
+  const sessionId = (options.sessionId ?? '').trim();
+
+  return entries.filter((entry) => {
+    if (variant !== 'all' && entry.portalVariant !== variant) return false;
+    if (sessionId && entry.sessionId !== sessionId) return false;
+    if (!query) return true;
+    const engineName = SEARCH_ENGINE_CATALOG[entry.searchEngine]?.name ?? entry.searchEngine;
+    const haystack = `${entry.query} ${engineName} ${entry.portalLabel} portal ${entry.portalVariant}`.toLowerCase();
+    return haystack.includes(query);
+  });
 }
 
 function escapeHtml(raw: string): string {
@@ -380,6 +689,8 @@ export function resolveOmniboxInput(
     displayUrl: searchUrl,
     titleGuess: `${trimmed} - ${engine.name}`,
     isInternal: false,
+    searchQuery: trimmed,
+    searchEngine: engine.id,
   };
 }
 
@@ -592,7 +903,10 @@ export class PortalChromiumManager {
   private settings: BrowserSettings = { ...DEFAULT_BROWSER_SETTINGS };
   private customBookmarks: PortalBookmark[] = [];
   private browsingHistory: BrowserHistoryEntry[] = [];
+  private searchHistory: SearchHistoryEntry[] = [];
   private portalVisits: Record<string, PortalVisitRecord> = {};
+  private readonly currentSessionId = `sess-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+  private activePortalContextLabel = 'Standalone Session';
   private listeners: Array<() => void> = [];
 
   constructor() {
@@ -607,25 +921,49 @@ export class PortalChromiumManager {
       const parsed = JSON.parse(raw) as {
         settings?: Partial<BrowserSettings>;
         customBookmarks?: PortalBookmark[];
-        browsingHistory?: BrowserHistoryEntry[];
+        browsingHistory?: Array<Partial<BrowserHistoryEntry>>;
+        searchHistory?: Array<Partial<SearchHistoryEntry>>;
         portalVisits?: Record<string, PortalVisitRecord>;
       };
       this.settings = sanitizeBrowserSettings(parsed.settings);
       if (Array.isArray(parsed.customBookmarks)) {
         this.customBookmarks = parsed.customBookmarks
           .filter((b) => b && typeof b.url === 'string' && typeof b.title === 'string')
-          .slice(0, 40)
+          .slice(0, 48)
           .map((b) => ({
-            title: b.title.slice(0, 40),
-            url: b.url.slice(0, 320),
+            title: b.title.trim().slice(0, 48) || extractHistoryHost(b.url),
+            url: b.url.trim().slice(0, 320),
             badge: typeof b.badge === 'string' && b.badge ? b.badge.slice(0, 2) : '★',
-            accentHex: typeof b.accentHex === 'string' ? b.accentHex : '#58e1ff',
+            accentHex: typeof b.accentHex === 'string' ? b.accentHex : '#f2c14e',
+            savedAt:
+              typeof b.savedAt === 'number' && Number.isFinite(b.savedAt)
+                ? Math.floor(b.savedAt)
+                : Date.now(),
+            portalVariant: b.portalVariant === 'B' ? 'B' : 'A',
+            portalLabel:
+              typeof b.portalLabel === 'string' && b.portalLabel.trim()
+                ? b.portalLabel.trim().slice(0, 64)
+                : undefined,
+            isCustom: true,
           }));
       }
       if (Array.isArray(parsed.browsingHistory)) {
-        this.browsingHistory = parsed.browsingHistory
-          .filter((h) => h && typeof h.url === 'string' && typeof h.title === 'string')
-          .slice(0, 80);
+        const sanitized: BrowserHistoryEntry[] = [];
+        for (let i = 0; i < parsed.browsingHistory.length; i++) {
+          const clean = sanitizeHistoryEntry(parsed.browsingHistory[i], i);
+          if (clean) sanitized.push(clean);
+          if (sanitized.length >= MAX_BROWSER_HISTORY_ENTRIES) break;
+        }
+        this.browsingHistory = sanitized;
+      }
+      if (Array.isArray(parsed.searchHistory)) {
+        const sanitizedSearches: SearchHistoryEntry[] = [];
+        for (let i = 0; i < parsed.searchHistory.length; i++) {
+          const clean = sanitizeSearchHistoryEntry(parsed.searchHistory[i], i);
+          if (clean) sanitizedSearches.push(clean);
+          if (sanitizedSearches.length >= MAX_SEARCH_HISTORY_ENTRIES) break;
+        }
+        this.searchHistory = sanitizedSearches;
       }
       if (parsed.portalVisits && typeof parsed.portalVisits === 'object') {
         const cleaned: Record<string, PortalVisitRecord> = {};
@@ -669,6 +1007,7 @@ export class PortalChromiumManager {
             settings: this.settings,
             customBookmarks: this.customBookmarks,
             browsingHistory: this.browsingHistory,
+            searchHistory: this.searchHistory,
             portalVisits: this.portalVisits,
           }),
         );
@@ -764,26 +1103,70 @@ export class PortalChromiumManager {
   }
 
   public getAllBookmarks(): PortalBookmark[] {
-    const combined = [...PORTAL_BOOKMARKS];
-    for (const cb of this.customBookmarks) {
-      if (!combined.some((b) => b.url === cb.url)) {
-        combined.push(cb);
+    const combined: PortalBookmark[] = this.customBookmarks.map((cb) => ({
+      ...cb,
+      isCustom: true,
+    }));
+    for (const def of PORTAL_BOOKMARKS) {
+      if (!combined.some((b) => b.url === def.url)) {
+        combined.push({ ...def, isCustom: false });
       }
     }
     return combined;
   }
 
   public getCustomBookmarks(): PortalBookmark[] {
-    return [...this.customBookmarks];
+    return this.customBookmarks.map((b) => ({ ...b, isCustom: true }));
   }
 
   public isBookmarked(url: string): boolean {
-    return this.getAllBookmarks().some((b) => b.url === url);
+    const normalized = normalizeBookmarkUrl(url) ?? url.trim();
+    return this.getAllBookmarks().some((b) => b.url === normalized || b.url === url.trim());
   }
 
-  public toggleBookmark(title: string, url: string): boolean {
-    const cleanUrl = url.trim();
-    if (!cleanUrl || cleanUrl === 'chrome://newtab' || cleanUrl === 'chrome://settings') return false;
+  public isCustomBookmarked(url: string): boolean {
+    const normalized = normalizeBookmarkUrl(url) ?? url.trim();
+    return this.customBookmarks.some((b) => b.url === normalized || b.url === url.trim());
+  }
+
+  public addOrUpdateBookmark(input: {
+    url: string;
+    title?: string;
+    portalVariant?: PortalVariant;
+    portalLabel?: string;
+  }): PortalBookmark | null {
+    const cleanUrl = normalizeBookmarkUrl(input.url);
+    if (!cleanUrl) return null;
+    const hostGuess = extractHistoryHost(cleanUrl);
+    const cleanTitle = (input.title?.trim() || hostGuess || cleanUrl).slice(0, 48);
+    const variant: PortalVariant = input.portalVariant ?? this.activePortalVariant;
+    const portalLabel = (input.portalLabel?.trim() || this.activePortalContextLabel).slice(0, 64);
+    const accentHex = variant === 'B' ? '#f472b6' : '#f2c14e';
+    const nextBookmark: PortalBookmark = {
+      title: cleanTitle || 'Saved Portal URL',
+      url: cleanUrl,
+      badge: cleanTitle.charAt(0).toUpperCase() || '★',
+      accentHex,
+      savedAt: Date.now(),
+      portalVariant: variant,
+      portalLabel,
+      isCustom: true,
+    };
+
+    const existingIdx = this.customBookmarks.findIndex((b) => b.url === cleanUrl);
+    if (existingIdx >= 0) {
+      this.customBookmarks.splice(existingIdx, 1);
+    }
+    this.customBookmarks.unshift(nextBookmark);
+    this.customBookmarks = this.customBookmarks.slice(0, 48);
+    this.saveSettingsToStorage();
+    this.emitChange();
+    return nextBookmark;
+  }
+
+  public toggleBookmark(title: string, url: string, portalVariant?: PortalVariant): boolean {
+    const cleanUrl = normalizeBookmarkUrl(url);
+    if (!cleanUrl) return false;
     const existingIdx = this.customBookmarks.findIndex((b) => b.url === cleanUrl);
     if (existingIdx >= 0) {
       this.customBookmarks.splice(existingIdx, 1);
@@ -791,33 +1174,153 @@ export class PortalChromiumManager {
       this.emitChange();
       return false;
     }
-    if (PORTAL_BOOKMARKS.some((b) => b.url === cleanUrl)) {
+    this.addOrUpdateBookmark({
+      url: cleanUrl,
+      title,
+      portalVariant: portalVariant ?? this.activePortalVariant,
+      portalLabel: this.activePortalContextLabel,
+    });
+    return true;
+  }
+
+  public removeCustomBookmark(url: string): boolean {
+    const cleanUrl = normalizeBookmarkUrl(url) ?? url.trim();
+    const next = this.customBookmarks.filter((b) => b.url !== cleanUrl && b.url !== url.trim());
+    if (next.length !== this.customBookmarks.length) {
+      this.customBookmarks = next;
+      this.saveSettingsToStorage();
+      this.emitChange();
       return true;
     }
-    const cleanTitle = (title || cleanUrl.replace(/^https?:\/\//, '')).trim().slice(0, 28);
-    this.customBookmarks.unshift({
-      title: cleanTitle || 'Saved Page',
-      url: cleanUrl,
-      badge: cleanTitle.charAt(0).toUpperCase() || '★',
-      accentHex: '#f2c14e',
-    });
-    this.customBookmarks = this.customBookmarks.slice(0, 32);
+    return false;
+  }
+
+  public setActivePortalContext(label: string, variant?: PortalVariant): void {
+    const clean = label.trim().slice(0, 64);
+    this.activePortalContextLabel = clean || 'Portal Session';
+    if (variant) {
+      this.activePortalVariant = variant;
+    }
+  }
+
+  public getActivePortalContextLabel(): string {
+    return this.activePortalContextLabel;
+  }
+
+  public getCurrentSessionId(): string {
+    return this.currentSessionId;
+  }
+
+  public getHistory(options?: BrowserHistoryFilterOptions): BrowserHistoryEntry[] {
+    if (!options) return [...this.browsingHistory];
+    return filterBrowserHistory(this.browsingHistory, options);
+  }
+
+  public getSearchHistory(options?: SearchHistoryFilterOptions): SearchHistoryEntry[] {
+    if (!options) return [...this.searchHistory];
+    return filterSearchHistory(this.searchHistory, options);
+  }
+
+  public recordSearchQuery(
+    query: string,
+    searchEngine: SearchEngineId = this.settings.searchEngine,
+    resolvedUrl?: string,
+    variantOverride?: PortalVariant,
+  ): SearchHistoryEntry | null {
+    const cleanQuery = query.trim().slice(0, 140);
+    if (!cleanQuery) return null;
+    const now = Date.now();
+    const variant: PortalVariant = variantOverride ?? this.activePortalVariant;
+    const engine = SEARCH_ENGINE_CATALOG[searchEngine] ?? SEARCH_ENGINE_CATALOG.duckduckgo;
+    const finalUrl =
+      resolvedUrl && resolvedUrl.startsWith('http')
+        ? resolvedUrl.slice(0, 512)
+        : engine.queryTemplate.replace('{q}', encodeURIComponent(cleanQuery));
+
+    const existingIdx = this.searchHistory.findIndex(
+      (entry) => entry.query.toLowerCase() === cleanQuery.toLowerCase(),
+    );
+    const prevCount = existingIdx >= 0 ? this.searchHistory[existingIdx].searchCount : 0;
+    if (existingIdx >= 0) {
+      this.searchHistory.splice(existingIdx, 1);
+    }
+
+    const entry: SearchHistoryEntry = {
+      id: `srch-${now.toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+      query: cleanQuery,
+      searchEngine: engine.id,
+      resolvedUrl: finalUrl,
+      searchedAt: now,
+      portalVariant: variant,
+      portalLabel: this.activePortalContextLabel,
+      sessionId: this.currentSessionId,
+      searchCount: prevCount + 1,
+    };
+
+    this.searchHistory.unshift(entry);
+    this.searchHistory = this.searchHistory.slice(0, MAX_SEARCH_HISTORY_ENTRIES);
+    this.saveSettingsToStorage();
+    return entry;
+  }
+
+  public removeSearchHistoryEntry(id: string): boolean {
+    const next = this.searchHistory.filter((entry) => entry.id !== id);
+    if (next.length === this.searchHistory.length) return false;
+    this.searchHistory = next;
     this.saveSettingsToStorage();
     this.emitChange();
     return true;
   }
 
-  public removeCustomBookmark(url: string): void {
-    const next = this.customBookmarks.filter((b) => b.url !== url);
-    if (next.length !== this.customBookmarks.length) {
-      this.customBookmarks = next;
+  public clearSearchHistory(): void {
+    if (this.searchHistory.length === 0) return;
+    this.searchHistory = [];
+    this.saveSettingsToStorage();
+    this.emitChange();
+  }
+
+  public getHistoryStats(): BrowserHistoryStats {
+    const uniqueHosts = new Set<string>();
+    let sessionEntries = 0;
+    let portalAEntries = 0;
+    let portalBEntries = 0;
+    for (const entry of this.browsingHistory) {
+      uniqueHosts.add(extractHistoryHost(entry.url));
+      if (entry.sessionId === this.currentSessionId) sessionEntries++;
+      if (entry.portalVariant === 'B') portalBEntries++;
+      else portalAEntries++;
+    }
+    return {
+      totalEntries: this.browsingHistory.length,
+      sessionEntries,
+      uniqueHosts: uniqueHosts.size,
+      portalAEntries,
+      portalBEntries,
+      totalSearches: this.searchHistory.length,
+      customBookmarks: this.customBookmarks.length,
+    };
+  }
+
+  public removeHistoryEntry(id: string): boolean {
+    const next = this.browsingHistory.filter((entry) => entry.id !== id);
+    if (next.length === this.browsingHistory.length) return false;
+    this.browsingHistory = next;
+    this.saveSettingsToStorage();
+    this.emitChange();
+    return true;
+  }
+
+  public clearCurrentSessionHistory(): number {
+    const before = this.browsingHistory.length;
+    this.browsingHistory = this.browsingHistory.filter(
+      (entry) => entry.sessionId !== this.currentSessionId,
+    );
+    const removed = before - this.browsingHistory.length;
+    if (removed > 0) {
       this.saveSettingsToStorage();
       this.emitChange();
     }
-  }
-
-  public getHistory(): BrowserHistoryEntry[] {
-    return [...this.browsingHistory];
+    return removed;
   }
 
   public clearHistory(): void {
@@ -837,20 +1340,46 @@ export class PortalChromiumManager {
     this.emitChange();
   }
 
-  private recordHistoryVisit(url: string, title: string): void {
-    if (!url || url === 'chrome://settings' || url === 'chrome://history') return;
+  private recordHistoryVisit(
+    url: string,
+    title: string,
+    variantOverride?: PortalVariant,
+  ): void {
+    const cleanUrl = url.trim().slice(0, 512);
+    if (!isTrackableHistoryUrl(cleanUrl)) return;
+    const now = Date.now();
+    const variant: PortalVariant = variantOverride ?? this.activePortalVariant;
+    const cleanTitle = (title || extractHistoryHost(cleanUrl) || cleanUrl).trim().slice(0, 96);
     const last = this.browsingHistory[0];
-    if (last && last.url === url && Date.now() - last.visitedAt < 5000) {
-      if (title) last.title = title.slice(0, 64);
+    if (
+      last &&
+      last.url === cleanUrl &&
+      last.sessionId === this.currentSessionId &&
+      now - last.visitedAt < 8000
+    ) {
+      if (cleanTitle) last.title = cleanTitle;
+      last.visitedAt = now;
+      last.portalVariant = variant;
+      last.portalLabel = this.activePortalContextLabel;
       this.saveSettingsToStorage();
       return;
     }
-    this.browsingHistory.unshift({
-      url,
-      title: (title || url).slice(0, 64),
-      visitedAt: Date.now(),
-    });
-    this.browsingHistory = this.browsingHistory.slice(0, 80);
+
+    const priorForUrl = this.browsingHistory.find((entry) => entry.url === cleanUrl);
+    const nextVisitCount = priorForUrl ? priorForUrl.visitCount + 1 : 1;
+    const newEntry: BrowserHistoryEntry = {
+      id: `hist-${now.toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+      url: cleanUrl,
+      title: cleanTitle,
+      visitedAt: now,
+      portalVariant: variant,
+      portalLabel: this.activePortalContextLabel,
+      sessionId: this.currentSessionId,
+      profileId: this.activeProfileId,
+      visitCount: nextVisitCount,
+    };
+    this.browsingHistory.unshift(newEntry);
+    this.browsingHistory = this.browsingHistory.slice(0, MAX_BROWSER_HISTORY_ENTRIES);
     this.saveSettingsToStorage();
   }
 
@@ -1074,8 +1603,12 @@ export class PortalChromiumManager {
   public activateTab(id: string): ChromiumTab {
     const found = this.tabs.find((t) => t.id === id);
     if (found) {
+      const switched = this.activeTabId !== found.id;
       this.activeTabId = found.id;
       this.activePortalVariant = found.portalVariant;
+      if (switched && isTrackableHistoryUrl(found.displayUrl)) {
+        this.recordHistoryVisit(found.displayUrl, found.title, found.portalVariant);
+      }
       this.emitChange();
       return found;
     }
@@ -1104,8 +1637,16 @@ export class PortalChromiumManager {
     this.tabs.push(newTab);
     this.activeTabId = newTab.id;
     this.activePortalVariant = variant;
-    if (!resolved.isInternal) {
-      this.recordHistoryVisit(resolved.url, resolved.titleGuess);
+    if (resolved.searchQuery) {
+      this.recordSearchQuery(
+        resolved.searchQuery,
+        resolved.searchEngine ?? this.settings.searchEngine,
+        resolved.url,
+        variant,
+      );
+    }
+    if (isTrackableHistoryUrl(resolved.url)) {
+      this.recordHistoryVisit(resolved.url, resolved.titleGuess, variant);
     }
     this.emitChange();
     return newTab;
@@ -1147,8 +1688,16 @@ export class PortalChromiumManager {
       }
       tab.historyIndex = tab.history.length - 1;
     }
-    if (!resolved.isInternal) {
-      this.recordHistoryVisit(resolved.url, resolved.titleGuess);
+    if (resolved.searchQuery) {
+      this.recordSearchQuery(
+        resolved.searchQuery,
+        resolved.searchEngine ?? this.settings.searchEngine,
+        resolved.url,
+        tab.portalVariant,
+      );
+    }
+    if (isTrackableHistoryUrl(resolved.url)) {
+      this.recordHistoryVisit(resolved.url, resolved.titleGuess, tab.portalVariant);
     }
     this.emitChange();
     return tab;
@@ -1163,8 +1712,8 @@ export class PortalChromiumManager {
       tab.title = title.trim().slice(0, 56);
     }
     tab.isLoading = false;
-    if (tab.displayUrl.startsWith('http')) {
-      this.recordHistoryVisit(tab.displayUrl, tab.title);
+    if (isTrackableHistoryUrl(tab.displayUrl)) {
+      this.recordHistoryVisit(tab.displayUrl, tab.title, tab.portalVariant);
     }
     this.emitChange();
   }
@@ -1189,6 +1738,9 @@ export class PortalChromiumManager {
       tab.displayUrl = resolved.displayUrl;
       tab.title = resolved.titleGuess;
       tab.isLoading = !resolved.isInternal;
+      if (isTrackableHistoryUrl(resolved.url)) {
+        this.recordHistoryVisit(resolved.url, resolved.titleGuess, tab.portalVariant);
+      }
       this.emitChange();
     }
     return tab;
@@ -1204,6 +1756,9 @@ export class PortalChromiumManager {
       tab.displayUrl = resolved.displayUrl;
       tab.title = resolved.titleGuess;
       tab.isLoading = !resolved.isInternal;
+      if (isTrackableHistoryUrl(resolved.url)) {
+        this.recordHistoryVisit(resolved.url, resolved.titleGuess, tab.portalVariant);
+      }
       this.emitChange();
     }
     return tab;
@@ -1447,20 +2002,52 @@ export class PortalChromiumManager {
       ? `${c.cultivationMult.toFixed(2)}× (${escapeHtml(c.activeBuffName)}) · ${c.discoveredMaterialsCount}/${c.totalMaterialsCount} materials`
       : `${c.cultivationMult.toFixed(2)}× base rate · ${c.rareMaterialsCount} materials stored`;
 
-    const bookmarksHtml = this.getAllBookmarks()
-      .filter((b) => b.url !== 'chrome://newtab')
-      .slice(0, 10)
-      .map(
-        (b) => `
-      <button type="button" class="bm-card" data-url="${escapeHtml(b.url)}">
-        <span class="bm-mark" style="color:${escapeHtml(b.accentHex)}">${escapeHtml(b.badge)}</span>
-        <span class="bm-copy">
-          <span class="bm-title">${escapeHtml(b.title)}</span>
-          <span class="bm-host">${escapeHtml(b.url.replace(/^https?:\/\//, '').slice(0, 28))}</span>
-        </span>
-      </button>`,
-      )
+    const allBookmarks = this.getAllBookmarks().filter((b) => b.url !== 'chrome://newtab');
+    const customBookmarkCount = this.customBookmarks.length;
+    const bookmarksHtml = allBookmarks
+      .slice(0, 12)
+      .map((b) => {
+        const metaHost = b.isCustom && b.portalLabel
+          ? `Portal ${b.portalVariant ?? 'A'} · ${b.portalLabel}`
+          : b.url.replace(/^https?:\/\//, '').slice(0, 30);
+        return `
+      <div class="bm-card-wrap">
+        <button type="button" class="bm-card" data-url="${escapeHtml(b.url)}" title="${escapeHtml(b.url)}">
+          <span class="bm-mark" style="color:${escapeHtml(b.accentHex)}">${escapeHtml(b.isCustom ? '★' : b.badge)}</span>
+          <span class="bm-copy">
+            <span class="bm-title">${escapeHtml(b.title)}</span>
+            <span class="bm-host">${escapeHtml(metaHost)}</span>
+          </span>
+        </button>
+        ${
+          b.isCustom
+            ? `<button type="button" class="bm-remove" data-remove-bm="${escapeHtml(b.url)}" title="Remove bookmark" aria-label="Remove ${escapeHtml(b.title)}">×</button>`
+            : ''
+        }
+      </div>`;
+      })
       .join('');
+
+    const recentSearches = this.searchHistory.slice(0, 6);
+    const recentSearchesHtml =
+      recentSearches.length > 0
+        ? `
+      <div class="recent-searches" aria-label="Recent searches">
+        <span class="recent-label">Recent searches</span>
+        <div class="recent-items">
+          ${recentSearches
+            .map(
+              (sr) => `
+            <span class="recent-item">
+              <button type="button" class="recent-query" data-search-query="${escapeHtml(sr.query)}" title="Search again: ${escapeHtml(sr.query)}">${escapeHtml(sr.query)}</button>
+              <button type="button" class="recent-del" data-remove-search="${escapeHtml(sr.id)}" title="Remove search" aria-label="Remove ${escapeHtml(sr.query)}">×</button>
+            </span>`,
+            )
+            .join('')}
+        </div>
+        <button type="button" class="recent-clear" data-action="clear_search_history">Clear</button>
+      </div>`
+        : '';
 
     return `<!DOCTYPE html>
 <html lang="en">
@@ -1807,6 +2394,71 @@ export class PortalChromiumManager {
     font-variant-numeric: tabular-nums;
   }
 
+  /* Recent Search History Row */
+  .recent-searches {
+    width: min(640px, 100%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-top: 2px;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .recent-label {
+    font-weight: 600;
+    color: #7ea396;
+    white-space: nowrap;
+  }
+  .recent-items {
+    display: inline-flex;
+    align-items: center;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 8px;
+  }
+  .recent-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    border-bottom: 1px solid rgba(182, 224, 206, 0.16);
+    padding-bottom: 1px;
+  }
+  .recent-query {
+    appearance: none;
+    border: 0;
+    background: transparent;
+    color: #cfe6dc;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 500;
+    padding: 2px 3px;
+    cursor: pointer;
+    max-width: 150px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .recent-query:hover, .recent-query:focus-visible {
+    color: var(--gold);
+    outline: none;
+  }
+  .recent-del, .recent-clear {
+    appearance: none;
+    border: 0;
+    background: transparent;
+    color: #74988c;
+    font-family: inherit;
+    font-size: 12px;
+    padding: 1px 4px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .recent-del:hover, .recent-clear:hover {
+    color: #fca5a5;
+  }
+
   /* Bookmarks Strip */
   .bookmarks-section {
     display: flex;
@@ -1818,24 +2470,33 @@ export class PortalChromiumManager {
     align-items: baseline;
     justify-content: space-between;
     gap: 12px;
+    flex-wrap: wrap;
   }
   .section-heading {
     margin: 0;
     font-size: 13.5px;
     font-weight: 700;
     color: #cfe4db;
+    font-variant-numeric: tabular-nums;
   }
   .bm-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(195px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
     gap: 10px;
+  }
+  .bm-card-wrap {
+    position: relative;
+    display: flex;
+    align-items: stretch;
   }
   .bm-card {
     appearance: none;
+    flex: 1;
+    min-width: 0;
     display: flex;
     align-items: center;
     gap: 10px;
-    padding: 10px 12px;
+    padding: 10px 30px 10px 12px;
     border-radius: 9px;
     background: var(--surface);
     border: 1px solid var(--border);
@@ -1850,6 +2511,28 @@ export class PortalChromiumManager {
     border-color: var(--border-strong);
     transform: translateY(-1px);
     outline: none;
+  }
+  .bm-remove {
+    position: absolute;
+    right: 6px;
+    top: 50%;
+    transform: translateY(-50%);
+    appearance: none;
+    border: 0;
+    background: transparent;
+    color: #7ea396;
+    font-size: 15px;
+    line-height: 1;
+    width: 22px;
+    height: 22px;
+    border-radius: 5px;
+    cursor: pointer;
+    display: grid;
+    place-items: center;
+  }
+  .bm-remove:hover {
+    color: #fca5a5;
+    background: rgba(239, 68, 68, 0.14);
   }
   .bm-mark {
     width: 28px;
@@ -1941,6 +2624,7 @@ export class PortalChromiumManager {
         />
         <button type="submit" class="search-submit">Search</button>
       </form>
+      ${recentSearchesHtml}
     </section>
 
     <main class="workspace-grid">
@@ -2049,8 +2733,8 @@ export class PortalChromiumManager {
 
     <section class="bookmarks-section" aria-labelledby="bookmarksHeading">
       <div class="section-bar">
-        <h2 class="section-heading" id="bookmarksHeading">Saved Bookmarks &amp; Quick Sites</h2>
-        <button type="button" class="nav-link" data-url="chrome://history">Manage bookmarks &amp; history</button>
+        <h2 class="section-heading" id="bookmarksHeading">Saved Bookmarks &amp; Quick Sites${customBookmarkCount > 0 ? ` · ${customBookmarkCount} saved` : ''}</h2>
+        <button type="button" class="nav-link" data-url="chrome://history">Open history &amp; bookmarks</button>
       </div>
       <div class="bm-grid">${bookmarksHtml}</div>
     </section>
@@ -2068,6 +2752,26 @@ export class PortalChromiumManager {
       btn.addEventListener('click', function() {
         var u = btn.getAttribute('data-url');
         if (u) window.parent.postMessage({ type: 'SERPENT_PORTAL_NAVIGATE', url: u }, '*');
+      });
+    });
+    document.querySelectorAll('[data-search-query]').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        var q = btn.getAttribute('data-search-query');
+        if (q) window.parent.postMessage({ type: 'SERPENT_PORTAL_NAVIGATE', url: q }, '*');
+      });
+    });
+    document.querySelectorAll('[data-remove-search]').forEach(function(btn) {
+      btn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        var id = btn.getAttribute('data-remove-search');
+        if (id) window.parent.postMessage({ type: 'SERPENT_PORTAL_ACTION', action: 'remove_search_history', target: id }, '*');
+      });
+    });
+    document.querySelectorAll('[data-remove-bm]').forEach(function(btn) {
+      btn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        var u = btn.getAttribute('data-remove-bm');
+        if (u) window.parent.postMessage({ type: 'SERPENT_PORTAL_ACTION', action: 'remove_bookmark', target: u }, '*');
       });
     });
     document.querySelectorAll('[data-milestone]').forEach(function(btn) {

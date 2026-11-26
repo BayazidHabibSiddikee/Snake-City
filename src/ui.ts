@@ -15,6 +15,7 @@ import {
 } from './evolution';
 import { MirrorTabShimmerAction } from './audio';
 import {
+  BrowserHistoryFilterOptions,
   CHROMIUM_ENGINE_META,
   NewTabBehavior,
   PortalVariant,
@@ -23,6 +24,8 @@ import {
   StartupMode,
   UserAgentPreset,
   computeRollingTabOrbitLayout,
+  extractHistoryHost,
+  groupHistoryByTimeBucket,
 } from './browser';
 import { ComplimentNotice, FloatingTauntNotice } from './compliments';
 import { PRESET_FORMATIONS, PortalShiftResult } from './formations';
@@ -195,6 +198,8 @@ export class GameUI {
   private chromiumPortalBBtn!: HTMLButtonElement;
   private chromiumProfileBtn!: HTMLButtonElement;
   private chromiumProfilePopoverEl!: HTMLElement;
+  private chromiumBookmarkPopoverEl!: HTMLElement;
+  private chromiumOmniboxSuggestionsEl!: HTMLElement;
   private chromiumOtherworldProfileStripEl!: HTMLElement;
   private chromiumBookmarksBarEl!: HTMLElement;
   private chromiumOtherworldEl!: HTMLElement;
@@ -210,9 +215,13 @@ export class GameUI {
   private portalWorldOrbitMode = true;
   private portalMissionViewMode = false;
   private portalBrowserSettingsMode = false;
-  private portalBrowserSettingsTab: 'general' | 'privacy' | 'history' = 'general';
+  private portalBrowserSettingsTab: 'general' | 'privacy' | 'bookmarks' | 'history' = 'general';
+  private portalHistorySearchQuery = '';
+  private portalHistoryFilter: 'all' | 'session' | 'A' | 'B' = 'all';
   private activePortalKey = 'spawn-guard-portal-a';
   private portalProfilePopoverOpen = false;
+  private portalBookmarkPopoverOpen = false;
+  private portalOmniboxSuggestionsOpen = false;
   private portalOrbitAngle = 0;
   private portalOrbitPitchDeg = 0;
   private portalOrbitVel = 0.28;
@@ -1360,6 +1369,7 @@ export class GameUI {
               <span class="settings-label">Browser Data &amp; App Release</span>
               <div class="settings-row settings-wrap-row">
                 <button type="button" class="secondary-cta compact" id="settingsLaunchBrowserNowBtn">Open Standalone Browser</button>
+                <button type="button" class="secondary-cta compact" id="settingsOpenHistoryBtn">View Browser History</button>
                 <button type="button" class="secondary-cta compact" id="settingsInstallPwaBtn">Install App (PWA)</button>
                 <button type="button" class="ghost-btn compact" id="settingsClearHistoryBtn">Clear History</button>
                 <button type="button" class="ghost-btn compact" id="settingsResetBrowserBtn">Reset Browser Defaults</button>
@@ -1407,6 +1417,9 @@ export class GameUI {
           <!-- CHROMIUM BROWSER PROFILE SWITCHER & CREATOR POPOVER -->
           <div class="chromium-profile-popover hidden" id="chromiumProfilePopover" role="dialog" aria-label="Chromium Browser Profiles"></div>
 
+          <!-- CHROMIUM PORTAL URL BOOKMARK POPOVER -->
+          <div class="chromium-bookmark-popover hidden" id="chromiumBookmarkPopover" role="dialog" aria-label="Save Portal Bookmark"></div>
+
           <!-- CHROMIUM NAVIGATION & OMNIBOX BAR -->
           <div class="chromium-toolbar-row">
             <div class="chromium-nav-btns">
@@ -1425,8 +1438,9 @@ export class GameUI {
                 autocomplete="off"
                 spellcheck="false"
               />
-              <button type="button" class="chromium-bookmark-star" id="chromiumBookmarkBtn" title="Bookmark this page" aria-label="Bookmark this page">☆</button>
+              <button type="button" class="chromium-bookmark-star" id="chromiumBookmarkBtn" title="Save or edit portal bookmark" aria-label="Save or edit portal bookmark">☆</button>
               <button type="submit" class="chromium-omnibox-go">Go</button>
+              <div class="chromium-omnibox-suggestions hidden" id="chromiumOmniboxSuggestions" role="listbox" aria-label="Search history and bookmarks"></div>
             </form>
             <div class="chromium-toolbar-right">
               <button type="button" class="chromium-proxy-btn is-on" id="chromiumProxyBtn" title="Toggle Server-Side Chromium Proxy vs Direct Iframe">Proxy: ON</button>
@@ -1646,6 +1660,8 @@ export class GameUI {
     this.chromiumPortalBBtn = uiLayer.querySelector('#chromiumPortalBBtn')!;
     this.chromiumProfileBtn = uiLayer.querySelector('#chromiumProfileBtn')!;
     this.chromiumProfilePopoverEl = uiLayer.querySelector('#chromiumProfilePopover')!;
+    this.chromiumBookmarkPopoverEl = uiLayer.querySelector('#chromiumBookmarkPopover')!;
+    this.chromiumOmniboxSuggestionsEl = uiLayer.querySelector('#chromiumOmniboxSuggestions')!;
     this.chromiumOtherworldProfileStripEl = uiLayer.querySelector('#otherworldProfileStrip')!;
     this.chromiumBookmarksBarEl = uiLayer.querySelector('#chromiumBookmarksBar')!;
     this.chromiumOtherworldEl = uiLayer.querySelector('#chromiumOtherworldCosmos')!;
@@ -2329,6 +2345,10 @@ export class GameUI {
     this.root.querySelector('#settingsLaunchBrowserNowBtn')?.addEventListener('click', () => {
       this.settingsModal.classList.add('hidden');
       this.launchStandaloneBrowser();
+    });
+    this.root.querySelector('#settingsOpenHistoryBtn')?.addEventListener('click', () => {
+      this.settingsModal.classList.add('hidden');
+      this.launchStandaloneBrowser('history');
     });
     this.root.querySelector('#settingsInstallPwaBtn')?.addEventListener('click', () => {
       void this.triggerPwaInstallPrompt();
@@ -3025,21 +3045,30 @@ export class GameUI {
     }
   }
 
-  public launchStandaloneBrowser(): void {
+  public launchStandaloneBrowser(
+    initialSettingsTab?: 'general' | 'privacy' | 'bookmarks' | 'history',
+  ): void {
+    this.game.portalBrowser.setActivePortalContext('Standalone Browser');
     this.portalBrowserStandalone = true;
     this.portalBrowserPip = false;
     this.portalMissionViewMode = false;
-    this.portalBrowserSettingsMode = false;
     const settings = this.game.portalBrowser.getSettings();
-    this.portalWorldOrbitMode = settings.newTabBehavior === 'mirror_house';
-    if (settings.newTabBehavior === 'newtab') {
-      const existingNewTab = this.game.portalBrowser
-        .getTabs()
-        .find((t) => t.url === 'chrome://newtab');
-      if (existingNewTab) {
-        this.game.portalBrowser.activateTab(existingNewTab.id);
-      } else {
-        this.game.portalBrowser.createTab('chrome://newtab');
+    if (initialSettingsTab) {
+      this.portalBrowserSettingsTab = initialSettingsTab;
+      this.portalBrowserSettingsMode = true;
+      this.portalWorldOrbitMode = false;
+    } else {
+      this.portalBrowserSettingsMode = false;
+      this.portalWorldOrbitMode = settings.newTabBehavior === 'mirror_house';
+      if (settings.newTabBehavior === 'newtab') {
+        const existingNewTab = this.game.portalBrowser
+          .getTabs()
+          .find((t) => t.url === 'chrome://newtab');
+        if (existingNewTab) {
+          this.game.portalBrowser.activateTab(existingNewTab.id);
+        } else {
+          this.game.portalBrowser.createTab('chrome://newtab');
+        }
       }
     }
     this.portalBrowserModal.classList.remove('hidden', 'is-pip');
@@ -4836,13 +4865,67 @@ export class GameUI {
       this.renderPortalChromiumBrowser(false);
     });
 
-    this.chromiumBookmarkBtn.addEventListener('click', () => {
-      const tab = this.game.portalBrowser.getActiveTab();
-      const added = this.game.portalBrowser.toggleBookmark(tab.title, tab.displayUrl);
+    this.chromiumBookmarkBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
       this.game.sound.playClick();
+      this.portalProfilePopoverOpen = false;
+      this.chromiumProfilePopoverEl.classList.add('hidden');
+      this.closeOmniboxSuggestions();
+      this.portalBookmarkPopoverOpen = !this.portalBookmarkPopoverOpen;
+      if (this.portalBookmarkPopoverOpen) {
+        this.openBookmarkPopover();
+      } else {
+        this.chromiumBookmarkPopoverEl.classList.add('hidden');
+      }
+    });
+
+    this.chromiumBookmarkPopoverEl.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const target = e.target as HTMLElement;
+      if (target.closest('#cbmCloseBtn')) {
+        this.closeBookmarkPopover();
+        return;
+      }
+      if (target.closest('#cbmRemoveBtn')) {
+        const urlInput = this.chromiumBookmarkPopoverEl.querySelector<HTMLInputElement>('#cbmUrlInput');
+        const targetUrl = urlInput?.value.trim() || this.game.portalBrowser.getActiveTab().displayUrl;
+        const removed = this.game.portalBrowser.removeCustomBookmark(targetUrl);
+        this.game.sound.playClick();
+        this.closeBookmarkPopover();
+        this.renderChromiumBookmarksBar();
+        this.renderPortalChromiumBrowser(false);
+        this.showToast(removed ? 'Removed portal bookmark.' : 'Default bookmark cannot be removed.');
+        return;
+      }
+      if (target.closest('#cbmViewHistoryBtn')) {
+        this.closeBookmarkPopover();
+        this.navigatePortalBrowserUrl('chrome://history');
+      }
+    });
+
+    this.chromiumBookmarkPopoverEl.addEventListener('submit', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const titleInp = this.chromiumBookmarkPopoverEl.querySelector<HTMLInputElement>('#cbmTitleInput');
+      const urlInp = this.chromiumBookmarkPopoverEl.querySelector<HTMLInputElement>('#cbmUrlInput');
+      const channelSel = this.chromiumBookmarkPopoverEl.querySelector<HTMLSelectElement>('#cbmChannelSel');
+      const rawUrl = urlInp?.value.trim() || '';
+      const rawTitle = titleInp?.value.trim() || '';
+      const variant: PortalVariant = channelSel?.value === 'B' ? 'B' : 'A';
+      const saved = this.game.portalBrowser.addOrUpdateBookmark({
+        url: rawUrl,
+        title: rawTitle,
+        portalVariant: variant,
+      });
+      if (!saved) {
+        this.showToast('Enter a valid web or chrome:// portal URL to bookmark.');
+        return;
+      }
+      this.game.sound.playClick();
+      this.closeBookmarkPopover();
       this.renderChromiumBookmarksBar();
       this.renderPortalChromiumBrowser(false);
-      this.showToast(added ? `Bookmarked "${tab.title}"` : `Removed bookmark for "${tab.title}"`);
+      this.showToast(`Saved bookmark "${saved.title}"`);
     });
 
     this.chromiumSettingsBtn.addEventListener('click', () => {
@@ -4870,9 +4953,25 @@ export class GameUI {
       const target = e.target as HTMLElement;
       const tabBtn = target.closest<HTMLButtonElement>('[data-bset-tab]');
       if (tabBtn && tabBtn.dataset.bsetTab) {
-        this.portalBrowserSettingsTab = tabBtn.dataset.bsetTab as 'general' | 'privacy' | 'history';
+        this.portalBrowserSettingsTab = tabBtn.dataset.bsetTab as
+          | 'general'
+          | 'privacy'
+          | 'bookmarks'
+          | 'history';
         this.game.sound.playClick();
-        this.renderBrowserSettingsPanel();
+        this.renderPortalChromiumBrowser(false);
+        return;
+      }
+      const histFilterBtn = target.closest<HTMLButtonElement>('[data-hist-filter]');
+      if (histFilterBtn && histFilterBtn.dataset.histFilter) {
+        this.portalHistoryFilter = histFilterBtn.dataset.histFilter as 'all' | 'session' | 'A' | 'B';
+        this.game.sound.playClick();
+        this.chromiumSettingsPanelEl
+          .querySelectorAll<HTMLButtonElement>('[data-hist-filter]')
+          .forEach((btn) =>
+            btn.classList.toggle('active', btn.dataset.histFilter === this.portalHistoryFilter),
+          );
+        this.updateBrowserHistoryListInPlace();
         return;
       }
       const startupBtn = target.closest<HTMLButtonElement>('[data-inb-startup]');
@@ -4905,10 +5004,46 @@ export class GameUI {
         void this.triggerPwaInstallPrompt();
         return;
       }
+      if (target.closest('#inbClearSessionHistoryBtn')) {
+        const removed = this.game.portalBrowser.clearCurrentSessionHistory();
+        this.game.sound.playClick();
+        this.showToast(
+          removed > 0
+            ? `Cleared ${removed} visit${removed === 1 ? '' : 's'} from this session.`
+            : 'No visits recorded in the current session.',
+        );
+        this.renderBrowserSettingsPanel();
+        return;
+      }
       if (target.closest('#inbClearHistoryBtn')) {
         this.game.portalBrowser.clearHistory();
-        this.showToast('Browsing history cleared.');
+        this.game.sound.playClick();
+        this.showToast('All browsing history cleared.');
         this.renderBrowserSettingsPanel();
+        return;
+      }
+      if (target.closest('#inbClearSearchHistoryBtn')) {
+        this.game.portalBrowser.clearSearchHistory();
+        this.game.sound.playClick();
+        this.showToast('Search history cleared.');
+        this.renderPortalChromiumBrowser(false);
+        return;
+      }
+      if (target.closest('#inbOpenBookmarkDialogBtn')) {
+        this.game.sound.playClick();
+        this.openBookmarkPopover();
+        return;
+      }
+      if (target.closest('#inbResetHistoryFiltersBtn')) {
+        this.portalHistorySearchQuery = '';
+        this.portalHistoryFilter = 'all';
+        this.game.sound.playClick();
+        this.renderBrowserSettingsPanel();
+        return;
+      }
+      if (target.closest('#inbHistoryOpenNewTabBtn')) {
+        this.game.sound.playClick();
+        this.navigatePortalBrowserUrl('chrome://newtab');
         return;
       }
       if (target.closest('#inbResetTabsBtn')) {
@@ -4933,14 +5068,66 @@ export class GameUI {
       }
       const histOpen = target.closest<HTMLButtonElement>('[data-history-url]');
       if (histOpen && histOpen.dataset.historyUrl) {
+        this.game.sound.playClick();
         this.navigatePortalBrowserUrl(histOpen.dataset.historyUrl);
+        return;
+      }
+      const histNewTab = target.closest<HTMLButtonElement>('[data-history-newtab]');
+      if (histNewTab && histNewTab.dataset.historyNewtab) {
+        this.game.sound.playClick();
+        this.game.portalBrowser.createTab(histNewTab.dataset.historyNewtab);
+        this.portalBrowserSettingsMode = false;
+        this.portalWorldOrbitMode = false;
+        this.portalMissionViewMode = false;
+        this.renderPortalChromiumBrowser(true);
+        return;
+      }
+      const toggleBmBtn = target.closest<HTMLButtonElement>('[data-toggle-bm-url]');
+      if (toggleBmBtn && toggleBmBtn.dataset.toggleBmUrl) {
+        const bUrl = toggleBmBtn.dataset.toggleBmUrl;
+        const bTitle = toggleBmBtn.dataset.toggleBmTitle || bUrl;
+        const bVar: PortalVariant = toggleBmBtn.dataset.toggleBmVariant === 'B' ? 'B' : 'A';
+        const added = this.game.portalBrowser.toggleBookmark(bTitle, bUrl, bVar);
+        this.game.sound.playClick();
+        this.renderChromiumBookmarksBar();
+        this.updateBrowserHistoryListInPlace();
+        this.showToast(added ? `Saved bookmark "${bTitle}"` : `Removed bookmark "${bTitle}"`);
+        return;
+      }
+      const searchRerun = target.closest<HTMLButtonElement>('[data-search-rerun]');
+      if (searchRerun && searchRerun.dataset.searchRerun) {
+        this.game.sound.playClick();
+        this.navigatePortalBrowserUrl(searchRerun.dataset.searchRerun);
+        return;
+      }
+      const rmSearch = target.closest<HTMLButtonElement>('[data-remove-search]');
+      if (rmSearch && rmSearch.dataset.removeSearch) {
+        const removed = this.game.portalBrowser.removeSearchHistoryEntry(rmSearch.dataset.removeSearch);
+        if (removed) {
+          this.game.sound.playClick();
+          this.updateBrowserHistoryListInPlace();
+        }
+        return;
+      }
+      const rmHist = target.closest<HTMLButtonElement>('[data-remove-history]');
+      if (rmHist && rmHist.dataset.removeHistory) {
+        const removed = this.game.portalBrowser.removeHistoryEntry(rmHist.dataset.removeHistory);
+        if (removed) {
+          this.game.sound.playClick();
+          this.updateBrowserHistoryListInPlace();
+        }
         return;
       }
       const rmBm = target.closest<HTMLButtonElement>('[data-remove-bm]');
       if (rmBm && rmBm.dataset.removeBm) {
         this.game.portalBrowser.removeCustomBookmark(rmBm.dataset.removeBm);
+        this.game.sound.playClick();
         this.renderChromiumBookmarksBar();
-        this.renderBrowserSettingsPanel();
+        if (this.portalBrowserSettingsTab === 'history') {
+          this.updateBrowserHistoryListInPlace();
+        } else {
+          this.renderBrowserSettingsPanel();
+        }
       }
     });
 
@@ -4988,6 +5175,9 @@ export class GameUI {
         if (lbl) lbl.textContent = `${z}%`;
         this.applyBrowserViewportZoom();
         this.syncUnifiedSettingsUi();
+      } else if (target.id === 'inbHistorySearchInput') {
+        this.portalHistorySearchQuery = (target as HTMLInputElement).value;
+        this.updateBrowserHistoryListInPlace();
       }
     });
 
@@ -5247,8 +5437,54 @@ export class GameUI {
       const val = this.chromiumOmniboxInput.value.trim();
       if (!val) return;
       this.game.sound.playClick();
+      this.closeOmniboxSuggestions();
       this.navigatePortalBrowserUrl(val);
       this.chromiumOmniboxInput.blur();
+    });
+
+    this.chromiumOmniboxInput.addEventListener('focus', () => {
+      this.closeBookmarkPopover();
+      this.renderOmniboxSuggestions(this.chromiumOmniboxInput.value);
+    });
+
+    this.chromiumOmniboxInput.addEventListener('input', () => {
+      this.renderOmniboxSuggestions(this.chromiumOmniboxInput.value);
+    });
+
+    this.chromiumOmniboxInput.addEventListener('blur', () => {
+      window.setTimeout(() => this.closeOmniboxSuggestions(), 140);
+    });
+
+    this.chromiumOmniboxSuggestionsEl.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      const target = e.target as HTMLElement;
+      const rmSearch = target.closest<HTMLButtonElement>('[data-omni-remove-search]');
+      if (rmSearch && rmSearch.dataset.omniRemoveSearch) {
+        this.game.portalBrowser.removeSearchHistoryEntry(rmSearch.dataset.omniRemoveSearch);
+        this.renderOmniboxSuggestions(this.chromiumOmniboxInput.value);
+        if (this.portalBrowserSettingsMode && this.portalBrowserSettingsTab === 'history') {
+          this.updateBrowserHistoryListInPlace();
+        }
+        return;
+      }
+      const pick = target.closest<HTMLButtonElement>('[data-omni-go]');
+      if (pick && pick.dataset.omniGo) {
+        this.game.sound.playClick();
+        this.closeOmniboxSuggestions();
+        this.navigatePortalBrowserUrl(pick.dataset.omniGo);
+        this.chromiumOmniboxInput.blur();
+      }
+    });
+
+    this.portalBrowserModal.addEventListener('click', (e) => {
+      const target = e.target as HTMLElement;
+      if (
+        this.portalBookmarkPopoverOpen &&
+        !target.closest('#chromiumBookmarkPopover') &&
+        !target.closest('#chromiumBookmarkBtn')
+      ) {
+        this.closeBookmarkPopover();
+      }
     });
 
     this.chromiumProxyBtn.addEventListener('click', () => {
@@ -5575,6 +5811,24 @@ export class GameUI {
     }
     if (data.action === 'open_settings') {
       this.navigatePortalBrowserUrl('chrome://settings');
+      return;
+    }
+    if (data.action === 'remove_bookmark' && data.target) {
+      this.game.portalBrowser.removeCustomBookmark(data.target);
+      this.renderChromiumBookmarksBar();
+      this.renderPortalChromiumBrowser(false);
+      this.showToast('Removed bookmark.');
+      return;
+    }
+    if (data.action === 'remove_search_history' && data.target) {
+      this.game.portalBrowser.removeSearchHistoryEntry(data.target);
+      this.renderPortalChromiumBrowser(false);
+      return;
+    }
+    if (data.action === 'clear_search_history') {
+      this.game.portalBrowser.clearSearchHistory();
+      this.renderPortalChromiumBrowser(false);
+      this.showToast('Search history cleared.');
       return;
     }
     if (data.action === 'play_game') {
@@ -5928,6 +6182,14 @@ export class GameUI {
       this.renderPortalChromiumBrowser(false);
       return;
     }
+    if (lower === 'chrome://bookmarks' || lower === 'serpent://bookmarks') {
+      this.portalBrowserSettingsTab = 'bookmarks';
+      this.portalBrowserSettingsMode = true;
+      this.portalMissionViewMode = false;
+      this.portalWorldOrbitMode = false;
+      this.renderPortalChromiumBrowser(false);
+      return;
+    }
     if (lower === 'chrome://history' || lower === 'serpent://history') {
       this.portalBrowserSettingsTab = 'history';
       this.portalBrowserSettingsMode = true;
@@ -5943,10 +6205,392 @@ export class GameUI {
     this.renderPortalChromiumBrowser(true);
   }
 
+  private getActiveHistoryFilterOptions(): BrowserHistoryFilterOptions {
+    const opts: BrowserHistoryFilterOptions = {
+      query: this.portalHistorySearchQuery,
+    };
+    if (this.portalHistoryFilter === 'session') {
+      opts.sessionId = this.game.portalBrowser.getCurrentSessionId();
+    } else if (this.portalHistoryFilter === 'A' || this.portalHistoryFilter === 'B') {
+      opts.portalVariant = this.portalHistoryFilter;
+    }
+    return opts;
+  }
+
+  private formatHistoryTimestamp(ts: number, bucket: string): string {
+    const d = new Date(ts);
+    const timePart = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    if (bucket === 'Today' || bucket === 'Yesterday') return timePart;
+    const datePart = d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+    return `${datePart}, ${timePart}`;
+  }
+
+  private openBookmarkPopover(prefill?: { url?: string; title?: string; variant?: PortalVariant }): void {
+    const mgr = this.game.portalBrowser;
+    const activeTab = mgr.getActiveTab();
+    const rawUrl = prefill?.url ?? (activeTab.displayUrl === 'chrome://newtab' ? '' : activeTab.displayUrl);
+    const rawTitle = prefill?.title ?? (activeTab.displayUrl === 'chrome://newtab' ? '' : activeTab.title);
+    const variant: PortalVariant = prefill?.variant ?? activeTab.portalVariant;
+    const alreadySaved = rawUrl ? mgr.isCustomBookmarked(rawUrl) : false;
+
+    this.portalBookmarkPopoverOpen = true;
+    this.chromiumBookmarkPopoverEl.innerHTML = `
+      <div class="cbm-pop-head">
+        <span class="cbm-pop-title">${alreadySaved ? 'Edit Portal Bookmark' : 'Bookmark Portal URL'}</span>
+        <button type="button" class="bset-history-del" id="cbmCloseBtn" aria-label="Close bookmark popover">×</button>
+      </div>
+      <form class="cbm-pop-form" id="cbmBookmarkForm">
+        <label class="cbm-pop-field">
+          <span>Title</span>
+          <input
+            type="text"
+            class="dark-select cbm-pop-input"
+            id="cbmTitleInput"
+            value="${this.escapeHtmlText(rawTitle)}"
+            placeholder="e.g. Dragon Lore Wiki or Peaks Atlas"
+            maxlength="48"
+            spellcheck="false"
+          />
+        </label>
+        <label class="cbm-pop-field">
+          <span>Portal URL</span>
+          <input
+            type="text"
+            class="dark-select cbm-pop-input"
+            id="cbmUrlInput"
+            value="${this.escapeHtmlText(rawUrl)}"
+            placeholder="https://... or chrome://peaks-atlas"
+            maxlength="320"
+            spellcheck="false"
+            required
+          />
+        </label>
+        <label class="cbm-pop-field">
+          <span>Portal Channel</span>
+          <select class="dark-select cbm-pop-input" id="cbmChannelSel">
+            <option value="A" ${variant === 'A' ? 'selected' : ''}>Portal A · Azure Channel</option>
+            <option value="B" ${variant === 'B' ? 'selected' : ''}>Portal B · Crimson Channel</option>
+          </select>
+        </label>
+        <p class="cbm-pop-note">Saved bookmarks appear in the Bookmarks Bar, New Tab, and Browser History panels.</p>
+        <div class="cbm-pop-actions">
+          <button type="submit" class="primary-cta compact">${alreadySaved ? 'Update' : 'Save Bookmark'}</button>
+          ${alreadySaved ? '<button type="button" class="ghost-btn compact" id="cbmRemoveBtn">Remove</button>' : ''}
+          <button type="button" class="ghost-btn compact" id="cbmViewHistoryBtn">View History</button>
+        </div>
+      </form>
+    `;
+    this.chromiumBookmarkPopoverEl.classList.remove('hidden');
+    const focusEl = rawUrl
+      ? this.chromiumBookmarkPopoverEl.querySelector<HTMLInputElement>('#cbmTitleInput')
+      : this.chromiumBookmarkPopoverEl.querySelector<HTMLInputElement>('#cbmUrlInput');
+    focusEl?.focus();
+    focusEl?.select();
+  }
+
+  private closeBookmarkPopover(): void {
+    this.portalBookmarkPopoverOpen = false;
+    this.chromiumBookmarkPopoverEl.classList.add('hidden');
+  }
+
+  private closeOmniboxSuggestions(): void {
+    this.portalOmniboxSuggestionsOpen = false;
+    this.chromiumOmniboxSuggestionsEl.classList.add('hidden');
+  }
+
+  private renderOmniboxSuggestions(rawQuery: string): void {
+    const mgr = this.game.portalBrowser;
+    const q = rawQuery.trim();
+    const isCurrentRoute = q.startsWith('chrome://') || q.startsWith('http://') || q.startsWith('https://');
+    const filterQ = isCurrentRoute ? '' : q;
+    const searches = mgr.getSearchHistory({ query: filterQ }).slice(0, 5);
+    const bookmarks = mgr
+      .getCustomBookmarks()
+      .filter((b) => !filterQ || `${b.title} ${b.url}`.toLowerCase().includes(filterQ.toLowerCase()))
+      .slice(0, 4);
+
+    if (searches.length === 0 && bookmarks.length === 0) {
+      this.closeOmniboxSuggestions();
+      return;
+    }
+
+    const searchRows = searches
+      .map((s) => {
+        const engineName = SEARCH_ENGINE_CATALOG[s.searchEngine]?.name ?? 'Search';
+        return `
+          <div class="omni-sug-row">
+            <button type="button" class="omni-sug-btn" data-omni-go="${this.escapeHtmlText(s.query)}">
+              <span class="omni-sug-kind">Search</span>
+              <span class="omni-sug-main">${this.escapeHtmlText(s.query)}</span>
+              <span class="omni-sug-sub">${this.escapeHtmlText(engineName)}</span>
+            </button>
+            <button type="button" class="bset-history-del" data-omni-remove-search="${this.escapeHtmlText(s.id)}" aria-label="Remove search">×</button>
+          </div>
+        `;
+      })
+      .join('');
+
+    const bmRows = bookmarks
+      .map(
+        (b) => `
+          <div class="omni-sug-row">
+            <button type="button" class="omni-sug-btn" data-omni-go="${this.escapeHtmlText(b.url)}">
+              <span class="omni-sug-kind is-bm">★</span>
+              <span class="omni-sug-main">${this.escapeHtmlText(b.title)}</span>
+              <span class="omni-sug-sub">${this.escapeHtmlText(extractHistoryHost(b.url))}</span>
+            </button>
+          </div>
+        `,
+      )
+      .join('');
+
+    this.chromiumOmniboxSuggestionsEl.innerHTML = `${searchRows}${bmRows}`;
+    this.portalOmniboxSuggestionsOpen = true;
+    this.chromiumOmniboxSuggestionsEl.classList.remove('hidden');
+  }
+
+  private renderBrowserHistorySummaryText(): string {
+    const stats = this.game.portalBrowser.getHistoryStats();
+    const filteredCount = this.game.portalBrowser.getHistory(this.getActiveHistoryFilterOptions()).length;
+    const hasFilter =
+      this.portalHistoryFilter !== 'all' || this.portalHistorySearchQuery.trim().length > 0;
+    if (hasFilter) {
+      return `Showing ${filteredCount} of ${stats.totalEntries} visits · ${stats.totalSearches} searches · ${stats.customBookmarks} saved bookmarks · ${stats.uniqueHosts} sites`;
+    }
+    return `${stats.totalEntries} visit${stats.totalEntries === 1 ? '' : 's'} (${stats.sessionEntries} this session) · ${stats.totalSearches} search${stats.totalSearches === 1 ? '' : 'es'} · ${stats.customBookmarks} saved bookmark${stats.customBookmarks === 1 ? '' : 's'} · ${stats.uniqueHosts} site${stats.uniqueHosts === 1 ? '' : 's'}`;
+  }
+
+  private renderBrowserHistoryListMarkup(): string {
+    const mgr = this.game.portalBrowser;
+    const filterOpts = this.getActiveHistoryFilterOptions();
+    const queryLower = (filterOpts.query ?? '').trim().toLowerCase();
+
+    // 1. Saved Bookmarks Quick-Access Section inside Browser History
+    const customBms = mgr.getCustomBookmarks().filter((b) => {
+      if (filterOpts.portalVariant && filterOpts.portalVariant !== 'all' && b.portalVariant !== filterOpts.portalVariant) {
+        return false;
+      }
+      if (!queryLower) return true;
+      return `${b.title} ${b.url} ${b.portalLabel ?? ''}`.toLowerCase().includes(queryLower);
+    });
+
+    const bookmarksBlock = `
+      <section class="bset-history-bucket">
+        <div class="bset-history-bucket-head">
+          <span class="bset-history-bucket-title">Saved Portal Bookmarks</span>
+          <div class="bset-inline-row">
+            <span class="bset-history-bucket-count">${customBms.length}</span>
+            <button type="button" class="ghost-btn compact" id="inbOpenBookmarkDialogBtn">+ Save URL</button>
+          </div>
+        </div>
+        ${
+          customBms.length > 0
+            ? `<div class="bset-history-rows">
+                ${customBms
+                  .map((b) => {
+                    const pVar = b.portalVariant === 'B' ? 'B' : 'A';
+                    const portalCls = pVar === 'B' ? 'is-b' : 'is-a';
+                    const savedLabel = b.portalLabel || 'Portal Bookmark';
+                    return `
+                      <div class="bset-history-row">
+                        <button type="button" class="bset-link-btn" data-history-url="${this.escapeHtmlText(b.url)}" title="Open ${this.escapeHtmlText(b.url)}">
+                          <span class="bset-row-title">★ ${this.escapeHtmlText(b.title)}</span>
+                          <span class="bset-row-url">${this.escapeHtmlText(b.url)}</span>
+                          <span class="bset-history-meta">
+                            <span class="bset-history-channel ${portalCls}">Portal ${pVar}</span>
+                            <span>${this.escapeHtmlText(savedLabel)}</span>
+                            <span>· ${this.escapeHtmlText(extractHistoryHost(b.url))}</span>
+                          </span>
+                        </button>
+                        <div class="bset-history-actions">
+                          <button type="button" class="ghost-btn compact" data-history-url="${this.escapeHtmlText(b.url)}">Open</button>
+                          <button type="button" class="ghost-btn compact" data-history-newtab="${this.escapeHtmlText(b.url)}">New Tab</button>
+                          <button type="button" class="bset-history-del" data-remove-bm="${this.escapeHtmlText(b.url)}" title="Remove bookmark" aria-label="Remove ${this.escapeHtmlText(b.title)}">×</button>
+                        </div>
+                      </div>
+                    `;
+                  })
+                  .join('')}
+              </div>`
+            : `<p class="bset-hint">No saved portal bookmarks yet. Click the ★ button in the address bar or "+ Save URL" to bookmark any portal address for quick access here and on New Tab.</p>`
+        }
+      </section>
+    `;
+
+    // 2. Search History Section inside Browser History
+    const filteredSearches = mgr.getSearchHistory({
+      query: filterOpts.query,
+      portalVariant: filterOpts.portalVariant,
+      sessionId: filterOpts.sessionId,
+    });
+    const totalSearches = mgr.getSearchHistory().length;
+    const searchHistoryBlock = `
+      <section class="bset-history-bucket">
+        <div class="bset-history-bucket-head">
+          <span class="bset-history-bucket-title">Search History</span>
+          <div class="bset-inline-row">
+            <span class="bset-history-bucket-count">${filteredSearches.length}</span>
+            ${
+              totalSearches > 0
+                ? '<button type="button" class="ghost-btn compact" id="inbClearSearchHistoryBtn">Clear Searches</button>'
+                : ''
+            }
+          </div>
+        </div>
+        ${
+          filteredSearches.length > 0
+            ? `<div class="bset-history-rows">
+                ${filteredSearches
+                  .slice(0, 20)
+                  .map((sr) => {
+                    const engineName = SEARCH_ENGINE_CATALOG[sr.searchEngine]?.name ?? sr.searchEngine;
+                    const portalCls = sr.portalVariant === 'B' ? 'is-b' : 'is-a';
+                    const timeStr = this.formatHistoryTimestamp(sr.searchedAt, 'Today');
+                    const repeatNote = sr.searchCount > 1 ? ` · ${sr.searchCount}×` : '';
+                    return `
+                      <div class="bset-history-row">
+                        <button type="button" class="bset-link-btn" data-search-rerun="${this.escapeHtmlText(sr.query)}" title="Search again: ${this.escapeHtmlText(sr.query)}">
+                          <span class="bset-row-title">${this.escapeHtmlText(sr.query)}</span>
+                          <span class="bset-history-meta">
+                            <span class="bset-history-channel ${portalCls}">Portal ${sr.portalVariant}</span>
+                            <span>${this.escapeHtmlText(engineName)}</span>
+                            <span>· ${this.escapeHtmlText(sr.portalLabel)}${repeatNote}</span>
+                          </span>
+                        </button>
+                        <div class="bset-history-actions">
+                          <span class="bset-row-time">${timeStr}</span>
+                          <button type="button" class="ghost-btn compact" data-search-rerun="${this.escapeHtmlText(sr.query)}">Search</button>
+                          <button type="button" class="bset-history-del" data-remove-search="${this.escapeHtmlText(sr.id)}" title="Remove search" aria-label="Remove ${this.escapeHtmlText(sr.query)}">×</button>
+                        </div>
+                      </div>
+                    `;
+                  })
+                  .join('')}
+              </div>`
+            : `<p class="bset-hint">${
+                totalSearches === 0
+                  ? 'No web searches recorded yet. Queries entered in the address bar or New Tab search box are saved here.'
+                  : 'No search queries match your current filter.'
+              }</p>`
+        }
+      </section>
+    `;
+
+    // 3. Visited URLs grouped chronologically
+    const allHistory = mgr.getHistory();
+    let visitsBlock = '';
+    if (allHistory.length === 0) {
+      visitsBlock = `
+        <div class="bset-history-empty">
+          <p class="bset-history-empty-title">No visited URLs recorded yet</p>
+          <p class="bset-hint">URLs visited across your 3D portal gates and standalone browser sessions are automatically saved here with their portal channel and timestamp.</p>
+          <button type="button" class="secondary-cta compact" id="inbHistoryOpenNewTabBtn">Open New Tab</button>
+        </div>
+      `;
+    } else {
+      const filtered = mgr.getHistory(filterOpts);
+      if (filtered.length === 0) {
+        visitsBlock = `
+          <div class="bset-history-empty">
+            <p class="bset-history-empty-title">No visited URLs match your current filter</p>
+            <p class="bset-hint">Try a different keyword or switch back to All Sessions to see all ${allHistory.length} saved visits.</p>
+            <button type="button" class="ghost-btn compact" id="inbResetHistoryFiltersBtn">Reset Filters</button>
+          </div>
+        `;
+      } else {
+        const currentSessionId = mgr.getCurrentSessionId();
+        const groups = groupHistoryByTimeBucket(filtered);
+        visitsBlock = groups
+          .map(
+            (group) => `
+              <section class="bset-history-bucket">
+                <div class="bset-history-bucket-head">
+                  <span class="bset-history-bucket-title">${group.bucket}</span>
+                  <span class="bset-history-bucket-count">${group.entries.length}</span>
+                </div>
+                <div class="bset-history-rows">
+                  ${group.entries
+                    .map((h) => {
+                      const timeStr = this.formatHistoryTimestamp(h.visitedAt, group.bucket);
+                      const host = extractHistoryHost(h.url);
+                      const sessionTag = h.sessionId === currentSessionId ? ' · Current Session' : '';
+                      const visitsNote = h.visitCount > 1 ? ` · ${h.visitCount} visits` : '';
+                      const portalCls = h.portalVariant === 'B' ? 'is-b' : 'is-a';
+                      const isSaved = mgr.isCustomBookmarked(h.url);
+                      return `
+                        <div class="bset-history-row">
+                          <button
+                            type="button"
+                            class="bset-link-btn"
+                            data-history-url="${this.escapeHtmlText(h.url)}"
+                            title="Open ${this.escapeHtmlText(h.url)}"
+                          >
+                            <span class="bset-row-title">${this.escapeHtmlText(h.title)}</span>
+                            <span class="bset-row-url">${this.escapeHtmlText(h.url)}</span>
+                            <span class="bset-history-meta">
+                              <span class="bset-history-channel ${portalCls}">Portal ${h.portalVariant}</span>
+                              <span>${this.escapeHtmlText(h.portalLabel)}</span>
+                              <span>· ${this.escapeHtmlText(host)}${visitsNote}${sessionTag}</span>
+                            </span>
+                          </button>
+                          <div class="bset-history-actions">
+                            <span class="bset-row-time">${timeStr}</span>
+                            <button
+                              type="button"
+                              class="bset-history-star ${isSaved ? 'is-saved' : ''}"
+                              data-toggle-bm-url="${this.escapeHtmlText(h.url)}"
+                              data-toggle-bm-title="${this.escapeHtmlText(h.title)}"
+                              data-toggle-bm-variant="${h.portalVariant}"
+                              title="${isSaved ? 'Remove bookmark' : 'Bookmark this portal URL'}"
+                              aria-label="${isSaved ? 'Remove bookmark' : 'Bookmark'} ${this.escapeHtmlText(h.title)}"
+                            >${isSaved ? '★' : '☆'}</button>
+                            <button type="button" class="ghost-btn compact" data-history-url="${this.escapeHtmlText(h.url)}">Open</button>
+                            <button type="button" class="ghost-btn compact" data-history-newtab="${this.escapeHtmlText(h.url)}">New Tab</button>
+                            <button
+                              type="button"
+                              class="bset-history-del"
+                              data-remove-history="${this.escapeHtmlText(h.id)}"
+                              title="Remove from history"
+                              aria-label="Remove ${this.escapeHtmlText(h.title)} from history"
+                            >×</button>
+                          </div>
+                        </div>
+                      `;
+                    })
+                    .join('')}
+                </div>
+              </section>
+            `,
+          )
+          .join('');
+      }
+    }
+
+    return `${bookmarksBlock}${searchHistoryBlock}${visitsBlock}`;
+  }
+
+  private updateBrowserHistoryListInPlace(): void {
+    const summaryEl = this.chromiumSettingsPanelEl.querySelector('#inbHistorySummary');
+    if (summaryEl) {
+      summaryEl.textContent = this.renderBrowserHistorySummaryText();
+    }
+    const listHost = this.chromiumSettingsPanelEl.querySelector('#inbHistoryListHost');
+    if (listHost) {
+      listHost.innerHTML = this.renderBrowserHistoryListMarkup();
+    }
+    const histTabBtn = this.chromiumSettingsPanelEl.querySelector<HTMLButtonElement>(
+      '[data-bset-tab="history"]',
+    );
+    if (histTabBtn) {
+      const total = this.game.portalBrowser.getHistoryStats().totalEntries;
+      histTabBtn.textContent = total > 0 ? `Browser History (${total})` : 'Browser History';
+    }
+  }
+
   private renderBrowserSettingsPanel(): void {
     const mgr = this.game.portalBrowser;
     const s = mgr.getSettings();
-    const history = mgr.getHistory();
+    const stats = mgr.getHistoryStats();
     const customBms = mgr.getCustomBookmarks();
     const tab = this.portalBrowserSettingsTab;
 
@@ -6048,7 +6692,7 @@ export class GameUI {
           </div>
         </div>
       `;
-    } else {
+    } else if (tab === 'bookmarks') {
       const bmRows =
         customBms.length > 0
           ? customBms
@@ -6059,63 +6703,93 @@ export class GameUI {
                       <span class="bset-row-title">${this.escapeHtmlText(b.title)}</span>
                       <span class="bset-row-url">${this.escapeHtmlText(b.url)}</span>
                     </button>
-                    <button type="button" class="ghost-btn compact" data-remove-bm="${this.escapeHtmlText(b.url)}">Remove</button>
+                    <div class="bset-history-actions">
+                      <button type="button" class="ghost-btn compact" data-history-newtab="${this.escapeHtmlText(b.url)}">New Tab</button>
+                      <button type="button" class="ghost-btn compact" data-remove-bm="${this.escapeHtmlText(b.url)}">Remove</button>
+                    </div>
                   </div>
                 `,
               )
               .join('')
           : `<p class="bset-hint">No custom bookmarks yet. Click the star icon in the address bar on any webpage to save it.</p>`;
 
-      const histRows =
-        history.length > 0
-          ? history
-              .slice(0, 24)
-              .map((h) => {
-                const timeStr = new Date(h.visitedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-                return `
-                  <div class="bset-list-row">
-                    <button type="button" class="bset-link-btn" data-history-url="${this.escapeHtmlText(h.url)}">
-                      <span class="bset-row-title">${this.escapeHtmlText(h.title)}</span>
-                      <span class="bset-row-url">${this.escapeHtmlText(h.url)}</span>
-                    </button>
-                    <span class="bset-row-time">${timeStr}</span>
-                  </div>
-                `;
-              })
-              .join('')
-          : `<p class="bset-hint">Your recent web browsing history will appear here.</p>`;
-
       bodyHtml = `
         <div class="bset-grid">
           <div class="bset-group">
             <div class="bset-list-head">
               <label class="bset-label">Saved Custom Bookmarks (${customBms.length})</label>
+              <button type="button" class="secondary-cta compact" id="inbOpenBookmarkDialogBtn">+ Save Portal URL</button>
             </div>
             <div class="bset-list">${bmRows}</div>
           </div>
-          <div class="bset-group">
-            <div class="bset-list-head">
-              <label class="bset-label">Browsing History (${history.length})</label>
-              <button type="button" class="ghost-btn compact" id="inbClearHistoryBtn">Clear History</button>
+        </div>
+      `;
+    } else {
+      bodyHtml = `
+        <div class="bset-grid">
+          <div class="bset-group bset-history-shell">
+            <div class="bset-history-top">
+              <div class="bset-history-summary" id="inbHistorySummary">${this.escapeHtmlText(this.renderBrowserHistorySummaryText())}</div>
+              <div class="bset-inline-row">
+                <button type="button" class="ghost-btn compact" id="inbClearSessionHistoryBtn">Clear Session</button>
+                <button type="button" class="ghost-btn compact" id="inbClearHistoryBtn">Clear All</button>
+              </div>
             </div>
-            <div class="bset-list">${histRows}</div>
+
+            <div class="bset-history-toolbar">
+              <input
+                type="search"
+                class="dark-select bset-history-search"
+                id="inbHistorySearchInput"
+                value="${this.escapeHtmlText(this.portalHistorySearchQuery)}"
+                placeholder="Search visited URLs, page titles, or portal gates..."
+                spellcheck="false"
+                aria-label="Search browser history"
+              />
+              <div class="bset-seg bset-history-filters" role="group" aria-label="Filter browser history">
+                <button type="button" class="bset-seg-btn ${this.portalHistoryFilter === 'all' ? 'active' : ''}" data-hist-filter="all">All Sessions</button>
+                <button type="button" class="bset-seg-btn ${this.portalHistoryFilter === 'session' ? 'active' : ''}" data-hist-filter="session">This Session</button>
+                <button type="button" class="bset-seg-btn ${this.portalHistoryFilter === 'A' ? 'active' : ''}" data-hist-filter="A">Portal A</button>
+                <button type="button" class="bset-seg-btn ${this.portalHistoryFilter === 'B' ? 'active' : ''}" data-hist-filter="B">Portal B</button>
+              </div>
+            </div>
+
+            <div class="bset-history-list-host" id="inbHistoryListHost">
+              ${this.renderBrowserHistoryListMarkup()}
+            </div>
           </div>
         </div>
       `;
     }
 
+    const routeLabel =
+      tab === 'history'
+        ? 'chrome://history · Portal Session Log'
+        : tab === 'bookmarks'
+          ? 'chrome://bookmarks · Saved Destinations'
+          : 'chrome://settings · Portal Chromium 131';
+    const headingText =
+      tab === 'history'
+        ? 'Portal Browser History'
+        : tab === 'bookmarks'
+          ? 'Saved Bookmarks'
+          : 'Browser Settings & Release Controls';
+    const historyTabLabel =
+      stats.totalEntries > 0 ? `Browser History (${stats.totalEntries})` : 'Browser History';
+
     this.chromiumSettingsPanelEl.innerHTML = `
       <div class="bset-inner">
         <div class="bset-header">
           <div>
-            <div class="bset-eyebrow">chrome://settings · Portal Chromium 131</div>
-            <h3 class="bset-title">Browser Settings &amp; Release Controls</h3>
+            <div class="bset-eyebrow">${routeLabel}</div>
+            <h3 class="bset-title">${headingText}</h3>
           </div>
           <div class="bset-header-right">
             <div class="bset-tabs" role="tablist">
-              <button type="button" class="bset-tab ${tab === 'general' ? 'active' : ''}" data-bset-tab="general" role="tab">General &amp; Search</button>
-              <button type="button" class="bset-tab ${tab === 'privacy' ? 'active' : ''}" data-bset-tab="privacy" role="tab">Privacy &amp; Proxy</button>
-              <button type="button" class="bset-tab ${tab === 'history' ? 'active' : ''}" data-bset-tab="history" role="tab">Bookmarks &amp; History</button>
+              <button type="button" class="bset-tab ${tab === 'general' ? 'active' : ''}" data-bset-tab="general" role="tab" aria-selected="${tab === 'general'}">General &amp; Search</button>
+              <button type="button" class="bset-tab ${tab === 'privacy' ? 'active' : ''}" data-bset-tab="privacy" role="tab" aria-selected="${tab === 'privacy'}">Privacy &amp; Proxy</button>
+              <button type="button" class="bset-tab ${tab === 'bookmarks' ? 'active' : ''}" data-bset-tab="bookmarks" role="tab" aria-selected="${tab === 'bookmarks'}">Bookmarks</button>
+              <button type="button" class="bset-tab ${tab === 'history' ? 'active' : ''}" data-bset-tab="history" role="tab" aria-selected="${tab === 'history'}">${historyTabLabel}</button>
             </div>
             <button type="button" class="ghost-btn compact" id="inbCloseSettingsBtn">Back to Web</button>
           </div>
@@ -6247,6 +6921,15 @@ export class GameUI {
     this.activePortalKey = nextPortalKey;
 
     const mission = this.game.portalMissions.getMissionForPortal(this.activePortalKey);
+    const matchingVisit = this.game.portalBrowser
+      .getFrequentPortals(36)
+      .find((rec) => rec.portalId === nextPortalKey);
+    const contextLabel =
+      matchingVisit?.label ||
+      (nextPortalKey.startsWith('portal-hotkey-')
+        ? `Portal ${this.game.portalBrowser.getActivePortalVariant()} Overlay`
+        : `${mission.floorLabel} · ${mission.title}`);
+    this.game.portalBrowser.setActivePortalContext(contextLabel, variant);
     this.resetMissionSession(mission);
 
     // Stepping physically into an uncompleted 3D portal opens its unique Mission Trial first
@@ -6279,6 +6962,8 @@ export class GameUI {
     this.portalBrowserSettingsMode = false;
     this.portalProfilePopoverOpen = false;
     this.chromiumProfilePopoverEl.classList.add('hidden');
+    this.closeBookmarkPopover();
+    this.closeOmniboxSuggestions();
     if (this.portalOrbitRafId) {
       window.cancelAnimationFrame(this.portalOrbitRafId);
       this.portalOrbitRafId = 0;
@@ -6450,7 +7135,9 @@ export class GameUI {
       this.chromiumOmniboxInput.value = this.portalBrowserSettingsMode
         ? this.portalBrowserSettingsTab === 'history'
           ? 'chrome://history'
-          : 'chrome://settings'
+          : this.portalBrowserSettingsTab === 'bookmarks'
+            ? 'chrome://bookmarks'
+            : 'chrome://settings'
         : activeTab.displayUrl;
     }
 
@@ -6466,8 +7153,11 @@ export class GameUI {
 
     const engineName = SEARCH_ENGINE_CATALOG[settings.searchEngine]?.name ?? 'DuckDuckGo Lite';
     const shieldTag = settings.trackerShield ? 'Shield On' : 'Shield Off';
+    const historyStats = mgr.getHistoryStats();
     this.chromiumStatusTextEl.textContent = this.portalBrowserSettingsMode
-      ? `Portal Chromium Settings · Search: ${engineName} · ${shieldTag} · Zoom ${settings.zoomPercent}%`
+      ? this.portalBrowserSettingsTab === 'history'
+        ? `Portal Browser History · ${historyStats.totalEntries} visits (${historyStats.sessionEntries} this session) · ${historyStats.uniqueHosts} sites`
+        : `Portal Chromium Settings · Search: ${engineName} · ${shieldTag} · Zoom ${settings.zoomPercent}%`
       : this.portalMissionViewMode
         ? `${mission.floorLabel}: ${mission.title} · Souls ${this.game.portalMissions.getCollectedSouls()}/${SOUL_TARGET_COUNT} · Clock ${this.game.portalMissions.getFormattedClock()}`
         : this.portalWorldOrbitMode
@@ -6477,8 +7167,17 @@ export class GameUI {
     const newTabCtx =
       activeTab.url === 'chrome://newtab' ? this.game.getNewTabCultivationSnapshot() : undefined;
     const frameTarget = mgr.getIframeSrcForTab(activeTab, newTabCtx);
+    const customBmSig = mgr
+      .getCustomBookmarks()
+      .map((b) => `${b.url}:${b.title}`)
+      .join(',');
+    const searchHistSig = mgr
+      .getSearchHistory()
+      .slice(0, 6)
+      .map((s) => s.id)
+      .join(',');
     const newTabSig = newTabCtx
-      ? `|ntp:${newTabCtx.level}:${newTabCtx.xp}:${newTabCtx.shrinesConquered}:${newTabCtx.soulsCollected}:${newTabCtx.archivesUnlocked}:${newTabCtx.bestiaryDiscovered}:${newTabCtx.cultivationMult.toFixed(2)}:${newTabCtx.rareMaterialsCount}:${mgr.getTotalPortalVisitCount()}:${mgr.getAllBookmarks().length}:${settings.searchEngine}`
+      ? `|ntp:${newTabCtx.level}:${newTabCtx.xp}:${newTabCtx.shrinesConquered}:${newTabCtx.soulsCollected}:${newTabCtx.archivesUnlocked}:${newTabCtx.bestiaryDiscovered}:${newTabCtx.cultivationMult.toFixed(2)}:${newTabCtx.rareMaterialsCount}:${mgr.getTotalPortalVisitCount()}:${mgr.getAllBookmarks().length}:${settings.searchEngine}|bm:${customBmSig}|sh:${searchHistSig}`
       : '';
     const frameKey = `${activeProfile.id}|${activeTab.id}|${activeTab.url}|${activeTab.proxyMode ? 'proxy' : 'direct'}|${settings.trackerShield ? '1' : '0'}|${settings.userAgentPreset}${newTabSig}`;
     if (forceReloadIframe || this.lastLoadedIframeKey !== frameKey) {
