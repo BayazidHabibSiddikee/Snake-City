@@ -41,6 +41,12 @@ import {
   renderLootIconSvg,
 } from './loot';
 import {
+  extractBookmarkCacheableUrls,
+  formatOfflineCacheSummary,
+  isIosSafariDevice,
+  isStandalonePwa,
+} from './offlineCache';
+import {
   CardDuelParticipant,
   FIFTEENTH_SOUL_EPILOGUE_TEXT,
   HOSPITAL_REVELATION_TEXT,
@@ -231,6 +237,9 @@ export class GameUI {
   private lastOrbitFrontIdx = -1;
   private deferredInstallPrompt: (Event & { prompt: () => Promise<void>; userChoice: Promise<{ outcome: string }> }) | null = null;
   private settingsActiveTab: 'game' | 'browser' = 'game';
+  private offlineStatusBannerEl!: HTMLElement;
+  private chromiumOfflineTagEl!: HTMLElement;
+  private iosInstallModalEl!: HTMLElement;
 
   // Portal Loot Reliquary modal & latest drop state
   private lootReliquaryModal!: HTMLElement;
@@ -1443,6 +1452,7 @@ export class GameUI {
               <div class="chromium-omnibox-suggestions hidden" id="chromiumOmniboxSuggestions" role="listbox" aria-label="Search history and bookmarks"></div>
             </form>
             <div class="chromium-toolbar-right">
+              <span class="chromium-offline-tag hidden" id="chromiumOfflineTag" title="Offline Mode — Using cached bookmarks and local history">Offline</span>
               <button type="button" class="chromium-proxy-btn is-on" id="chromiumProxyBtn" title="Toggle Server-Side Chromium Proxy vs Direct Iframe">Proxy: ON</button>
               <button type="button" class="chromium-settings-btn" id="chromiumSettingsBtn" title="Browser Settings &amp; History (chrome://settings)" aria-label="Browser Settings">⚙ Settings</button>
               <button type="button" class="chromium-warp-btn" id="chromiumWarpBtn" title="Physically teleport your serpent to the next Dimensional Portal across the mountain">Warp Portal</button>
@@ -1612,6 +1622,29 @@ export class GameUI {
           <button type="button" class="mobile-action-btn" id="mobileBrakeBtn" aria-label="Brake">▼ Brake</button>
         </div>
       </div>
+
+      <!-- NON-INTRUSIVE OFFLINE CONNECTIVITY INDICATOR (HIDDEN WHEN ONLINE) -->
+      <div class="offline-status-banner hidden" id="offlineStatusBanner" role="status" aria-live="polite">
+        <span class="offline-status-dot" aria-hidden="true"></span>
+        <span class="offline-status-copy">Offline Mode — Cached bookmarks &amp; local history ready</span>
+        <button type="button" class="offline-status-btn" id="offlineOpenHistoryBtn">Open History</button>
+      </div>
+
+      <!-- IOS SAFARI GUIDED INSTALL MODAL -->
+      <div class="modal-backdrop hidden" id="iosInstallModal" role="dialog" aria-modal="true" aria-label="Install on iPhone or iPad">
+        <div class="modal-card compact-modal">
+          <h3 class="modal-title">Install Serpent Peaks on iOS</h3>
+          <p class="modal-sub">Install Serpent Peaks as an offline-capable Browser &amp; 3D Game on your Home Screen:</p>
+          <ol class="ios-install-steps">
+            <li>Tap the <strong>Share</strong> icon in Safari’s toolbar.</li>
+            <li>Scroll down and tap <strong>Add to Home Screen</strong>.</li>
+            <li>Tap <strong>Add</strong> to launch in fullscreen standalone mode.</li>
+          </ol>
+          <div class="modal-actions">
+            <button type="button" class="primary-cta" id="closeIosInstallBtn">Got It</button>
+          </div>
+        </div>
+      </div>
     `;
 
     this.root.appendChild(uiLayer);
@@ -1671,6 +1704,9 @@ export class GameUI {
     this.chromiumLoadingBarEl = uiLayer.querySelector('#chromiumLoadingBar')!;
     this.chromiumViewportFrame = uiLayer.querySelector('#chromiumViewportFrame')!;
     this.chromiumStatusTextEl = uiLayer.querySelector('#chromiumStatusText')!;
+    this.chromiumOfflineTagEl = uiLayer.querySelector('#chromiumOfflineTag')!;
+    this.offlineStatusBannerEl = uiLayer.querySelector('#offlineStatusBanner')!;
+    this.iosInstallModalEl = uiLayer.querySelector('#iosInstallModal')!;
     this.fpvReticleEl = uiLayer.querySelector('#fpvReticle')!;
 
     this.mobileLeftClusterEl = uiLayer.querySelector('#mobileLeftCluster')!;
@@ -2219,7 +2255,26 @@ export class GameUI {
         prompt: () => Promise<void>;
         userChoice: Promise<{ outcome: string }>;
       };
+      this.syncInstallButtonsVisibility();
     });
+    window.addEventListener('appinstalled', () => {
+      this.deferredInstallPrompt = null;
+      this.syncInstallButtonsVisibility();
+    });
+
+    this.root.querySelector('#offlineOpenHistoryBtn')?.addEventListener('click', () => {
+      this.game.sound.playClick();
+      this.launchStandaloneBrowser('history');
+    });
+    this.root.querySelector('#closeIosInstallBtn')?.addEventListener('click', () => {
+      this.iosInstallModalEl.classList.add('hidden');
+      this.syncModalFreeze();
+    });
+    this.game.offlineCache.subscribe(() => {
+      this.syncOfflineUiState();
+    });
+    this.syncOfflineUiState();
+    this.syncInstallButtonsVisibility();
 
     const openSettingsModal = (initialTab: 'game' | 'browser' = 'game') => {
       this.settingsActiveTab = initialTab;
@@ -3028,16 +3083,61 @@ export class GameUI {
     if (bmChk) bmChk.checked = s.showBookmarksBar;
   }
 
+  private syncInstallButtonsVisibility(): void {
+    const installed = isStandalonePwa();
+    const settingsInstallBtn = this.root.querySelector<HTMLButtonElement>('#settingsInstallPwaBtn');
+    if (settingsInstallBtn) {
+      settingsInstallBtn.classList.toggle('hidden', installed);
+    }
+    const inbInstallBtn = this.chromiumSettingsPanelEl?.querySelector<HTMLButtonElement>('#inbInstallPwaBtn');
+    if (inbInstallBtn) {
+      inbInstallBtn.classList.toggle('hidden', installed);
+    }
+  }
+
+  private syncOfflineUiState(): void {
+    const isOnline = this.game.offlineCache.isOnline();
+    this.offlineStatusBannerEl.classList.toggle('hidden', isOnline);
+    this.chromiumOfflineTagEl.classList.toggle('hidden', isOnline);
+
+    if (this.portalBrowserSettingsMode) {
+      const statusEl = this.chromiumSettingsPanelEl.querySelector('#inbOfflineCacheStatus');
+      if (statusEl) {
+        statusEl.textContent = formatOfflineCacheSummary(this.game.offlineCache.getStatus(), isOnline);
+      }
+      if (this.portalBrowserSettingsTab === 'history') {
+        this.updateBrowserHistoryListInPlace();
+      } else if (this.portalBrowserSettingsTab === 'bookmarks') {
+        this.renderBrowserSettingsPanel();
+      }
+    }
+
+    if (!this.portalBrowserModal.classList.contains('hidden')) {
+      const activeTab = this.game.portalBrowser.getActiveTab();
+      if (activeTab.url === 'chrome://newtab') {
+        this.renderPortalChromiumBrowser(false);
+      }
+    }
+  }
+
   private async triggerPwaInstallPrompt(): Promise<void> {
+    if (isStandalonePwa()) {
+      this.showToast('Serpent Peaks is already installed in standalone mode.');
+      return;
+    }
     if (this.deferredInstallPrompt) {
       await this.deferredInstallPrompt.prompt();
       const choice = await this.deferredInstallPrompt.userChoice;
       this.deferredInstallPrompt = null;
+      this.syncInstallButtonsVisibility();
       this.showToast(
         choice.outcome === 'accepted'
           ? 'Serpent Peaks Browser & Game installed!'
           : 'Installation cancelled — you can install anytime from Settings.',
       );
+    } else if (isIosSafariDevice()) {
+      this.iosInstallModalEl.classList.remove('hidden');
+      this.game.setModalFreeze(true);
     } else {
       this.showToast(
         'Use your browser address bar "Install" icon or Share -> Add to Home Screen to install Serpent Peaks as both a Browser and Game.',
@@ -5052,6 +5152,38 @@ export class GameUI {
         this.renderPortalChromiumBrowser(true);
         return;
       }
+      if (target.closest('#inbCacheBookmarksOfflineBtn')) {
+        this.game.sound.playClick();
+        if (!this.game.offlineCache.isOnline()) {
+          this.showToast('Currently offline — reconnect once to cache additional bookmark pages.');
+          return;
+        }
+        const urls = extractBookmarkCacheableUrls(
+          this.game.portalBrowser.getCustomBookmarks(),
+          this.game.portalBrowser.getHistory(),
+          20,
+        );
+        if (urls.length === 0) {
+          this.showToast('No external bookmark or history URLs to cache yet.');
+          return;
+        }
+        this.showToast(`Caching ${urls.length} saved URL${urls.length === 1 ? '' : 's'} for offline access...`);
+        void this.game.offlineCache
+          .precachePortalUrls(urls, this.game.portalBrowser.getSettings())
+          .then((res) => {
+            this.showToast(`Offline cache updated: ${res.cached}/${res.attempted} pages ready offline.`);
+            this.renderBrowserSettingsPanel();
+          });
+        return;
+      }
+      if (target.closest('#inbClearOfflinePagesBtn')) {
+        this.game.sound.playClick();
+        void this.game.offlineCache.clearCachedPortalPages().then(() => {
+          this.showToast('Cleared cached offline webpage snapshots (bookmarks & history preserved).');
+          this.renderBrowserSettingsPanel();
+        });
+        return;
+      }
       if (target.closest('#inbResetSettingsBtn')) {
         this.game.portalBrowser.resetSettings();
         this.syncUnifiedSettingsUi();
@@ -6391,6 +6523,7 @@ export class GameUI {
                     const pVar = b.portalVariant === 'B' ? 'B' : 'A';
                     const portalCls = pVar === 'B' ? 'is-b' : 'is-a';
                     const savedLabel = b.portalLabel || 'Portal Bookmark';
+                    const isOfflineReady = this.game.offlineCache.isUrlCachedOffline(b.url);
                     return `
                       <div class="bset-history-row">
                         <button type="button" class="bset-link-btn" data-history-url="${this.escapeHtmlText(b.url)}" title="Open ${this.escapeHtmlText(b.url)}">
@@ -6400,6 +6533,7 @@ export class GameUI {
                             <span class="bset-history-channel ${portalCls}">Portal ${pVar}</span>
                             <span>${this.escapeHtmlText(savedLabel)}</span>
                             <span>· ${this.escapeHtmlText(extractHistoryHost(b.url))}</span>
+                            ${isOfflineReady ? '<span class="bset-offline-ready">· Offline Ready</span>' : ''}
                           </span>
                         </button>
                         <div class="bset-history-actions">
@@ -6517,6 +6651,7 @@ export class GameUI {
                       const visitsNote = h.visitCount > 1 ? ` · ${h.visitCount} visits` : '';
                       const portalCls = h.portalVariant === 'B' ? 'is-b' : 'is-a';
                       const isSaved = mgr.isCustomBookmarked(h.url);
+                      const isCached = this.game.offlineCache.isUrlCachedOffline(h.url);
                       return `
                         <div class="bset-history-row">
                           <button
@@ -6531,6 +6666,7 @@ export class GameUI {
                               <span class="bset-history-channel ${portalCls}">Portal ${h.portalVariant}</span>
                               <span>${this.escapeHtmlText(h.portalLabel)}</span>
                               <span>· ${this.escapeHtmlText(host)}${visitsNote}${sessionTag}</span>
+                              ${isCached ? '<span class="bset-offline-ready">· Cached</span>' : ''}
                             </span>
                           </button>
                           <div class="bset-history-actions">
@@ -6653,13 +6789,17 @@ export class GameUI {
             <label class="bset-label">Install as Standalone Browser &amp; Game App</label>
             <p class="bset-hint">Install Serpent Peaks to your desktop or phone with dedicated app shortcuts for both "Play Serpent Peaks" and "Launch Portal Browser".</p>
             <div class="bset-inline-row">
-              <button type="button" class="primary-cta compact" id="inbInstallPwaBtn">Install App (PWA)</button>
+              <button type="button" class="primary-cta compact ${isStandalonePwa() ? 'hidden' : ''}" id="inbInstallPwaBtn">Install App (PWA)</button>
               <button type="button" class="ghost-btn compact" id="inbResetSettingsBtn">Reset Defaults</button>
             </div>
           </div>
         </div>
       `;
     } else if (tab === 'privacy') {
+      const offlineStatusText = formatOfflineCacheSummary(
+        this.game.offlineCache.getStatus(),
+        this.game.offlineCache.isOnline(),
+      );
       bodyHtml = `
         <div class="bset-grid">
           <div class="bset-group">
@@ -6684,6 +6824,15 @@ export class GameUI {
             </label>
           </div>
           <div class="bset-group">
+            <label class="bset-label">Offline Cache &amp; Service Worker</label>
+            <p class="bset-hint" id="inbOfflineCacheStatus">${this.escapeHtmlText(offlineStatusText)}</p>
+            <p class="bset-hint">Core browser assets, saved bookmarks, search history, and visited portal pages are cached by the service worker for offline access.</p>
+            <div class="bset-inline-row">
+              <button type="button" class="primary-cta compact" id="inbCacheBookmarksOfflineBtn">Cache Saved Bookmarks Offline</button>
+              <button type="button" class="ghost-btn compact" id="inbClearOfflinePagesBtn">Clear Offline Page Cache</button>
+            </div>
+          </div>
+          <div class="bset-group">
             <label class="bset-label">Session &amp; Storage Cleanup</label>
             <div class="bset-inline-row">
               <button type="button" class="secondary-cta compact" id="inbClearHistoryBtn">Clear Browsing History</button>
@@ -6697,18 +6846,21 @@ export class GameUI {
         customBms.length > 0
           ? customBms
               .map(
-                (b) => `
+                (b) => {
+                  const isOfflineReady = this.game.offlineCache.isUrlCachedOffline(b.url);
+                  return `
                   <div class="bset-list-row">
                     <button type="button" class="bset-link-btn" data-history-url="${this.escapeHtmlText(b.url)}">
-                      <span class="bset-row-title">${this.escapeHtmlText(b.title)}</span>
-                      <span class="bset-row-url">${this.escapeHtmlText(b.url)}</span>
+                      <span class="bset-row-title">★ ${this.escapeHtmlText(b.title)}</span>
+                      <span class="bset-row-url">${this.escapeHtmlText(b.url)}${isOfflineReady ? ' · Offline Ready' : ''}</span>
                     </button>
                     <div class="bset-history-actions">
                       <button type="button" class="ghost-btn compact" data-history-newtab="${this.escapeHtmlText(b.url)}">New Tab</button>
                       <button type="button" class="ghost-btn compact" data-remove-bm="${this.escapeHtmlText(b.url)}">Remove</button>
                     </div>
                   </div>
-                `,
+                `;
+                },
               )
               .join('')
           : `<p class="bset-hint">No custom bookmarks yet. Click the star icon in the address bar on any webpage to save it.</p>`;
@@ -6787,7 +6939,7 @@ export class GameUI {
           <div class="bset-header-right">
             <div class="bset-tabs" role="tablist">
               <button type="button" class="bset-tab ${tab === 'general' ? 'active' : ''}" data-bset-tab="general" role="tab" aria-selected="${tab === 'general'}">General &amp; Search</button>
-              <button type="button" class="bset-tab ${tab === 'privacy' ? 'active' : ''}" data-bset-tab="privacy" role="tab" aria-selected="${tab === 'privacy'}">Privacy &amp; Proxy</button>
+              <button type="button" class="bset-tab ${tab === 'privacy' ? 'active' : ''}" data-bset-tab="privacy" role="tab" aria-selected="${tab === 'privacy'}">Privacy &amp; Offline</button>
               <button type="button" class="bset-tab ${tab === 'bookmarks' ? 'active' : ''}" data-bset-tab="bookmarks" role="tab" aria-selected="${tab === 'bookmarks'}">Bookmarks</button>
               <button type="button" class="bset-tab ${tab === 'history' ? 'active' : ''}" data-bset-tab="history" role="tab" aria-selected="${tab === 'history'}">${historyTabLabel}</button>
             </div>
@@ -7177,7 +7329,7 @@ export class GameUI {
       .map((s) => s.id)
       .join(',');
     const newTabSig = newTabCtx
-      ? `|ntp:${newTabCtx.level}:${newTabCtx.xp}:${newTabCtx.shrinesConquered}:${newTabCtx.soulsCollected}:${newTabCtx.archivesUnlocked}:${newTabCtx.bestiaryDiscovered}:${newTabCtx.cultivationMult.toFixed(2)}:${newTabCtx.rareMaterialsCount}:${mgr.getTotalPortalVisitCount()}:${mgr.getAllBookmarks().length}:${settings.searchEngine}|bm:${customBmSig}|sh:${searchHistSig}`
+      ? `|ntp:${newTabCtx.level}:${newTabCtx.xp}:${newTabCtx.shrinesConquered}:${newTabCtx.soulsCollected}:${newTabCtx.archivesUnlocked}:${newTabCtx.bestiaryDiscovered}:${newTabCtx.cultivationMult.toFixed(2)}:${newTabCtx.rareMaterialsCount}:${mgr.getTotalPortalVisitCount()}:${mgr.getAllBookmarks().length}:${settings.searchEngine}:${newTabCtx.isOffline ? 'off' : 'on'}:${(newTabCtx.cachedUrls ?? []).length}|bm:${customBmSig}|sh:${searchHistSig}`
       : '';
     const frameKey = `${activeProfile.id}|${activeTab.id}|${activeTab.url}|${activeTab.proxyMode ? 'proxy' : 'direct'}|${settings.trackerShield ? '1' : '0'}|${settings.userAgentPreset}${newTabSig}`;
     if (forceReloadIframe || this.lastLoadedIframeKey !== frameKey) {

@@ -1,10 +1,11 @@
 {
+  "id": "/",
   "name": "Serpent Peaks",
   "short_name": "SerpentPeaks",
-  "description": "3D mountain cultivation adventure — slither, evolve, ascend.",
+  "description": "3D mountain cultivation adventure and offline-capable Portal Chromium web browser.",
   "start_url": "/",
   "scope": "/",
-  "display": "fullscreen",
+  "display": "standalone",
   "orientation": "landscape",
   "background_color": "#0a1414",
   "theme_color": "#0a1414",
@@ -21,7 +22,7 @@
       "src": "/icons/icon-512.png",
       "sizes": "512x512",
       "type": "image/png",
-      "purpose": "maskable any"
+      "purpose": "any"
     }
   ],
   "screenshots": [],

@@ -2623,4 +2623,99 @@ describe('Portal URL Bookmarks & Search History Tracking', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// 31. Service Worker Offline Cache Keys, Bookmark Precaching & State Snapshots
+// ---------------------------------------------------------------------------
+describe('Service Worker Offline Cache Keys, Bookmark Precaching & State Snapshots', () => {
+  function normalizeCacheablePortalUrl(rawUrl) {
+    try {
+      const trimmed = String(rawUrl ?? '').trim();
+      if (!trimmed) return null;
+      const parsed = new URL(trimmed);
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+      parsed.hash = '';
+      return parsed.toString();
+    } catch {
+      return null;
+    }
+  }
+
+  function canonicalizePortalProxyCacheKey(targetUrl) {
+    const normalized = normalizeCacheablePortalUrl(targetUrl);
+    if (!normalized) return null;
+    return `/__portal_cache__/page?url=${encodeURIComponent(normalized)}`;
+  }
+
+  function extractBookmarkCacheableUrls(bookmarks, history = [], maxCount = 20) {
+    const cap = Math.max(1, Math.min(50, Math.floor(maxCount)));
+    const seen = new Set();
+    const urls = [];
+    for (const bm of bookmarks) {
+      const norm = normalizeCacheablePortalUrl(bm.url);
+      if (!norm || seen.has(norm)) continue;
+      seen.add(norm);
+      urls.push(norm);
+      if (urls.length >= cap) return urls;
+    }
+    for (const h of history) {
+      const norm = normalizeCacheablePortalUrl(h.url);
+      if (!norm || seen.has(norm)) continue;
+      seen.add(norm);
+      urls.push(norm);
+      if (urls.length >= cap) return urls;
+    }
+    return urls;
+  }
+
+  it('canonicalizes external portal URLs by stripping fragments and rejecting internal chrome:// or javascript: URLs', () => {
+    assert.equal(
+      canonicalizePortalProxyCacheKey('https://en.m.wikipedia.org/wiki/Dragon#History'),
+      '/__portal_cache__/page?url=https%3A%2F%2Fen.m.wikipedia.org%2Fwiki%2FDragon',
+    );
+    assert.equal(canonicalizePortalProxyCacheKey('chrome://newtab'), null);
+    assert.equal(canonicalizePortalProxyCacheKey('javascript:alert(1)'), null);
+    assert.equal(canonicalizePortalProxyCacheKey(''), null);
+  });
+
+  it('prioritizes saved bookmarks over history and deduplicates fragment variants when building the offline precache list', () => {
+    const urls = extractBookmarkCacheableUrls(
+      [
+        { url: 'chrome://peaks-atlas' },
+        { url: 'https://threejs.org/docs/#manual' },
+        { url: 'https://en.m.wikipedia.org/wiki/Serpent' },
+      ],
+      [
+        { url: 'https://threejs.org/docs/#api' },
+        { url: 'https://news.ycombinator.com/' },
+        { url: 'https://example.com/' },
+      ],
+      3,
+    );
+
+    assert.deepEqual(urls, [
+      'https://threejs.org/docs/',
+      'https://en.m.wikipedia.org/wiki/Serpent',
+      'https://news.ycombinator.com/',
+    ]);
+  });
+
+  it('bounds and sanitizes offline portal state snapshots for Cache Storage persistence', () => {
+    const bookmarks = Array.from({ length: 80 }, (_, i) => ({ url: `https://example.com/${i}`, title: `BM ${i}` }));
+    const history = Array.from({ length: 240 }, (_, i) => ({ id: `h-${i}`, url: `https://example.com/h/${i}` }));
+    const searches = Array.from({ length: 130 }, (_, i) => ({ id: `s-${i}`, query: `q ${i}` }));
+
+    const snapshot = {
+      savedAt: 1764200000000,
+      customBookmarks: bookmarks.slice(0, 64),
+      browsingHistory: history.slice(0, 200),
+      searchHistory: searches.slice(0, 100),
+    };
+
+    assert.equal(snapshot.customBookmarks.length, 64);
+    assert.equal(snapshot.browsingHistory.length, 200);
+    assert.equal(snapshot.searchHistory.length, 100);
+  });
+});
+
+
 

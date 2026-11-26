@@ -6,6 +6,7 @@ import {
   PortalVariant,
   derivePortalLandmarkName,
 } from './browser';
+import { PortalOfflineCacheController } from './offlineCache';
 import {
   ComplimentEventKind,
   ComplimentNotice,
@@ -443,6 +444,7 @@ export class SnakeGameController {
   private onGlobalRankingPortalOpen?: (ctx: { enteredViaPortal: boolean; wave: number }) => void;
   private onLoreUnlocked?: (notice: LoreUnlockNotice) => void;
   public readonly portalBrowser = new PortalChromiumManager();
+  public readonly offlineCache = new PortalOfflineCacheController();
   public readonly portalMissions = new PortalMissionManager();
   public readonly portalLoot = new PortalLootManager();
   private pendingPortalWarp: { x: number; z: number; variant: PortalVariant } | null = null;
@@ -633,6 +635,12 @@ export class SnakeGameController {
     this.world = new WorldEngine(container);
     this.portalBrowser.onChange(() => {
       this.syncPortalTextures();
+    });
+    this.portalBrowser.subscribePersist(() => {
+      this.offlineCache.schedulePortalStateSync(this.portalBrowser.exportOfflineStateSnapshot());
+    });
+    this.portalBrowser.subscribeBookmarkSaved((url) => {
+      void this.offlineCache.precachePortalUrls([url], this.portalBrowser.getSettings());
     });
 
     this.savedFormations = loadSavedFormations();
@@ -1988,6 +1996,8 @@ export class SnakeGameController {
       discoveredMaterialsCount: lootState.discoveredMaterialIds.length,
       totalMaterialsCount: RARE_MATERIALS_CATALOG.length,
       suggestedPortals,
+      isOffline: !this.offlineCache.isOnline(),
+      cachedUrls: [...this.offlineCache.getStatus().cachedUrls],
     };
   }
 

@@ -1,5 +1,6 @@
 import { SnakeGameController } from './game';
 import { GameUI } from './ui';
+import { extractBookmarkCacheableUrls } from './offlineCache';
 
 document.addEventListener('DOMContentLoaded', () => {
   const root = document.getElementById('root') || document.body;
@@ -389,13 +390,34 @@ document.addEventListener('DOMContentLoaded', () => {
     { passive: true },
   );
 
-  // ── PWA Service Worker ──────────────────────────────────────────────────
-  if ('serviceWorker' in navigator) {
+  // ── PWA Service Worker & Offline Portal Cache ───────────────────────────
+  const initOfflineCache = async () => {
+    try {
+      const cachedState = await game.offlineCache.readCachedPortalState();
+      if (cachedState) {
+        game.portalBrowser.hydrateFromOfflineStateSnapshot(cachedState);
+      }
+      await game.offlineCache.registerAndWarm(game.portalBrowser.exportOfflineStateSnapshot());
+      if (game.offlineCache.isOnline()) {
+        const bookmarkUrls = extractBookmarkCacheableUrls(
+          game.portalBrowser.getCustomBookmarks(),
+          game.portalBrowser.getHistory().slice(0, 6),
+          12,
+        );
+        if (bookmarkUrls.length > 0) {
+          void game.offlineCache.precachePortalUrls(bookmarkUrls, game.portalBrowser.getSettings());
+        }
+      }
+    } catch {
+      // keep app running cleanly if SW is blocked by browser privacy mode
+    }
+  };
+
+  if (document.readyState === 'complete') {
+    void initOfflineCache();
+  } else {
     window.addEventListener('load', () => {
-      navigator.serviceWorker
-        .register('/sw.js')
-        .then((reg) => console.log('[SW] registered, scope:', reg.scope))
-        .catch((err) => console.warn('[SW] registration failed:', err));
+      void initOfflineCache();
     });
   }
 });

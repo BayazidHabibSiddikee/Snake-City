@@ -269,6 +269,8 @@ export interface NewTabCultivationSnapshot {
   discoveredMaterialsCount: number;
   totalMaterialsCount: number;
   suggestedPortals: NewTabSuggestedPortal[];
+  isOffline?: boolean;
+  cachedUrls?: string[];
 }
 
 export function derivePortalLandmarkName(
@@ -908,6 +910,8 @@ export class PortalChromiumManager {
   private readonly currentSessionId = `sess-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
   private activePortalContextLabel = 'Standalone Session';
   private listeners: Array<() => void> = [];
+  private persistListeners: Array<() => void> = [];
+  private bookmarkSavedListeners: Array<(url: string) => void> = [];
 
   constructor() {
     this.loadSettingsFromStorage();
@@ -1015,6 +1019,111 @@ export class PortalChromiumManager {
     } catch {
       // ignore storage quota errors
     }
+    for (const fn of this.persistListeners) {
+      fn();
+    }
+  }
+
+  public subscribePersist(listener: () => void): () => void {
+    this.persistListeners.push(listener);
+    return () => {
+      this.persistListeners = this.persistListeners.filter((l) => l !== listener);
+    };
+  }
+
+  public subscribeBookmarkSaved(listener: (url: string) => void): () => void {
+    this.bookmarkSavedListeners.push(listener);
+    return () => {
+      this.bookmarkSavedListeners = this.bookmarkSavedListeners.filter((l) => l !== listener);
+    };
+  }
+
+  public exportOfflineStateSnapshot(): {
+    savedAt: number;
+    settings: BrowserSettings;
+    customBookmarks: PortalBookmark[];
+    browsingHistory: BrowserHistoryEntry[];
+    searchHistory: SearchHistoryEntry[];
+    portalVisits: Record<string, PortalVisitRecord>;
+  } {
+    return {
+      savedAt: Date.now(),
+      settings: { ...this.settings },
+      customBookmarks: this.customBookmarks.map((b) => ({ ...b })),
+      browsingHistory: this.browsingHistory.map((h) => ({ ...h })),
+      searchHistory: this.searchHistory.map((s) => ({ ...s })),
+      portalVisits: { ...this.portalVisits },
+    };
+  }
+
+  public hydrateFromOfflineStateSnapshot(snapshot: {
+    settings?: Partial<BrowserSettings>;
+    customBookmarks?: PortalBookmark[];
+    browsingHistory?: Array<Partial<BrowserHistoryEntry>>;
+    searchHistory?: Array<Partial<SearchHistoryEntry>>;
+    portalVisits?: Record<string, PortalVisitRecord>;
+  } | null): boolean {
+    if (!snapshot || typeof snapshot !== 'object') return false;
+    let changed = false;
+
+    if (this.customBookmarks.length === 0 && Array.isArray(snapshot.customBookmarks) && snapshot.customBookmarks.length > 0) {
+      this.customBookmarks = snapshot.customBookmarks
+        .filter((b) => b && typeof b.url === 'string' && typeof b.title === 'string')
+        .slice(0, 48)
+        .map((b) => ({
+          title: b.title.trim().slice(0, 48) || extractHistoryHost(b.url),
+          url: b.url.trim().slice(0, 320),
+          badge: typeof b.badge === 'string' && b.badge ? b.badge.slice(0, 2) : '★',
+          accentHex: typeof b.accentHex === 'string' ? b.accentHex : '#f2c14e',
+          savedAt: typeof b.savedAt === 'number' && Number.isFinite(b.savedAt) ? Math.floor(b.savedAt) : Date.now(),
+          portalVariant: b.portalVariant === 'B' ? 'B' : 'A',
+          portalLabel: typeof b.portalLabel === 'string' && b.portalLabel.trim() ? b.portalLabel.trim().slice(0, 64) : undefined,
+          isCustom: true,
+        }));
+      changed = this.customBookmarks.length > 0;
+    }
+
+    if (this.browsingHistory.length === 0 && Array.isArray(snapshot.browsingHistory) && snapshot.browsingHistory.length > 0) {
+      const restored: BrowserHistoryEntry[] = [];
+      for (let i = 0; i < snapshot.browsingHistory.length; i++) {
+        const clean = sanitizeHistoryEntry(snapshot.browsingHistory[i], i);
+        if (clean) restored.push(clean);
+        if (restored.length >= MAX_BROWSER_HISTORY_ENTRIES) break;
+      }
+      if (restored.length > 0) {
+        this.browsingHistory = restored;
+        changed = true;
+      }
+    }
+
+    if (this.searchHistory.length === 0 && Array.isArray(snapshot.searchHistory) && snapshot.searchHistory.length > 0) {
+      const restoredSearches: SearchHistoryEntry[] = [];
+      for (let i = 0; i < snapshot.searchHistory.length; i++) {
+        const clean = sanitizeSearchHistoryEntry(snapshot.searchHistory[i], i);
+        if (clean) restoredSearches.push(clean);
+        if (restoredSearches.length >= MAX_SEARCH_HISTORY_ENTRIES) break;
+      }
+      if (restoredSearches.length > 0) {
+        this.searchHistory = restoredSearches;
+        changed = true;
+      }
+    }
+
+    if (
+      Object.keys(this.portalVisits).length === 0 &&
+      snapshot.portalVisits &&
+      typeof snapshot.portalVisits === 'object' &&
+      Object.keys(snapshot.portalVisits).length > 0
+    ) {
+      this.portalVisits = { ...snapshot.portalVisits };
+      changed = true;
+    }
+
+    if (changed) {
+      this.saveSettingsToStorage();
+      this.emitChange();
+    }
+    return changed;
   }
 
   public recordPortalVisit(input: {
@@ -1160,6 +1269,9 @@ export class PortalChromiumManager {
     this.customBookmarks.unshift(nextBookmark);
     this.customBookmarks = this.customBookmarks.slice(0, 48);
     this.saveSettingsToStorage();
+    for (const fn of this.bookmarkSavedListeners) {
+      fn(cleanUrl);
+    }
     this.emitChange();
     return nextBookmark;
   }
@@ -2007,9 +2119,13 @@ export class PortalChromiumManager {
     const bookmarksHtml = allBookmarks
       .slice(0, 12)
       .map((b) => {
-        const metaHost = b.isCustom && b.portalLabel
+        const cachedLookup = new Set((c.cachedUrls ?? []).map((u) => u.replace(/#.*$/, '')));
+        const normalizedBmUrl = b.url.replace(/#.*$/, '');
+        const isOfflineReady = b.url.startsWith('chrome://') || cachedLookup.has(normalizedBmUrl);
+        const baseHost = b.isCustom && b.portalLabel
           ? `Portal ${b.portalVariant ?? 'A'} · ${b.portalLabel}`
           : b.url.replace(/^https?:\/\//, '').slice(0, 30);
+        const metaHost = isOfflineReady && b.isCustom ? `${baseHost} · Offline Ready` : baseHost;
         return `
       <div class="bm-card-wrap">
         <button type="button" class="bm-card" data-url="${escapeHtml(b.url)}" title="${escapeHtml(b.url)}">
@@ -2610,7 +2726,7 @@ export class PortalChromiumManager {
         <span aria-hidden="true">·</span>
         <span>${escapeHtml(activeEngine.name)}</span>
         <span aria-hidden="true">·</span>
-        <span>${this.settings.trackerShield ? 'Privacy Shield active' : 'Privacy Shield off'}</span>
+        <span>${c.isOffline ? 'Offline Mode · Cached Bookmarks & History Ready' : this.settings.trackerShield ? 'Privacy Shield active' : 'Privacy Shield off'}</span>
       </div>
       <h1 class="hero-title">Portal Chromium</h1>
       <form class="search-form" id="ntpForm">
