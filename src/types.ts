@@ -223,6 +223,13 @@ export interface MinimapSnapshot {
   fissures: Array<{ x: number; z: number; isBoss: boolean }>;
   projectiles: Array<{ x: number; z: number; fromPlayer: boolean }>;
   portals: Array<{ x: number; z: number; variant: 'A' | 'B' }>;
+  portalMemoryBlips?: Array<{
+    x: number;
+    z: number;
+    visualState: 'active' | 'saved' | 'lost' | 'pinned';
+    isSanctuary: boolean;
+    count: number;
+  }>;
   sentries: SentryMinimapPoint[];
   globalRankingPortal: { x: number; z: number; timeRemainingSec: number; wave: number } | null;
   visitedLandmarkIds: string[];

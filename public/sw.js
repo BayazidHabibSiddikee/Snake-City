@@ -351,16 +351,118 @@ async function buildOfflinePortalFallbackHtml(requestedUrl) {
 </html>`;
 }
 
+async function measureResponseByteLength(res) {
+  if (!res) return 0;
+  try {
+    const buf = await res.clone().arrayBuffer();
+    if (buf && typeof buf.byteLength === 'number') return buf.byteLength;
+  } catch {
+    // Opaque or unreadable body fallback
+  }
+  const cl = Number(res.headers?.get('content-length') || '0');
+  return Number.isFinite(cl) && cl > 0 ? Math.floor(cl) : 0;
+}
+
+async function measureCacheBucket(cacheName, isPortalPages = false) {
+  const exists = await caches.has(cacheName);
+  if (!exists) {
+    return { cacheName, bytes: 0, entries: 0, items: [] };
+  }
+  const cache = await caches.open(cacheName);
+  const keys = await cache.keys();
+  let bytes = 0;
+  const items = [];
+  for (const req of keys) {
+    try {
+      const res = await cache.match(req);
+      const size = await measureResponseByteLength(res);
+      bytes += size;
+      if (isPortalPages) {
+        const targetUrl = extractTargetUrlFromCacheKey(req.url);
+        if (targetUrl) {
+          const cachedAt = Number(res?.headers?.get('X-Serpent-Cached-At') || '0');
+          items.push({
+            url: targetUrl,
+            bytes: size,
+            cachedAt: Number.isFinite(cachedAt) ? cachedAt : 0,
+          });
+        }
+      }
+    } catch {
+      // ignore single entry error
+    }
+  }
+  return {
+    cacheName,
+    bytes,
+    entries: keys.length,
+    items,
+  };
+}
+
+async function getStorageUsageBreakdown() {
+  const [core, portalPages, portalState, fonts] = await Promise.all([
+    measureCacheBucket(CORE_CACHE, false),
+    measureCacheBucket(PORTAL_PAGES_CACHE, true),
+    measureCacheBucket(PORTAL_STATE_CACHE, false),
+    measureCacheBucket(FONT_CACHE, false),
+  ]);
+
+  const totalCacheBytes = core.bytes + portalPages.bytes + portalState.bytes + fonts.bytes;
+  return {
+    measuredAt: Date.now(),
+    totalCacheBytes,
+    buckets: {
+      core: { key: 'core', label: 'Core App & 3D Assets', cacheName: CORE_CACHE, bytes: core.bytes, entries: core.entries },
+      portalPages: { key: 'portalPages', label: 'Cached Bookmark & Portal Pages', cacheName: PORTAL_PAGES_CACHE, bytes: portalPages.bytes, entries: portalPages.entries },
+      portalState: { key: 'portalState', label: 'Bookmarks & Browser History Index', cacheName: PORTAL_STATE_CACHE, bytes: portalState.bytes, entries: portalState.entries },
+      fonts: { key: 'fonts', label: 'Typography & Fonts Cache', cacheName: FONT_CACHE, bytes: fonts.bytes, entries: fonts.entries },
+    },
+    cachedItems: portalPages.items.sort((a, b) => b.bytes - a.bytes),
+  };
+}
+
+async function deleteCachedPortalPageUrl(rawUrl) {
+  const normalized = normalizeTargetUrl(rawUrl);
+  const cacheKey = normalized ? canonicalPortalPageCacheKey(normalized) : null;
+  if (!cacheKey) {
+    return { ok: false, deleted: false, url: rawUrl, freedBytes: 0 };
+  }
+  try {
+    const exists = await caches.has(PORTAL_PAGES_CACHE);
+    if (!exists) {
+      return { ok: true, deleted: false, url: normalized, freedBytes: 0 };
+    }
+    const cache = await caches.open(PORTAL_PAGES_CACHE);
+    const existing = await cache.match(cacheKey);
+    const freedBytes = existing ? await measureResponseByteLength(existing) : 0;
+    const deleted = await cache.delete(cacheKey);
+    return { ok: true, deleted, url: normalized, freedBytes };
+  } catch {
+    return { ok: false, deleted: false, url: normalized, freedBytes: 0 };
+  }
+}
+
 async function getOfflineCacheStatus() {
-  const [coreCache, pageCache, stateSnapshot] = await Promise.all([
-    caches.open(CORE_CACHE),
-    caches.open(PORTAL_PAGES_CACHE),
-    readPortalStateSnapshot(),
+  const [hasCore, hasPages, hasState] = await Promise.all([
+    caches.has(CORE_CACHE),
+    caches.has(PORTAL_PAGES_CACHE),
+    caches.has(PORTAL_STATE_CACHE),
   ]);
-  const [coreKeys, pageKeys] = await Promise.all([
-    coreCache.keys(),
-    pageCache.keys(),
-  ]);
+
+  let coreKeys = [];
+  if (hasCore) {
+    const coreCache = await caches.open(CORE_CACHE);
+    coreKeys = await coreCache.keys();
+  }
+
+  let pageKeys = [];
+  if (hasPages) {
+    const pageCache = await caches.open(PORTAL_PAGES_CACHE);
+    pageKeys = await pageCache.keys();
+  }
+
+  const stateSnapshot = hasState ? await readPortalStateSnapshot() : null;
   const cachedUrls = pageKeys
     .map((req) => extractTargetUrlFromCacheKey(req.url))
     .filter(Boolean);
@@ -451,9 +553,43 @@ self.addEventListener('message', (event) => {
     return;
   }
 
+  if (data.type === 'GET_STORAGE_USAGE') {
+    event.waitUntil(
+      getStorageUsageBreakdown().then((usage) => respond({ ok: true, usage })),
+    );
+    return;
+  }
+
+  if (data.type === 'DELETE_CACHED_PORTAL_URL') {
+    event.waitUntil(
+      deleteCachedPortalPageUrl(data.url).then(async (res) => {
+        const usage = await getStorageUsageBreakdown();
+        respond({ ...res, usage });
+      }),
+    );
+    return;
+  }
+
   if (data.type === 'CLEAR_PORTAL_PAGE_CACHE') {
     event.waitUntil(
       caches.delete(PORTAL_PAGES_CACHE).then(() => respond({ ok: true })),
+    );
+    return;
+  }
+
+  if (data.type === 'CLEAR_ALL_OFFLINE_CACHES') {
+    event.waitUntil(
+      Promise.all([
+        caches.delete(PORTAL_STATE_CACHE),
+        caches.delete(PORTAL_PAGES_CACHE),
+        caches.delete(CORE_CACHE),
+        caches.delete(FONT_CACHE),
+      ]).then(() =>
+        respond({
+          ok: true,
+          clearedCaches: [PORTAL_STATE_CACHE, PORTAL_PAGES_CACHE, CORE_CACHE, FONT_CACHE],
+        }),
+      ),
     );
   }
 });

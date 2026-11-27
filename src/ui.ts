@@ -30,6 +30,12 @@ import {
 import { ComplimentNotice, FloatingTauntNotice } from './compliments';
 import { PRESET_FORMATIONS, PortalShiftResult } from './formations';
 import { ClimateLogNotice, SnakeGameController } from './game';
+import {
+  ATTACK_SPECS,
+  SOUL_DISCIPLINES,
+  resolveActiveSynergy,
+  type SoulDisciplineId,
+} from './game/foundry/FoundrySimulation';
 import { renderHumanityGrowthChart } from './humanityChart';
 import {
   LOOT_RARITY_META,
@@ -41,11 +47,21 @@ import {
   renderLootIconSvg,
 } from './loot';
 import {
+  OfflineSyncIndicator,
+  computeStorageBucketShares,
   extractBookmarkCacheableUrls,
-  formatOfflineCacheSummary,
+  formatStorageBytes,
   isIosSafariDevice,
   isStandalonePwa,
 } from './offlineCache';
+import {
+  PORTAL_REGIONS,
+  PortalRegionId,
+  PortalRegionMeta,
+  formatRelativeVisitTime,
+} from './ecosystem/memory/RetentionPolicy';
+import type { SpatialPortalNode } from './game/portal-world/PortalClusters';
+import type { PortalProximityPrompt } from './game/portal-world/PortalInteraction';
 import {
   CardDuelParticipant,
   FIFTEENTH_SOUL_EPILOGUE_TEXT,
@@ -246,6 +262,21 @@ export class GameUI {
   private lootReliquaryBodyEl!: HTMLElement;
   private lootReliquaryMetaEl!: HTMLElement;
   private latestMissionLootDrop: PortalLootDrop | null = null;
+
+  // Portal Memory World HUD prompt, region banner & Atlas Explorer modal
+  private portalProximityPromptEl!: HTMLElement;
+  private portalRegionBannerEl!: HTMLElement;
+  private portalRegionBannerTimer = 0;
+  private portalAtlasModal!: HTMLElement;
+  private portalAtlasBodyEl!: HTMLElement;
+  private portalAtlasMetaEl!: HTMLElement;
+  private portalAtlasSearchQuery = '';
+  private portalAtlasRegionFilter: PortalRegionId | 'all' = 'all';
+  private activeProximityPrompt: PortalProximityPrompt | null = null;
+  private foundryConsoleModal!: HTMLElement;
+  private foundryConsoleBodyEl!: HTMLElement;
+  private foundryDebugOverlayEl!: HTMLElement;
+  private foundryDebugVisible = false;
 
   // Interactive per-portal Mission / 5-Floor Trial / 29-Card Soul Duel state
   private missionQuizHintOpen = false;
@@ -1052,7 +1083,9 @@ export class GameUI {
           <div class="modal-actions">
             <button type="button" class="primary-cta" id="resumeBtn">Resume</button>
             <button type="button" class="secondary-cta" id="pauseGlobalRankingBtn">Global Rankings (L)</button>
-            <button type="button" class="secondary-cta" id="pausePortalBrowserBtn">Portal Chromium Browser (G)</button>
+            <button type="button" class="secondary-cta" id="pausePortalAtlasBtn">Portal Memory Atlas (P)</button>
+            <button type="button" class="secondary-cta" id="pauseFoundryConsoleBtn">Soul Foundry &amp; Disciplines (O)</button>
+            <button type="button" class="secondary-cta" id="pausePortalBrowserBtn">Portal Browser (G)</button>
             <button type="button" class="secondary-cta" id="pauseLootReliquaryBtn">Loot Reliquary (I)</button>
             <button type="button" class="secondary-cta" id="pauseSoulArchivesBtn">Soul Clan Archives (N)</button>
             <button type="button" class="secondary-cta" id="pauseSettingsBtn">Settings</button>
@@ -1375,11 +1408,27 @@ export class GameUI {
               </label>
             </div>
             <div class="settings-section">
+              <span class="settings-label">Service Worker &amp; Offline Sync Status</span>
+              <div class="sw-sync-card tone-cyan" id="settingsSwSyncCard" role="status" aria-live="polite">
+                <div class="sw-sync-top">
+                  <span class="sw-sync-dot tone-cyan phase-initializing" id="settingsSwSyncDot" aria-hidden="true"></span>
+                  <span class="sw-sync-badge" id="settingsSwSyncBadge">Starting SW...</span>
+                  <span class="sw-sync-headline" id="settingsSwSyncHeadline">Registering Service Worker for offline portal caching...</span>
+                </div>
+                <div class="sw-sync-detail" id="settingsSwSyncDetail">Checking offline caches...</div>
+              </div>
+              <div class="sw-storage-mini-row" id="settingsStorageSummaryRow">
+                <span class="sw-storage-mini-label">Offline Cache Storage:</span>
+                <span class="sw-storage-mini-val" id="settingsStorageTotalVal">Calculating...</span>
+              </div>
+            </div>
+            <div class="settings-section">
               <span class="settings-label">Browser Data &amp; App Release</span>
               <div class="settings-row settings-wrap-row">
                 <button type="button" class="secondary-cta compact" id="settingsLaunchBrowserNowBtn">Open Standalone Browser</button>
                 <button type="button" class="secondary-cta compact" id="settingsOpenHistoryBtn">View Browser History</button>
                 <button type="button" class="secondary-cta compact" id="settingsInstallPwaBtn">Install App (PWA)</button>
+                <button type="button" class="ghost-btn compact" id="settingsClearOfflineCacheBtn">Clear Offline Cache</button>
                 <button type="button" class="ghost-btn compact" id="settingsClearHistoryBtn">Clear History</button>
                 <button type="button" class="ghost-btn compact" id="settingsResetBrowserBtn">Reset Browser Defaults</button>
               </div>
@@ -1514,15 +1563,16 @@ export class GameUI {
             <iframe
               id="chromiumViewportFrame"
               class="chromium-viewport-frame"
-              title="Portal Chromium Active Tab"
-              sandbox="allow-same-origin allow-scripts allow-forms allow-popups"
+              title="Portal Browser Active Tab"
+              sandbox="allow-scripts allow-forms allow-popups"
+              referrerpolicy="no-referrer"
             ></iframe>
           </div>
 
-          <!-- CHROMIUM FOOTER STATUS BAR -->
+          <!-- BROWSER FOOTER STATUS BAR -->
           <div class="chromium-statusbar">
-            <span class="chromium-status-left" id="chromiumStatusText">Chromium 131.0.6778.86 · Blink Portal Wormhole Compositor</span>
-            <span class="chromium-status-right" id="chromiumPortalCountText">Synced to 28+ Random 3D Mountain Portals · Press [G] or [Esc] to return</span>
+            <span class="chromium-status-left" id="chromiumStatusText">Portal Browser · Isolated Web Proxy &amp; Saved Offline Pages</span>
+            <span class="chromium-status-right" id="chromiumPortalCountText">Synced to 3D Mountain Portals · Press [G] or [Esc] to return</span>
           </div>
         </div>
       </div>
@@ -1623,6 +1673,54 @@ export class GameUI {
         </div>
       </div>
 
+      <!-- PORTAL MEMORY PROXIMITY PROMPT (APPEARS ONLY NEAR 3D PORTAL GATEWAYS) -->
+      <div class="pm-proximity-prompt hidden" id="portalProximityPrompt" role="region" aria-live="polite" aria-label="Nearby Portal Gateway"></div>
+
+      <!-- PORTAL MEMORY REGION TRANSITION BANNER -->
+      <div class="pm-region-banner hidden" id="portalRegionBanner" role="status" aria-live="polite"></div>
+
+      <!-- PORTAL MEMORY ATLAS & WORLD DIRECTORY MODAL ([P] OR CENTRAL SANCTUARY ATLAS GATEWAY) -->
+      <div class="modal-backdrop hidden" id="portalAtlasModal" role="dialog" aria-modal="true" aria-label="Portal Memory Atlas">
+        <div class="modal-card pm-atlas-card">
+          <div class="pm-atlas-header">
+            <div>
+              <div class="pm-atlas-eyebrow">SPATIAL BROWSER MEMORY · 6 WORLD REGIONS</div>
+              <h2 class="modal-title pm-atlas-title">Portal Memory Atlas</h2>
+            </div>
+            <div class="pm-atlas-header-right">
+              <span class="pm-atlas-meta" id="portalAtlasMeta">Loading portal memory...</span>
+              <button type="button" class="ghost-btn compact" id="closePortalAtlasBtn" aria-label="Close Portal Memory Atlas">Close</button>
+            </div>
+          </div>
+          <div class="pm-atlas-body" id="portalAtlasBody"></div>
+          <div class="pm-atlas-footer">
+            <span class="pm-atlas-hotkey-note">Walk into any 3D archway or press [U] nearby · [P] Portal Atlas · Deleting a portal erases it from IndexedDB, History &amp; Cache</span>
+            <button type="button" class="primary-cta compact" id="closePortalAtlasFooterBtn">Return to World</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- FORGOTTEN SOUL FOUNDRY & SOUL CLAN CONSOLE MODAL -->
+      <div class="modal-backdrop hidden" id="foundryConsoleModal" role="dialog" aria-modal="true" aria-label="Forgotten Soul Foundry & Soul Clan Console">
+        <div class="modal-card foundry-console-card">
+          <div class="foundry-head">
+            <div>
+              <span class="foundry-kicker">MECHANICAL-FANTASY VERTICAL SLICE · [O]</span>
+              <h2 class="modal-title">The Forgotten Soul Foundry</h2>
+            </div>
+            <div class="foundry-head-actions">
+              <button type="button" class="secondary-cta" id="foundryWarpBtn">Warp to Foundry</button>
+              <button type="button" class="ghost-btn" id="foundryDebugToggleBtn">Debug [F3]</button>
+              <button type="button" class="ghost-btn" id="closeFoundryConsoleBtn">Close</button>
+            </div>
+          </div>
+          <div id="foundryConsoleBody" class="foundry-body"></div>
+        </div>
+      </div>
+
+      <!-- DEVELOPER DEBUG TELEMETRY OVERLAY (TOGGLE F3) -->
+      <aside class="foundry-debug-overlay hidden" id="foundryDebugOverlay" aria-label="Simulation Debug Telemetry"></aside>
+
       <!-- NON-INTRUSIVE OFFLINE CONNECTIVITY INDICATOR (HIDDEN WHEN ONLINE) -->
       <div class="offline-status-banner hidden" id="offlineStatusBanner" role="status" aria-live="polite">
         <span class="offline-status-dot" aria-hidden="true"></span>
@@ -1708,6 +1806,14 @@ export class GameUI {
     this.offlineStatusBannerEl = uiLayer.querySelector('#offlineStatusBanner')!;
     this.iosInstallModalEl = uiLayer.querySelector('#iosInstallModal')!;
     this.fpvReticleEl = uiLayer.querySelector('#fpvReticle')!;
+    this.portalProximityPromptEl = uiLayer.querySelector('#portalProximityPrompt')!;
+    this.portalRegionBannerEl = uiLayer.querySelector('#portalRegionBanner')!;
+    this.portalAtlasModal = uiLayer.querySelector('#portalAtlasModal')!;
+    this.portalAtlasBodyEl = uiLayer.querySelector('#portalAtlasBody')!;
+    this.portalAtlasMetaEl = uiLayer.querySelector('#portalAtlasMeta')!;
+    this.foundryConsoleModal = uiLayer.querySelector('#foundryConsoleModal')!;
+    this.foundryConsoleBodyEl = uiLayer.querySelector('#foundryConsoleBody')!;
+    this.foundryDebugOverlayEl = uiLayer.querySelector('#foundryDebugOverlay')!;
 
     this.mobileLeftClusterEl = uiLayer.querySelector('#mobileLeftCluster')!;
     this.mobileActionRowEl = uiLayer.querySelector('#mobileActionRow')!;
@@ -2133,6 +2239,73 @@ export class GameUI {
     this.root.querySelector('#launchBrowserTitleBtn')?.addEventListener('click', () => {
       this.launchStandaloneBrowser();
     });
+    this.root.querySelector('#pausePortalAtlasBtn')?.addEventListener('click', () => {
+      this.pauseModal.classList.add('hidden');
+      this.openPortalAtlasModal();
+    });
+    this.root.querySelector('#pauseFoundryConsoleBtn')?.addEventListener('click', () => {
+      this.pauseModal.classList.add('hidden');
+      this.openFoundryConsoleModal();
+    });
+    this.root.querySelector('#closeFoundryConsoleBtn')?.addEventListener('click', () => {
+      this.closeFoundryConsoleModal();
+    });
+    this.root.querySelector('#foundryWarpBtn')?.addEventListener('click', () => {
+      this.closeFoundryConsoleModal();
+      this.game.warpToForgottenFoundry();
+    });
+    this.root.querySelector('#foundryDebugToggleBtn')?.addEventListener('click', () => {
+      this.toggleFoundryDebugOverlay();
+    });
+    this.foundryConsoleModal.addEventListener('click', (e) => {
+      if (e.target === this.foundryConsoleModal) {
+        this.closeFoundryConsoleModal();
+      }
+    });
+    this.foundryConsoleBodyEl.addEventListener('click', (e) => {
+      const target = e.target as HTMLElement;
+      const btn = target.closest<HTMLButtonElement>('button[data-foundry-act]');
+      if (!btn) return;
+      const act = btn.dataset.foundryAct;
+      const val = btn.dataset.foundryVal || '';
+      if (act === 'gear_r1') this.game.foundry.updateGearPuzzle({ gear1Radius: Number(val) });
+      else if (act === 'gear_r2') this.game.foundry.updateGearPuzzle({ gear2Radius: Number(val) });
+      else if (act === 'gear_r3') this.game.foundry.updateGearPuzzle({ gear3Radius: Number(val) });
+      else if (act === 'gear_reverse') {
+        const cur = this.game.foundry.getState().gearPuzzle.reverseIdlerEngaged;
+        this.game.foundry.updateGearPuzzle({ reverseIdlerEngaged: !cur });
+      } else if (act === 'toggle_switch' && (val === 'switchA' || val === 'switchB' || val === 'switchC')) {
+        this.game.foundry.toggleSwitch(val);
+      } else if (act === 'set_primary' && val in SOUL_DISCIPLINES) {
+        const sec = this.game.foundry.getState().resources.secondaryDiscipline;
+        this.game.foundry.selectDisciplines(val as SoulDisciplineId, sec);
+      } else if (act === 'set_secondary') {
+        const pri = this.game.foundry.getState().resources.primaryDiscipline;
+        this.game.foundry.selectDisciplines(pri, val ? (val as SoulDisciplineId) : null);
+      } else if (act === 'cast_discipline') {
+        const res = this.game.foundry.castDiscipline();
+        this.showToast(res.message);
+      } else if (act === 'reset_encounter') {
+        this.game.foundry.resetFoundryEncounter();
+        this.showToast('Foundry encounter reset.');
+      }
+      this.renderFoundryConsoleModal();
+    });
+    this.foundryConsoleBodyEl.addEventListener('input', (e) => {
+      const target = e.target as HTMLInputElement;
+      if (target.id === 'foundryValveRange') {
+        this.game.foundry.adjustValve(Number(target.value) / 100);
+        this.renderFoundryConsoleModal();
+      }
+    });
+    this.game.foundry.subscribe(() => {
+      if (!this.foundryConsoleModal.classList.contains('hidden')) {
+        this.renderFoundryConsoleModal();
+      }
+      if (this.foundryDebugVisible) {
+        this.renderFoundryDebugOverlay();
+      }
+    });
     this.root.querySelector('#pausePortalBrowserBtn')!.addEventListener('click', () => {
       this.pauseModal.classList.add('hidden');
       this.openPortalBrowserModal();
@@ -2144,6 +2317,164 @@ export class GameUI {
     this.pauseSoulArchivesBtn.addEventListener('click', () => {
       this.pauseModal.classList.add('hidden');
       this.openSoulArchivesModal();
+    });
+
+    // Portal Memory World callbacks & UI bindings
+    this.game.setPortalMemoryCallbacks({
+      onPromptChange: (prompt) => {
+        this.renderPortalProximityPrompt(prompt);
+      },
+      onRegionChange: (region) => {
+        this.showPortalRegionBanner(region);
+      },
+      onActivatePortal: (node) => {
+        this.handlePortalMemoryActivation(node);
+      },
+    });
+    this.game.portalWorld.memory.subscribe(() => {
+      if (!this.portalAtlasModal.classList.contains('hidden')) {
+        this.renderPortalAtlasModal();
+      }
+    });
+
+    this.portalProximityPromptEl.addEventListener('click', (e) => {
+      const target = e.target as HTMLElement;
+      if (target.closest('[data-pm-enter]')) {
+        this.game.portalWorld.activateNearestPortal();
+        return;
+      }
+      const pinBtn = target.closest<HTMLButtonElement>('[data-pm-pin]');
+      if (pinBtn?.dataset.pmPin) {
+        void this.game.portalWorld.memory.togglePinRecord(pinBtn.dataset.pmPin).then((pinned) => {
+          this.showToast(pinned ? 'Portal pinned with Golden Frame in Portal Halls.' : 'Portal unpinned.');
+        });
+        return;
+      }
+      const delBtn = target.closest<HTMLButtonElement>('[data-pm-delete]');
+      if (delBtn?.dataset.pmDelete) {
+        void this.game.portalWorld.memory.deleteRecordPermanently(delBtn.dataset.pmDelete).then(() => {
+          this.showToast('Portal permanently deleted from memory, history & offline cache.');
+          this.renderPortalProximityPrompt(null);
+        });
+      }
+    });
+
+    this.root.querySelector('#closePortalAtlasBtn')?.addEventListener('click', () => {
+      this.closePortalAtlasModal();
+    });
+    this.root.querySelector('#closePortalAtlasFooterBtn')?.addEventListener('click', () => {
+      this.closePortalAtlasModal();
+    });
+    this.portalAtlasModal.addEventListener('click', (e) => {
+      if (e.target === this.portalAtlasModal) {
+        this.closePortalAtlasModal();
+      }
+    });
+    this.portalAtlasBodyEl.addEventListener('input', (e) => {
+      const target = e.target as HTMLElement;
+      if (target.id === 'pmAtlasSearchInput') {
+        this.portalAtlasSearchQuery = (target as HTMLInputElement).value;
+        this.updatePortalAtlasListInPlace();
+      }
+    });
+    this.portalAtlasBodyEl.addEventListener('click', (e) => {
+      const target = e.target as HTMLElement;
+      const regFilter = target.closest<HTMLButtonElement>('[data-pm-region-filter]');
+      if (regFilter?.dataset.pmRegionFilter) {
+        this.portalAtlasRegionFilter = regFilter.dataset.pmRegionFilter as PortalRegionId | 'all';
+        this.game.sound.playClick();
+        this.renderPortalAtlasModal();
+        return;
+      }
+      const warpReg = target.closest<HTMLButtonElement>('[data-pm-warp-region]');
+      if (warpReg?.dataset.pmWarpRegion) {
+        const regId = warpReg.dataset.pmWarpRegion as PortalRegionId;
+        this.closePortalAtlasModal();
+        this.game.warpToPortalMemoryRegion(regId);
+        return;
+      }
+      const openRec = target.closest<HTMLButtonElement>('[data-pm-open-record]');
+      if (openRec?.dataset.pmOpenRecord) {
+        const node = this.game.portalWorld.manager.findNodeById(openRec.dataset.pmOpenRecord);
+        this.closePortalAtlasModal();
+        if (node) {
+          this.handlePortalMemoryActivation(node);
+        }
+        return;
+      }
+      const warpRec = target.closest<HTMLButtonElement>('[data-pm-warp-record]');
+      if (warpRec?.dataset.pmWarpRecord) {
+        const node = this.game.portalWorld.manager.findNodeById(warpRec.dataset.pmWarpRecord);
+        if (node) {
+          this.closePortalAtlasModal();
+          this.game.warpToPortalMemoryCoords(node.x, node.z, node.title);
+        }
+        return;
+      }
+      const pinRec = target.closest<HTMLButtonElement>('[data-pm-pin-record]');
+      if (pinRec?.dataset.pmPinRecord) {
+        void this.game.portalWorld.memory.togglePinRecord(pinRec.dataset.pmPinRecord).then((pinned) => {
+          this.game.sound.playClick();
+          this.showToast(pinned ? 'Pinned to Portal Halls (Golden Frame).' : 'Unpinned portal.');
+          this.renderPortalAtlasModal();
+        });
+        return;
+      }
+      const delRec = target.closest<HTMLButtonElement>('[data-pm-delete-record]');
+      if (delRec?.dataset.pmDeleteRecord) {
+        void this.game.portalWorld.memory.deleteRecordPermanently(delRec.dataset.pmDeleteRecord).then(() => {
+          this.game.sound.playClick();
+          this.showToast('Portal permanently deleted from memory, history & offline cache.');
+          this.renderPortalAtlasModal();
+        });
+        return;
+      }
+      if (target.closest('#pmCreateCollectionBtn')) {
+        const nameInp = this.portalAtlasBodyEl.querySelector<HTMLInputElement>('#pmNewCollectionName');
+        const urlInp = this.portalAtlasBodyEl.querySelector<HTMLInputElement>('#pmNewCollectionUrl');
+        const name = nameInp?.value.trim() ?? '';
+        if (!name) {
+          this.showToast('Enter a collection name to create a Gateway Hub.');
+          return;
+        }
+        const col = this.game.portalWorld.memory.createCollection(name, 'User-created Gateway Hub');
+        const urlVal = urlInp?.value.trim() ?? '';
+        if (urlVal) {
+          this.game.portalWorld.memory.addUrlToCollection(col.id, urlVal);
+        }
+        this.game.sound.playClick();
+        this.showToast(`Created Gateway Hub "${col.name}" in Portal Halls!`);
+        this.renderPortalAtlasModal();
+        return;
+      }
+      const shareCol = target.closest<HTMLButtonElement>('[data-pm-share-col]');
+      if (shareCol?.dataset.pmShareCol) {
+        const code = this.game.portalWorld.memory.encodeCollectionShareCode(shareCol.dataset.pmShareCol);
+        if (code && navigator.clipboard?.writeText) {
+          void navigator.clipboard.writeText(code);
+          this.showToast('Copied Gateway Hub collection share code to clipboard!');
+        } else if (code) {
+          this.showToast(`Share code: ${code.slice(0, 32)}...`);
+        }
+        return;
+      }
+      const delCol = target.closest<HTMLButtonElement>('[data-pm-del-col]');
+      if (delCol?.dataset.pmDelCol) {
+        void this.game.portalWorld.memory.deleteCollection(delCol.dataset.pmDelCol).then(() => {
+          this.game.sound.playClick();
+          this.showToast('Deleted Gateway Hub collection.');
+          this.renderPortalAtlasModal();
+        });
+        return;
+      }
+      if (target.closest('#pmClearRecoveryBtn')) {
+        void this.game.portalWorld.memory.clearRecoveryRecords().then((n) => {
+          this.game.sound.playClick();
+          this.showToast(`Cleared ${n} lost session portal${n === 1 ? '' : 's'} from Forgotten Ruins.`);
+          this.renderPortalAtlasModal();
+        });
+        return;
+      }
     });
 
     // Loot Reliquary Modal events
@@ -2407,6 +2738,9 @@ export class GameUI {
     });
     this.root.querySelector('#settingsInstallPwaBtn')?.addEventListener('click', () => {
       void this.triggerPwaInstallPrompt();
+    });
+    this.root.querySelector('#settingsClearOfflineCacheBtn')?.addEventListener('click', () => {
+      void this.handleClearAllOfflineCache();
     });
     this.root.querySelector('#settingsClearHistoryBtn')?.addEventListener('click', () => {
       this.game.portalBrowser.clearHistory();
@@ -3095,17 +3429,96 @@ export class GameUI {
     }
   }
 
+  private applySyncIndicatorToDom(
+    sync: OfflineSyncIndicator,
+    els: {
+      card?: Element | null;
+      dot?: Element | null;
+      badge?: Element | null;
+      headline?: Element | null;
+      detail?: Element | null;
+    },
+  ): void {
+    if (els.card) {
+      els.card.className = `sw-sync-card tone-${sync.tone} phase-${sync.phase}`;
+    }
+    if (els.dot) {
+      els.dot.className = `sw-sync-dot tone-${sync.tone} phase-${sync.phase}`;
+    }
+    if (els.badge) {
+      els.badge.textContent = sync.shortBadge;
+    }
+    if (els.headline) {
+      els.headline.textContent = sync.headline;
+    }
+    if (els.detail) {
+      els.detail.textContent = sync.detail;
+    }
+  }
+
+  private async handleClearAllOfflineCache(): Promise<void> {
+    this.game.sound.playClick();
+    const res = await this.game.offlineCache.clearAllOfflineCaches();
+    this.showToast(
+      res.ok
+        ? 'Offline Service Worker cache cleared (bookmarks, history & core assets). Click Force Refresh or Sync Now to rebuild.'
+        : 'Unable to clear offline cache in this browser context.',
+    );
+    if (this.portalBrowserSettingsMode) {
+      this.renderBrowserSettingsPanel();
+    }
+  }
+
   private syncOfflineUiState(): void {
     const isOnline = this.game.offlineCache.isOnline();
+    const sync = this.game.offlineCache.getSyncIndicator();
     this.offlineStatusBannerEl.classList.toggle('hidden', isOnline);
     this.chromiumOfflineTagEl.classList.toggle('hidden', isOnline);
 
+    // Update unified Settings modal real-time SW indicator & storage total
+    this.applySyncIndicatorToDom(sync, {
+      card: this.root.querySelector('#settingsSwSyncCard'),
+      dot: this.root.querySelector('#settingsSwSyncDot'),
+      badge: this.root.querySelector('#settingsSwSyncBadge'),
+      headline: this.root.querySelector('#settingsSwSyncHeadline'),
+      detail: this.root.querySelector('#settingsSwSyncDetail'),
+    });
+    const storageUsage = this.game.offlineCache.getStorageUsage();
+    const settingsStorageTotalEl = this.root.querySelector('#settingsStorageTotalVal');
+    if (settingsStorageTotalEl) {
+      const quotaNote =
+        storageUsage.browserQuotaBytes && storageUsage.browserQuotaBytes > 0
+          ? ` (Browser Quota ${formatStorageBytes(storageUsage.browserQuotaBytes)})`
+          : '';
+      settingsStorageTotalEl.textContent = `${formatStorageBytes(storageUsage.totalCacheBytes)} across 4 caches${quotaNote}`;
+    }
+
     if (this.portalBrowserSettingsMode) {
-      const statusEl = this.chromiumSettingsPanelEl.querySelector('#inbOfflineCacheStatus');
-      if (statusEl) {
-        statusEl.textContent = formatOfflineCacheSummary(this.game.offlineCache.getStatus(), isOnline);
+      // Update header live badge across all Browser Settings tabs
+      const headerDot = this.chromiumSettingsPanelEl.querySelector('#inbHeaderSwDot');
+      if (headerDot) {
+        headerDot.className = `sw-sync-dot tone-${sync.tone} phase-${sync.phase}`;
       }
-      if (this.portalBrowserSettingsTab === 'history') {
+      const headerLabel = this.chromiumSettingsPanelEl.querySelector('#inbHeaderSwLabel');
+      if (headerLabel) {
+        headerLabel.textContent = `SW: ${sync.shortBadge}`;
+      }
+
+      // Update full Privacy & Offline sync indicator card in place
+      this.applySyncIndicatorToDom(sync, {
+        card: this.chromiumSettingsPanelEl.querySelector('#inbSwSyncCard'),
+        dot: this.chromiumSettingsPanelEl.querySelector('#inbSwSyncDot'),
+        badge: this.chromiumSettingsPanelEl.querySelector('#inbSwSyncBadge'),
+        headline: this.chromiumSettingsPanelEl.querySelector('#inbSwSyncHeadline'),
+        detail: this.chromiumSettingsPanelEl.querySelector('#inbSwSyncDetail'),
+      });
+
+      if (this.portalBrowserSettingsTab === 'privacy') {
+        const storageHost = this.chromiumSettingsPanelEl.querySelector('#inbStorageUsageHost');
+        if (storageHost) {
+          storageHost.innerHTML = this.renderStorageUsageBreakdownMarkup();
+        }
+      } else if (this.portalBrowserSettingsTab === 'history') {
         this.updateBrowserHistoryListInPlace();
       } else if (this.portalBrowserSettingsTab === 'bookmarks') {
         this.renderBrowserSettingsPanel();
@@ -3188,6 +3601,8 @@ export class GameUI {
       !this.bestiaryModal.classList.contains('hidden') ||
       !this.soulArchivesModal.classList.contains('hidden') ||
       !this.lootReliquaryModal.classList.contains('hidden') ||
+      !this.portalAtlasModal.classList.contains('hidden') ||
+      !this.foundryConsoleModal.classList.contains('hidden') ||
       !this.settingsModal.classList.contains('hidden') ||
       !this.journeyModal.classList.contains('hidden') ||
       !this.evolutionSummaryModal.classList.contains('hidden');
@@ -3204,6 +3619,8 @@ export class GameUI {
       !this.bestiaryModal.classList.contains('hidden') ||
       !this.soulArchivesModal.classList.contains('hidden') ||
       !this.lootReliquaryModal.classList.contains('hidden') ||
+      !this.portalAtlasModal.classList.contains('hidden') ||
+      !this.foundryConsoleModal.classList.contains('hidden') ||
       !this.settingsModal.classList.contains('hidden')
     );
   }
@@ -3233,8 +3650,317 @@ export class GameUI {
     this.bestiaryModal.classList.add('hidden');
     this.soulArchivesModal.classList.add('hidden');
     this.lootReliquaryModal.classList.add('hidden');
+    this.portalAtlasModal.classList.add('hidden');
+    this.foundryConsoleModal.classList.add('hidden');
     this.settingsModal.classList.add('hidden');
     this.syncModalFreeze();
+  }
+
+  public togglePortalAtlasModal(): void {
+    if (!this.portalAtlasModal.classList.contains('hidden')) {
+      this.closePortalAtlasModal();
+    } else {
+      this.openPortalAtlasModal();
+    }
+  }
+
+  public openPortalAtlasModal(): void {
+    this.portalAtlasModal.classList.remove('hidden');
+    this.renderPortalAtlasModal();
+    this.syncModalFreeze();
+  }
+
+  public closePortalAtlasModal(): void {
+    this.portalAtlasModal.classList.add('hidden');
+    this.syncModalFreeze();
+  }
+
+  private renderPortalProximityPrompt(prompt: PortalProximityPrompt | null): void {
+    this.activeProximityPrompt = prompt;
+    if (!prompt || this.game.getMode() !== 'playing') {
+      this.portalProximityPromptEl.classList.add('hidden');
+      this.portalProximityPromptEl.innerHTML = '';
+      return;
+    }
+
+    const { node } = prompt;
+    const stateClass = `pm-state-${node.visualState}`;
+    const tabsBadge =
+      node.tabCount > 1 ? `<span class="pm-prompt-tabs">${node.tabCount} tabs</span>` : '';
+
+    this.portalProximityPromptEl.className = `pm-proximity-prompt ${stateClass}`;
+    this.portalProximityPromptEl.innerHTML = `
+      <div class="pm-prompt-glyph" style="border-color:${prompt.accentHex};color:${prompt.accentHex}">${this.escapeHtmlText(node.faviconGlyph)}</div>
+      <div class="pm-prompt-copy">
+        <div class="pm-prompt-top">
+          <span class="pm-prompt-state" style="color:${prompt.accentHex}">${this.escapeHtmlText(prompt.stateLabel)}</span>
+          <span class="pm-prompt-region">${this.escapeHtmlText(prompt.regionName)} · ${prompt.distanceM}m</span>
+          ${tabsBadge}
+        </div>
+        <div class="pm-prompt-title">${this.escapeHtmlText(node.title)}</div>
+        <div class="pm-prompt-sub">${this.escapeHtmlText(node.domain)} · ${this.escapeHtmlText(prompt.lastVisitedLabel)}</div>
+      </div>
+      <div class="pm-prompt-actions">
+        <button type="button" class="primary-cta compact" data-pm-enter="1">${this.escapeHtmlText(prompt.actionLabel)} [U]</button>
+        ${
+          prompt.canPin && node.recordId
+            ? `<button type="button" class="ghost-btn compact" data-pm-pin="${this.escapeHtmlText(node.recordId)}">${node.pinned ? 'Unpin' : 'Pin'}</button>`
+            : ''
+        }
+        ${
+          prompt.canDelete && node.recordId
+            ? `<button type="button" class="ghost-btn compact" data-pm-delete="${this.escapeHtmlText(node.recordId)}">Delete</button>`
+            : ''
+        }
+      </div>
+    `;
+  }
+
+  private showPortalRegionBanner(region: PortalRegionMeta): void {
+    if (this.game.getMode() !== 'playing') return;
+    if (this.portalRegionBannerTimer) {
+      window.clearTimeout(this.portalRegionBannerTimer);
+    }
+    this.portalRegionBannerEl.innerHTML = `
+      <span class="pm-region-accent" style="background:${region.accentHex}"></span>
+      <span class="pm-region-name">${this.escapeHtmlText(region.name)}</span>
+      <span class="pm-region-sub">${this.escapeHtmlText(region.subtitle)}</span>
+    `;
+    this.portalRegionBannerEl.classList.remove('hidden');
+    this.portalRegionBannerTimer = window.setTimeout(() => {
+      this.portalRegionBannerEl.classList.add('hidden');
+      this.portalRegionBannerTimer = 0;
+    }, 3200);
+  }
+
+  private handlePortalMemoryActivation(node: SpatialPortalNode): void {
+    this.game.sound.playPortal();
+    if (node.sanctuaryAction) {
+      if (node.sanctuaryAction === 'atlas') {
+        this.openPortalAtlasModal();
+        return;
+      }
+      if (node.sanctuaryAction === 'history') {
+        this.openPortalBrowserModal();
+        this.portalBrowserSettingsMode = true;
+        this.portalBrowserSettingsTab = 'history';
+        this.portalWorldOrbitMode = false;
+        this.portalMissionViewMode = false;
+        this.renderPortalChromiumBrowser(false);
+        return;
+      }
+      if (node.sanctuaryAction === 'bookmarks') {
+        this.openPortalBrowserModal();
+        this.portalBrowserSettingsMode = true;
+        this.portalBrowserSettingsTab = 'bookmarks';
+        this.portalWorldOrbitMode = false;
+        this.portalMissionViewMode = false;
+        this.renderPortalChromiumBrowser(false);
+        return;
+      }
+      if (node.sanctuaryAction === 'settings') {
+        this.openPortalBrowserModal();
+        this.portalBrowserSettingsMode = true;
+        this.portalBrowserSettingsTab = 'privacy';
+        this.portalWorldOrbitMode = false;
+        this.portalMissionViewMode = false;
+        void this.game.offlineCache.refreshStorageUsage();
+        this.renderPortalChromiumBrowser(false);
+        return;
+      }
+      // Sanctuary New Tab Gateway
+      this.game.portalBrowser.openOrFocusUrl('chrome://newtab', 'New Tab');
+      this.openPortalBrowserModal();
+      this.portalWorldOrbitMode = false;
+      this.portalBrowserSettingsMode = false;
+      this.portalMissionViewMode = false;
+      this.renderPortalChromiumBrowser(true);
+      return;
+    }
+
+    if (node.collectionId) {
+      this.portalAtlasRegionFilter = 'portal_halls';
+      this.openPortalAtlasModal();
+      return;
+    }
+
+    // Lost Portal Recovery -> mark recovered, open destination tab lazily ONLY now
+    if (node.visualState === 'lost' && node.recordId) {
+      void this.game.portalWorld.memory.markRecovered(node.recordId);
+      this.showToast(`Recovered lost session: ${node.title}`);
+    }
+
+    this.game.portalBrowser.openOrFocusUrl(node.url, node.title);
+    this.openPortalBrowserModal();
+    this.portalWorldOrbitMode = false;
+    this.portalBrowserSettingsMode = false;
+    this.portalMissionViewMode = false;
+    this.renderPortalChromiumBrowser(true);
+  }
+
+  private renderPortalAtlasRowsMarkup(): string {
+    const matches = this.game.portalWorld.memory.search({
+      query: this.portalAtlasSearchQuery,
+      regionId: this.portalAtlasRegionFilter,
+    });
+    if (matches.length === 0) {
+      return `<p class="pm-empty">No portals match your current filter. Browse websites, close tabs to populate Forgotten Ruins, or create a Gateway Hub collection below.</p>`;
+    }
+    return matches
+      .slice(0, 80)
+      .map((rec) => {
+        const reg = PORTAL_REGIONS[rec.regionId];
+        const stateText =
+          rec.visualState === 'active'
+            ? 'Active Tab'
+            : rec.visualState === 'lost'
+              ? rec.crashed
+                ? 'Crashed · Recoverable'
+                : 'Closed · Recoverable'
+              : rec.visualState === 'pinned'
+                ? 'Pinned'
+                : 'Saved Memory';
+        const openLabel =
+          rec.visualState === 'lost' ? 'Recover' : rec.type === 'collection' ? 'Open Hub' : 'Open';
+        return `
+          <div class="pm-record-row pm-state-${rec.visualState}">
+            <div class="pm-rec-glyph">${this.escapeHtmlText(rec.faviconGlyph)}</div>
+            <div class="pm-rec-main">
+              <div class="pm-rec-title-line">
+                <span class="pm-rec-title">${this.escapeHtmlText(rec.title)}</span>
+                <span class="pm-rec-badge pm-state-${rec.visualState}">${stateText}</span>
+                ${rec.tabCount > 1 ? `<span class="pm-rec-count">${rec.tabCount}×</span>` : ''}
+              </div>
+              <div class="pm-rec-meta">
+                <span>${this.escapeHtmlText(rec.domain)}</span>
+                <span>·</span>
+                <span>${this.escapeHtmlText(reg.name)}</span>
+                <span>·</span>
+                <span>${this.escapeHtmlText(formatRelativeVisitTime(rec.lastVisitedAt))}</span>
+              </div>
+            </div>
+            <div class="pm-rec-actions">
+              <button type="button" class="primary-cta compact" data-pm-open-record="${this.escapeHtmlText(rec.id)}">${openLabel}</button>
+              <button type="button" class="secondary-cta compact" data-pm-warp-record="${this.escapeHtmlText(rec.id)}">Warp</button>
+              ${
+                rec.type !== 'collection'
+                  ? `<button type="button" class="ghost-btn compact" data-pm-pin-record="${this.escapeHtmlText(rec.id)}">${rec.pinned ? 'Unpin' : 'Pin'}</button>`
+                  : ''
+              }
+              <button type="button" class="ghost-btn compact" data-pm-delete-record="${this.escapeHtmlText(rec.id)}">Delete</button>
+            </div>
+          </div>
+        `;
+      })
+      .join('');
+  }
+
+  private updatePortalAtlasListInPlace(): void {
+    const host = this.portalAtlasBodyEl.querySelector('#pmAtlasListHost');
+    if (host) {
+      host.innerHTML = this.renderPortalAtlasRowsMarkup();
+    }
+  }
+
+  private renderPortalAtlasModal(): void {
+    const memory = this.game.portalWorld.memory;
+    const stats = memory.getStats();
+    const regionCounts = new Map(memory.getRegionSummary().map((r) => [r.regionId, r.count]));
+    const collections = memory.getCollections();
+    const currentReg = this.game.portalWorld.getCurrentRegion();
+
+    this.portalAtlasMetaEl.textContent = `${stats.activeCount} Active · ${stats.memoryCount} Memory · ${stats.recoveryCount} Lost · ${stats.collectionCount} Collections · Now in ${currentReg.name}`;
+
+    const regionOrder: PortalRegionId[] = [
+      'central_sanctuary',
+      'active_gateway',
+      'memory_forest',
+      'forgotten_ruins',
+      'archive_mountains',
+      'portal_halls',
+    ];
+
+    const regionCardsHtml = regionOrder
+      .map((regId) => {
+        const meta = PORTAL_REGIONS[regId];
+        const count = regionCounts.get(regId) ?? 0;
+        const active = this.portalAtlasRegionFilter === regId;
+        return `
+          <div class="pm-region-card ${active ? 'is-selected' : ''}">
+            <div class="pm-region-card-top">
+              <span class="pm-region-swatch" style="background:${meta.accentHex}"></span>
+              <span class="pm-region-card-name">${this.escapeHtmlText(meta.name)}</span>
+              <span class="pm-region-card-count">${count}</span>
+            </div>
+            <div class="pm-region-card-sub">${this.escapeHtmlText(meta.subtitle)}</div>
+            <div class="pm-region-card-actions">
+              <button type="button" class="ghost-btn compact" data-pm-region-filter="${regId}">${active ? 'Filtering' : 'Filter'}</button>
+              <button type="button" class="secondary-cta compact" data-pm-warp-region="${regId}">Warp Here</button>
+            </div>
+          </div>
+        `;
+      })
+      .join('');
+
+    const collectionsHtml =
+      collections.length > 0
+        ? collections
+            .map(
+              (col) => `
+                <div class="pm-col-card">
+                  <div class="pm-col-head">
+                    <span class="pm-region-swatch" style="background:${col.colorHex}"></span>
+                    <strong>${this.escapeHtmlText(col.name)}</strong>
+                    <span class="pm-col-count">${col.portalUrls.length} portal${col.portalUrls.length === 1 ? '' : 's'}</span>
+                  </div>
+                  <div class="pm-col-desc">${this.escapeHtmlText(col.description)}</div>
+                  <div class="pm-col-actions">
+                    <button type="button" class="ghost-btn compact" data-pm-share-col="${this.escapeHtmlText(col.id)}">Share Code</button>
+                    <button type="button" class="ghost-btn compact" data-pm-del-col="${this.escapeHtmlText(col.id)}">Delete</button>
+                  </div>
+                </div>
+              `,
+            )
+            .join('')
+        : `<p class="pm-empty">No Gateway Hub collections yet. Group your research tabs or favorite websites into a personal portal room in Portal Halls.</p>`;
+
+    this.portalAtlasBodyEl.innerHTML = `
+      <div class="pm-regions-grid">${regionCardsHtml}</div>
+
+      <div class="pm-atlas-toolbar">
+        <input
+          type="search"
+          id="pmAtlasSearchInput"
+          class="dark-select pm-atlas-search"
+          value="${this.escapeHtmlText(this.portalAtlasSearchQuery)}"
+          placeholder="Search portals by title, domain, date (YYYY-MM-DD), or state (active, saved, lost, pinned)..."
+          spellcheck="false"
+        />
+        <button type="button" class="ghost-btn compact ${this.portalAtlasRegionFilter === 'all' ? 'active' : ''}" data-pm-region-filter="all">All Regions</button>
+        ${
+          stats.recoveryCount > 0
+            ? `<button type="button" class="ghost-btn compact" id="pmClearRecoveryBtn">Clear Lost (${stats.recoveryCount})</button>`
+            : ''
+        }
+      </div>
+
+      <div class="pm-records-list" id="pmAtlasListHost">
+        ${this.renderPortalAtlasRowsMarkup()}
+      </div>
+
+      <div class="pm-collections-section">
+        <div class="pm-collections-head">
+          <h3>Gateway Hubs — Personal Portal Collections</h3>
+          <span class="pm-collections-sub">Stand inside Portal Halls with Golden Frames</span>
+        </div>
+        <div class="pm-create-col-row">
+          <input type="text" id="pmNewCollectionName" class="dark-select" placeholder="Collection name (e.g. TypeScript Research)..." maxlength="44" />
+          <input type="text" id="pmNewCollectionUrl" class="dark-select" placeholder="Optional initial URL (https://...)..." maxlength="240" />
+          <button type="button" class="primary-cta compact" id="pmCreateCollectionBtn">+ Create Hub</button>
+        </div>
+        <div class="pm-collections-grid">${collectionsHtml}</div>
+      </div>
+    `;
   }
 
   private renderBestiary(allowRevealTrigger = false): boolean {
@@ -3754,6 +4480,9 @@ export class GameUI {
     this.gameOverModal.classList.toggle('hidden', snap.mode !== 'gameover');
     if (snap.mode !== 'playing') {
       this.clearCombatTaunt();
+      if (this.activeProximityPrompt) {
+        this.renderPortalProximityPrompt(null);
+      }
     }
 
     // Title screen progress CTA
@@ -4272,6 +5001,28 @@ export class GameUI {
       ctx.beginPath();
       ctx.arc(px, pz, 3.6, 0, Math.PI * 2);
       ctx.stroke();
+    }
+
+    // Portal Memory World gateways & clusters (color-coded by state)
+    if (snap.portalMemoryBlips && snap.portalMemoryBlips.length > 0) {
+      for (const pm of snap.portalMemoryBlips) {
+        const px = (pm.x - snap.headX) * mapZoom;
+        const pz = (pm.z - snap.headZ) * mapZoom;
+        if (px * px + pz * pz > radius * radius) continue;
+        const blipColor =
+          pm.visualState === 'active'
+            ? '#2de3ff'
+            : pm.visualState === 'lost'
+              ? '#a855f7'
+              : pm.visualState === 'pinned'
+                ? '#f2c14e'
+                : '#3de095';
+        ctx.fillStyle = blipColor;
+        ctx.beginPath();
+        const r = pm.isSanctuary ? 3.4 : pm.count > 1 ? 3.1 : 2.3;
+        ctx.arc(px, pz, r, 0, Math.PI * 2);
+        ctx.fill();
+      }
     }
 
     for (const o of snap.orbs) {
@@ -5059,6 +5810,9 @@ export class GameUI {
           | 'bookmarks'
           | 'history';
         this.game.sound.playClick();
+        if (this.portalBrowserSettingsTab === 'privacy' || this.portalBrowserSettingsTab === 'bookmarks') {
+          void this.game.offlineCache.refreshStorageUsage();
+        }
         this.renderPortalChromiumBrowser(false);
         return;
       }
@@ -5154,34 +5908,61 @@ export class GameUI {
       }
       if (target.closest('#inbCacheBookmarksOfflineBtn')) {
         this.game.sound.playClick();
-        if (!this.game.offlineCache.isOnline()) {
-          this.showToast('Currently offline — reconnect once to cache additional bookmark pages.');
-          return;
-        }
         const urls = extractBookmarkCacheableUrls(
           this.game.portalBrowser.getCustomBookmarks(),
           this.game.portalBrowser.getHistory(),
           20,
         );
-        if (urls.length === 0) {
-          this.showToast('No external bookmark or history URLs to cache yet.');
-          return;
-        }
-        this.showToast(`Caching ${urls.length} saved URL${urls.length === 1 ? '' : 's'} for offline access...`);
+        this.showToast(
+          this.game.offlineCache.isOnline()
+            ? `Syncing portal history & caching ${urls.length} saved URL${urls.length === 1 ? '' : 's'}...`
+            : 'Syncing local bookmarks & portal history into Service Worker cache...',
+        );
         void this.game.offlineCache
-          .precachePortalUrls(urls, this.game.portalBrowser.getSettings())
+          .syncAllNow(
+            this.game.portalBrowser.exportOfflineStateSnapshot(),
+            urls,
+            this.game.portalBrowser.getSettings(),
+          )
           .then((res) => {
-            this.showToast(`Offline cache updated: ${res.cached}/${res.attempted} pages ready offline.`);
-            this.renderBrowserSettingsPanel();
+            this.showToast(
+              res.attempted > 0
+                ? `Service Worker synced (${res.cached}/${res.attempted} pages cached offline).`
+                : 'Service Worker portal history & bookmarks synced.',
+            );
           });
         return;
       }
-      if (target.closest('#inbClearOfflinePagesBtn')) {
+      if (target.closest('#inbClearOfflineCacheBtn')) {
+        void this.handleClearAllOfflineCache();
+        return;
+      }
+      if (target.closest('#inbRefreshStorageUsageBtn')) {
         this.game.sound.playClick();
-        void this.game.offlineCache.clearCachedPortalPages().then(() => {
-          this.showToast('Cleared cached offline webpage snapshots (bookmarks & history preserved).');
-          this.renderBrowserSettingsPanel();
+        void this.game.offlineCache.refreshStorageUsage().then(() => {
+          this.showToast('Storage usage breakdown refreshed.');
         });
+        return;
+      }
+      const delCachedBtn = target.closest<HTMLButtonElement>('[data-delete-cached-url]');
+      if (delCachedBtn?.dataset.deleteCachedUrl) {
+        const targetUrl = delCachedBtn.dataset.deleteCachedUrl;
+        this.game.sound.playClick();
+        void this.game.offlineCache.deleteCachedPortalUrl(targetUrl).then((res) => {
+          this.showToast(
+            res.deleted
+              ? `Deleted cached offline copy (${formatStorageBytes(res.freedBytes)} freed).`
+              : 'Removed item from offline page cache.',
+          );
+          if (this.portalBrowserSettingsMode) {
+            this.renderBrowserSettingsPanel();
+          }
+        });
+        return;
+      }
+      if (target.closest('#inbForceRefreshAppBtn')) {
+        this.game.sound.playClick();
+        window.location.reload();
         return;
       }
       if (target.closest('#inbResetSettingsBtn')) {
@@ -5899,8 +6680,13 @@ export class GameUI {
 
     // Listen for navigation, actions, and title postMessages from proxied pages and chrome://newtab
     window.addEventListener('message', (e) => {
+      // Strictly verify message originates from our active browser iframe
+      if (e.source !== this.chromiumViewportFrame.contentWindow) return;
+      if (e.origin !== 'null' && e.origin !== window.location.origin) return;
+
       const data = e.data as {
         type?: string;
+        bridgeToken?: string;
         url?: string;
         title?: string;
         action?: string;
@@ -5912,6 +6698,8 @@ export class GameUI {
         z?: number;
       } | null;
       if (!data || typeof data !== 'object') return;
+      if (data.bridgeToken !== this.game.portalBrowser.getBridgeToken()) return;
+
       if (data.type === 'SERPENT_PORTAL_NAVIGATE' && typeof data.url === 'string') {
         this.navigatePortalBrowserUrl(data.url);
       } else if (data.type === 'SERPENT_PORTAL_TAB_LOADED') {
@@ -5919,6 +6707,9 @@ export class GameUI {
         this.game.portalBrowser.updateActiveTabMetadata(data.url, data.title);
         this.renderPortalChromiumBrowser(false);
       } else if (data.type === 'SERPENT_PORTAL_ACTION') {
+        // Privileged app actions are ONLY permitted from internal chrome:// pages, never third-party web pages
+        const activeTabUrl = this.game.portalBrowser.getActiveTab().url;
+        if (!activeTabUrl.startsWith('chrome://')) return;
         this.handleNewTabAction(data);
       }
     });
@@ -6796,12 +7587,31 @@ export class GameUI {
         </div>
       `;
     } else if (tab === 'privacy') {
-      const offlineStatusText = formatOfflineCacheSummary(
-        this.game.offlineCache.getStatus(),
-        this.game.offlineCache.isOnline(),
-      );
+      const sync = this.game.offlineCache.getSyncIndicator();
       bodyHtml = `
         <div class="bset-grid">
+          <div class="bset-group">
+            <label class="bset-label">Service Worker Sync &amp; Offline Cache</label>
+            <div class="sw-sync-card tone-${sync.tone} phase-${sync.phase}" id="inbSwSyncCard" role="status" aria-live="polite">
+              <div class="sw-sync-top">
+                <span class="sw-sync-dot tone-${sync.tone} phase-${sync.phase}" id="inbSwSyncDot" aria-hidden="true"></span>
+                <span class="sw-sync-badge" id="inbSwSyncBadge">${this.escapeHtmlText(sync.shortBadge)}</span>
+                <span class="sw-sync-headline" id="inbSwSyncHeadline">${this.escapeHtmlText(sync.headline)}</span>
+              </div>
+              <div class="sw-sync-detail" id="inbSwSyncDetail">${this.escapeHtmlText(sync.detail)}</div>
+            </div>
+            <p class="bset-hint">Displays real-time Service Worker cache synchronization for portal history, saved bookmarks, and core assets. Clear the offline cache to wipe corrupted assets and force a clean refresh.</p>
+            <div class="bset-inline-row">
+              <button type="button" class="primary-cta compact" id="inbCacheBookmarksOfflineBtn">Sync &amp; Cache Now</button>
+              <button type="button" class="secondary-cta compact" id="inbClearOfflineCacheBtn">Clear Offline Cache</button>
+              <button type="button" class="ghost-btn compact" id="inbForceRefreshAppBtn">Force Refresh</button>
+            </div>
+          </div>
+
+          <div class="bset-group" id="inbStorageUsageHost">
+            ${this.renderStorageUsageBreakdownMarkup()}
+          </div>
+
           <div class="bset-group">
             <label class="bset-label" for="inbUaSel">User-Agent Identity</label>
             <p class="bset-hint">Controls how websites format pages fetched through the Portal Chromium proxy.</p>
@@ -6824,15 +7634,6 @@ export class GameUI {
             </label>
           </div>
           <div class="bset-group">
-            <label class="bset-label">Offline Cache &amp; Service Worker</label>
-            <p class="bset-hint" id="inbOfflineCacheStatus">${this.escapeHtmlText(offlineStatusText)}</p>
-            <p class="bset-hint">Core browser assets, saved bookmarks, search history, and visited portal pages are cached by the service worker for offline access.</p>
-            <div class="bset-inline-row">
-              <button type="button" class="primary-cta compact" id="inbCacheBookmarksOfflineBtn">Cache Saved Bookmarks Offline</button>
-              <button type="button" class="ghost-btn compact" id="inbClearOfflinePagesBtn">Clear Offline Page Cache</button>
-            </div>
-          </div>
-          <div class="bset-group">
             <label class="bset-label">Session &amp; Storage Cleanup</label>
             <div class="bset-inline-row">
               <button type="button" class="secondary-cta compact" id="inbClearHistoryBtn">Clear Browsing History</button>
@@ -6848,13 +7649,24 @@ export class GameUI {
               .map(
                 (b) => {
                   const isOfflineReady = this.game.offlineCache.isUrlCachedOffline(b.url);
+                  const cachedBytes = isOfflineReady ? this.game.offlineCache.getCachedUrlByteSize(b.url) : 0;
+                  const offlineLabel = isOfflineReady
+                    ? cachedBytes > 0
+                      ? ` · Cached (${formatStorageBytes(cachedBytes)})`
+                      : ' · Offline Ready'
+                    : '';
                   return `
                   <div class="bset-list-row">
                     <button type="button" class="bset-link-btn" data-history-url="${this.escapeHtmlText(b.url)}">
                       <span class="bset-row-title">★ ${this.escapeHtmlText(b.title)}</span>
-                      <span class="bset-row-url">${this.escapeHtmlText(b.url)}${isOfflineReady ? ' · Offline Ready' : ''}</span>
+                      <span class="bset-row-url">${this.escapeHtmlText(b.url)}${offlineLabel}</span>
                     </button>
                     <div class="bset-history-actions">
+                      ${
+                        isOfflineReady && !b.url.toLowerCase().startsWith('chrome://')
+                          ? `<button type="button" class="ghost-btn compact" data-delete-cached-url="${this.escapeHtmlText(b.url)}" title="Delete only this bookmark's offline cached copy">Delete Cache</button>`
+                          : ''
+                      }
                       <button type="button" class="ghost-btn compact" data-history-newtab="${this.escapeHtmlText(b.url)}">New Tab</button>
                       <button type="button" class="ghost-btn compact" data-remove-bm="${this.escapeHtmlText(b.url)}">Remove</button>
                     </div>
@@ -6929,11 +7741,18 @@ export class GameUI {
     const historyTabLabel =
       stats.totalEntries > 0 ? `Browser History (${stats.totalEntries})` : 'Browser History';
 
+    const headerSync = this.game.offlineCache.getSyncIndicator();
     this.chromiumSettingsPanelEl.innerHTML = `
       <div class="bset-inner">
         <div class="bset-header">
           <div>
-            <div class="bset-eyebrow">${routeLabel}</div>
+            <div class="bset-eyebrow-row">
+              <span class="bset-eyebrow">${routeLabel}</span>
+              <span class="bset-header-sw" id="inbHeaderSwSync" title="${this.escapeHtmlText(headerSync.headline)}">
+                <span class="sw-sync-dot tone-${headerSync.tone} phase-${headerSync.phase}" id="inbHeaderSwDot" aria-hidden="true"></span>
+                <span id="inbHeaderSwLabel">SW: ${this.escapeHtmlText(headerSync.shortBadge)}</span>
+              </span>
+            </div>
             <h3 class="bset-title">${headingText}</h3>
           </div>
           <div class="bset-header-right">
@@ -6948,6 +7767,85 @@ export class GameUI {
         </div>
         ${bodyHtml}
       </div>
+    `;
+  }
+
+  private renderStorageUsageBreakdownMarkup(): string {
+    const usage = this.game.offlineCache.getStorageUsage();
+    const shares = computeStorageBucketShares(usage);
+    const bookmarksByUrl = new Map(
+      this.game.portalBrowser.getAllBookmarks().map((bm) => [bm.url, bm.title]),
+    );
+    const bucketColors: Record<string, string> = {
+      core: '#2de3ff',
+      portalPages: '#3de095',
+      portalState: '#f2c14e',
+      fonts: '#a855f7',
+    };
+
+    const barSegments = shares
+      .filter((b) => b.sharePct > 0)
+      .map(
+        (b) =>
+          `<span class="sw-usage-seg" style="width:${Math.max(2, b.sharePct)}%;background:${bucketColors[b.key] || '#58e1ff'}" title="${this.escapeHtmlText(b.label)}: ${formatStorageBytes(b.bytes)} (${b.sharePct}%)"></span>`,
+      )
+      .join('');
+
+    const bucketRows = shares
+      .map(
+        (b) => `
+          <div class="sw-usage-bucket-row">
+            <span class="sw-usage-dot" style="background:${bucketColors[b.key] || '#58e1ff'}"></span>
+            <span class="sw-usage-name">${this.escapeHtmlText(b.label)}</span>
+            <span class="sw-usage-entries">${b.entries} item${b.entries === 1 ? '' : 's'}</span>
+            <span class="sw-usage-bytes">${formatStorageBytes(b.bytes)}</span>
+            <span class="sw-usage-pct">${b.sharePct}%</span>
+          </div>
+        `,
+      )
+      .join('');
+
+    const cachedItemsHtml =
+      usage.cachedItems.length > 0
+        ? usage.cachedItems
+            .map((item) => {
+              const title = bookmarksByUrl.get(item.url) || extractHistoryHost(item.url) || item.url;
+              return `
+                <div class="sw-cached-item-row">
+                  <div class="sw-cached-item-info">
+                    <span class="sw-cached-item-title">${this.escapeHtmlText(title)}</span>
+                    <span class="sw-cached-item-url">${this.escapeHtmlText(item.url)}</span>
+                  </div>
+                  <span class="sw-cached-item-size">${formatStorageBytes(item.bytes)}</span>
+                  <button type="button" class="ghost-btn compact" data-delete-cached-url="${this.escapeHtmlText(item.url)}">Delete Cache</button>
+                </div>
+              `;
+            })
+            .join('')
+        : `<p class="bset-hint">No individual cached bookmark pages stored yet. Save a bookmark or click "Sync &amp; Cache Now" to cache pages for offline reading.</p>`;
+
+    const quotaReadout =
+      usage.browserQuotaBytes && usage.browserQuotaBytes > 0
+        ? `${formatStorageBytes(usage.totalCacheBytes)} SW Cache · ${formatStorageBytes(usage.browserEstimatedUsageBytes ?? usage.totalCacheBytes)} / ${formatStorageBytes(usage.browserQuotaBytes)} Origin Quota`
+        : `${formatStorageBytes(usage.totalCacheBytes)} Service Worker Cache`;
+
+    return `
+      <div class="sw-usage-head">
+        <div>
+          <label class="bset-label">Storage Usage Breakdown</label>
+          <div class="sw-usage-quota">${this.escapeHtmlText(quotaReadout)}</div>
+        </div>
+        <button type="button" class="ghost-btn compact" id="inbRefreshStorageUsageBtn">Recalculate</button>
+      </div>
+      <div class="sw-usage-bar" aria-label="Service Worker cache distribution">
+        ${barSegments || '<span class="sw-usage-empty-bar"></span>'}
+      </div>
+      <div class="sw-usage-buckets">${bucketRows}</div>
+      <div class="sw-cached-items-head">
+        <span>Cached Offline Bookmarks &amp; Pages (${usage.cachedItems.length})</span>
+        <span>Per-Item Cache Control</span>
+      </div>
+      <div class="sw-cached-items-list">${cachedItemsHtml}</div>
     `;
   }
 
@@ -7974,6 +8872,168 @@ export class GameUI {
           <p class="archives-fieldnotes-text">${this.escapeHtmlText(def.fieldNotes)}</p>
         </div>
       </div>
+    `;
+  }
+
+  // ==================== FORGOTTEN SOUL FOUNDRY & DEBUG TELEMETRY ====================
+
+  public toggleFoundryConsoleModal(): void {
+    if (!this.foundryConsoleModal.classList.contains('hidden')) {
+      this.closeFoundryConsoleModal();
+    } else {
+      this.openFoundryConsoleModal();
+    }
+  }
+
+  public openFoundryConsoleModal(): void {
+    this.foundryConsoleModal.classList.remove('hidden');
+    this.renderFoundryConsoleModal();
+    this.syncModalFreeze();
+  }
+
+  public closeFoundryConsoleModal(): void {
+    this.foundryConsoleModal.classList.add('hidden');
+    this.syncModalFreeze();
+  }
+
+  public toggleFoundryDebugOverlay(): void {
+    this.foundryDebugVisible = !this.foundryDebugVisible;
+    this.foundryDebugOverlayEl.classList.toggle('hidden', !this.foundryDebugVisible);
+    if (this.foundryDebugVisible) {
+      this.renderFoundryDebugOverlay();
+    }
+  }
+
+  private renderFoundryDebugOverlay(): void {
+    const s = this.game.foundry.getState();
+    const r = s.resources;
+    const bladesStr = s.blades
+      .map((b) => `${b.id.slice(6)}: ω=${b.currentAngularVel.toFixed(2)} shaft=${b.driveShaftHp}/${b.driveShaftMaxHp}`)
+      .join(' | ');
+    const platesStr = s.plates
+      .map((p) => `${p.id.slice(6)}=${p.active ? 'ON' : 'OFF'}(${Math.round(p.currentForce)}N)`)
+      .join(' · ');
+    const enemiesStr = s.enemies
+      .map((e) => `${e.role.replace('soul_', '')}:${e.state}(${Math.round(e.hp)}HP)`)
+      .join(' · ');
+    const activeHitbox =
+      r.attackPhase === 'ACTIVE' && r.attackKind !== 'none'
+        ? `${r.attackKind.toUpperCase()} r=${ATTACK_SPECS[r.attackKind].range}m (${r.hitRegisteredIds.length} hit)`
+        : 'NONE';
+
+    this.foundryDebugOverlayEl.innerHTML = `
+      <div class="fdbg-title">FOUNDRY SIM DEBUG [F3] · t=${s.simTime.toFixed(1)}s</div>
+      <div>POS: (${s.playerLocalX.toFixed(1)}, y=${s.playerLocalY.toFixed(2)}, ${s.playerLocalZ.toFixed(1)}) · VEL: ${s.playerSpeed.toFixed(1)} m/s (vy=${s.playerVelY.toFixed(1)}) · ACC: ${s.playerAccel.toFixed(1)} m/s²</div>
+      <div>FSM: ${r.movementState} · CMB: ${r.attackKind}/${r.attackPhase} · BLK: ${r.blocking ? 'ON' : 'OFF'} · DODGE: ${r.dodgeTimer.toFixed(2)}s · PARRY: ${r.parryWindowTimer.toFixed(2)}s</div>
+      <div>HITBOX: ${activeHitbox} · COL_BOUND: player r=${s.playerCollisionRadius.toFixed(1)}m · wall r=43..68m</div>
+      <div>RES: HP ${Math.round(r.hp)} · SP ${Math.round(r.sp)}/${r.maxSp} · SE ${Math.round(r.se)}/${r.maxSe} · RANK: ${r.rank}</div>
+      <div>TRAPS: ${bladesStr} · PLATES: ${platesStr} · CONDUIT: ${s.conduitActiveTimer > 0 ? `${s.conduitActiveTimer.toFixed(1)}s` : 'IDLE'}</div>
+      <div>PUZZLES: GEAR=${s.gearPuzzle.solved ? 'SOLVED' : `${s.gearPuzzle.computedOutputRpm}/${s.gearPuzzle.targetOutputRpm}RPM`} · CIR=${s.energyPuzzle.overloaded ? 'OVERLOAD' : `${s.energyPuzzle.currentAmps}A(${s.energyPuzzle.receiversPowered}/2)`} · GATE=${s.energyPuzzle.gateUnlocked ? 'OPEN' : 'LOCKED'} · BRIDGE=${s.hydraulics.bridgeRaised ? 'UP' : 'DOWN'}</div>
+      <div>AI: ${enemiesStr}</div>
+      <div>BOSS: P${s.boss.phase} ${s.boss.state} · HP ${Math.round(s.boss.hp)}/${s.boss.maxHp} · SHIELD=${s.boss.shieldActive ? 'ON' : 'OFF'}</div>
+    `;
+  }
+
+  private renderFoundryConsoleModal(): void {
+    const s = this.game.foundry.getState();
+    const r = s.resources;
+    const g = s.gearPuzzle;
+    const en = s.energyPuzzle;
+    const hyd = s.hydraulics;
+    const boss = s.boss;
+    const syn = resolveActiveSynergy(r.primaryDiscipline, r.secondaryDiscipline);
+
+    const discCards = (Object.keys(SOUL_DISCIPLINES) as SoulDisciplineId[])
+      .map((id) => {
+        const d = SOUL_DISCIPLINES[id];
+        const isPri = r.primaryDiscipline === id;
+        const isSec = r.secondaryDiscipline === id;
+        return `
+          <div class="foundry-disc-card ${isPri ? 'is-primary' : ''} ${isSec ? 'is-secondary' : ''}" style="--disc-accent:${d.accent}">
+            <div class="foundry-disc-top">
+              <strong>${d.name}</strong>
+              <span>${d.seCost} SE</span>
+            </div>
+            <div class="foundry-disc-role">${d.role}</div>
+            <p class="foundry-disc-desc">${d.summary}</p>
+            <div class="foundry-disc-btns">
+              <button type="button" class="foundry-mini-btn ${isPri ? 'active' : ''}" data-foundry-act="set_primary" data-foundry-val="${id}">Primary</button>
+              <button type="button" class="foundry-mini-btn ${isSec ? 'active' : ''}" data-foundry-act="set_secondary" data-foundry-val="${isSec ? '' : id}">${isSec ? 'Clear 2nd' : 'Combine 2nd'}</button>
+            </div>
+          </div>
+        `;
+      })
+      .join('');
+
+    this.foundryConsoleBodyEl.innerHTML = `
+      <div class="foundry-stats-strip">
+        <div class="foundry-res-pill"><span>HP</span><strong>${Math.round(r.hp)} / ${r.maxHp}</strong></div>
+        <div class="foundry-res-pill"><span>SP (Stamina)</span><strong>${Math.round(r.sp)} / ${r.maxSp}</strong></div>
+        <div class="foundry-res-pill"><span>SE (Soul Energy)</span><strong>${Math.round(r.se)} / ${r.maxSe}</strong></div>
+        <div class="foundry-res-pill"><span>Soul Rank</span><strong>${r.rank} (${r.masteryPoints} pts)</strong></div>
+      </div>
+
+      <div class="foundry-controls-hint">
+        Controls inside Foundry: <strong>[F/LMB]</strong> Light · <strong>[Q/RMB]</strong> Heavy · <strong>[H]</strong> Hold Block · <strong>[Z]</strong> Dodge i-frames · <strong>[T]</strong> Perfect Parry (+28 SE) · <strong>[5/Enter]</strong> Jump / Wall-Run · <strong>[Y]</strong> Cast ${SOUL_DISCIPLINES[r.primaryDiscipline].name} · <strong>[F3]</strong> Debug Telemetry
+      </div>
+
+      <div class="foundry-grid">
+        <section class="foundry-panel">
+          <h3>1. Gear Synchronization (ω₁r₁ = ω₂r₂)</h3>
+          <p class="foundry-sub">Target Output: <strong>${g.targetOutputRpm} RPM</strong> · Max Torque: ${g.torqueLimit} N·m · Status: <strong class="${g.solved ? 'ok' : g.overTorqued ? 'err' : ''}">${g.solved ? 'SYNCHRONIZED' : g.overTorqued ? 'OVER-TORQUED' : `${g.computedOutputRpm} RPM (${g.computedTorqueLoad} N·m)`}</strong></p>
+          <div class="foundry-btn-row">
+            <span>Drive r₁:</span>
+            ${[1, 2, 3].map((v) => `<button type="button" class="foundry-mini-btn ${g.gear1Radius === v ? 'active' : ''}" data-foundry-act="gear_r1" data-foundry-val="${v}">r₁=${v}</button>`).join('')}
+          </div>
+          <div class="foundry-btn-row">
+            <span>Mesh r₂:</span>
+            ${[1, 2, 3].map((v) => `<button type="button" class="foundry-mini-btn ${g.gear2Radius === v ? 'active' : ''}" data-foundry-act="gear_r2" data-foundry-val="${v}">r₂=${v}</button>`).join('')}
+          </div>
+          <div class="foundry-btn-row">
+            <span>Forge r₃:</span>
+            ${[2, 3, 4].map((v) => `<button type="button" class="foundry-mini-btn ${g.gear3Radius === v ? 'active' : ''}" data-foundry-act="gear_r3" data-foundry-val="${v}">r₃=${v}</button>`).join('')}
+          </div>
+          <div class="foundry-btn-row">
+            <button type="button" class="foundry-mini-btn ${g.reverseIdlerEngaged ? 'active' : ''}" data-foundry-act="gear_reverse">Reverse Idler: ${g.reverseIdlerEngaged ? 'ENGAGED (−)' : 'OFF (+)'}</button>
+          </div>
+        </section>
+
+        <section class="foundry-panel">
+          <h3>2. Energy Routing (V = IR) &amp; Logic Gate</h3>
+          <p class="foundry-sub">Current: <strong>${en.currentAmps} A</strong> (24V) · Receivers: <strong>${en.receiversPowered}/2</strong> · Status: <strong class="${en.overloaded ? 'err' : en.solved ? 'ok' : ''}">${en.overloaded ? 'OVERLOAD (>16A)' : en.solved ? 'CLEAN POWER (OVERHEATS BOSS SHIELD)' : 'UNPOWERED'}</strong></p>
+          <div class="foundry-btn-row">
+            <button type="button" class="foundry-mini-btn ${en.switchA ? 'active' : ''}" data-foundry-act="toggle_switch" data-foundry-val="switchA">Switch A (Core→N1): ${en.switchA ? 'ON' : 'OFF'}</button>
+            <button type="button" class="foundry-mini-btn ${en.switchB ? 'active' : ''}" data-foundry-act="toggle_switch" data-foundry-val="switchB">Switch B (N1→N2): ${en.switchB ? 'ON' : 'OFF'}</button>
+            <button type="button" class="foundry-mini-btn ${en.switchC ? 'warn' : ''}" data-foundry-act="toggle_switch" data-foundry-val="switchC">Switch C (Bypass): ${en.switchC ? 'SHORT!' : 'SAFE'}</button>
+          </div>
+          <div class="foundry-logic-line">
+            Gate Logic: Proximity(${en.proximitySensor ? 'TRUE' : 'FALSE'}) AND Pressure(${en.pressureSensor ? 'TRUE' : 'FALSE'}) AND Energy(${en.deliveredEnergy}≥${en.energyThreshold}) → <strong>${en.gateUnlocked ? 'OPEN' : 'LOCKED'}</strong>
+          </div>
+          <div class="foundry-hyd-box">
+            <label for="foundryValveRange">Hydraulic Valve (F = P·A = <strong>${hyd.pistonForceF} kN</strong> · Q=${hyd.flowRateQ} m³/s · Tanks ${hyd.tankALevel.toFixed(1)}/${hyd.tankBLevel.toFixed(1)}% · Bridge: <strong>${hyd.bridgeRaised ? 'RAISED' : 'LOWERED'}</strong>)</label>
+            <input type="range" id="foundryValveRange" min="0" max="100" value="${Math.round(hyd.valveOpenRatio * 100)}" />
+          </div>
+        </section>
+      </div>
+
+      <section class="foundry-panel">
+        <div class="foundry-disc-head">
+          <h3>3. Soul Clan Fighting Disciplines &amp; Synergy</h3>
+          <div class="foundry-btn-row">
+            <button type="button" class="foundry-mini-btn active" data-foundry-act="cast_discipline">Cast ${SOUL_DISCIPLINES[r.primaryDiscipline].name} [Y]</button>
+            <button type="button" class="foundry-mini-btn" data-foundry-act="reset_encounter">Reset Foundry Arena</button>
+          </div>
+        </div>
+        ${syn ? `<div class="foundry-synergy-banner"><strong>Active Synergy — ${syn.name}:</strong> ${syn.effect}</div>` : `<div class="foundry-synergy-banner muted">Combine any two disciplines below to activate a Dual-Discipline Synergy.</div>`}
+        <div class="foundry-disc-grid">${discCards}</div>
+      </section>
+
+      <section class="foundry-panel foundry-boss-bar">
+        <div>
+          <strong>Boss: ${boss.name}</strong> · Phase ${boss.phase}/3 (${boss.state}) · HP: ${Math.round(boss.hp)}/${boss.maxHp} ${boss.shieldActive ? '· SHIELD ACTIVE (Route Switches A+B to Overheat!)' : ''}
+        </div>
+        <div class="foundry-log-line">${this.escapeHtmlText(s.eventLog[0] || '')}</div>
+      </section>
     `;
   }
 }

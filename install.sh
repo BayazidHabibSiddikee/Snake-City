@@ -22,8 +22,8 @@ need node
 need npm
 
 NODE_MAJOR=$(node -e "console.log(process.versions.node.split('.')[0])")
-if [ "$NODE_MAJOR" -lt 20 ]; then
-  echo "❌  Node.js 20+ required (found v$(node -v)). Please upgrade."
+if [ "$NODE_MAJOR" -lt 22 ]; then
+  echo "❌  Node.js 22+ required (found $(node -v)). Please upgrade."
   exit 1
 fi
 
@@ -45,12 +45,11 @@ npm install --silent
 echo "🔨  Building production bundle ..."
 npm run build
 
-# --- Serve ---
+# --- Serve via Express backend (serves dist/ + /api/* routes) ---
 echo ""
-echo "  ✅  Build complete! Starting game server on port $PORT ..."
+echo "  ✅  Build complete! Starting Serpent Peaks Express server on port $PORT ..."
 echo "  🌐  Open http://localhost:$PORT in your browser."
 echo "  📱  On the same Wi-Fi? Visit http://$(hostname -I | awk '{print $1}'):$PORT"
 echo ""
 
-# Use npx serve (zero global install required)
-npx serve dist --listen "$PORT" --single
+NODE_ENV=production PORT="$PORT" node server.ts

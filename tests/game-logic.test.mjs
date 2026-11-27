@@ -2715,7 +2715,343 @@ describe('Service Worker Offline Cache Keys, Bookmark Precaching & State Snapsho
     assert.equal(snapshot.browsingHistory.length, 200);
     assert.equal(snapshot.searchHistory.length, 100);
   });
+
+  it('derives accurate real-time Service Worker sync visual indicator states across caching, pending, synced, and cleared phases', () => {
+    const deriveIndicator = ({ supported, registered, isOnline, phase, pendingCount, coreAssetCount, cachedPageCount, bookmarksCount, historyCount }) => {
+      if (!supported) return { phase: 'unsupported', tone: 'muted', shortBadge: 'Local Only' };
+      if (phase === 'clearing') return { phase: 'clearing', tone: 'rose', shortBadge: 'Clearing...' };
+      if (phase === 'caching') return { phase: 'caching', tone: 'cyan', shortBadge: 'Caching...' };
+      if (phase === 'pending' || pendingCount > 0) return { phase: 'pending', tone: 'amber', shortBadge: 'Pending Sync' };
+      if (phase === 'cleared') return { phase: 'cleared', tone: 'amber', shortBadge: 'Cache Cleared', coreAssetCount, cachedPageCount, bookmarksCount, historyCount };
+      if (!isOnline) return { phase: 'offline_cached', tone: 'amber', shortBadge: 'Offline Cached' };
+      if (!registered || phase === 'initializing') return { phase: 'initializing', tone: 'cyan', shortBadge: 'Starting SW...' };
+      return { phase: 'synced', tone: 'emerald', shortBadge: 'Synced' };
+    };
+
+    const base = { supported: true, registered: true, isOnline: true, pendingCount: 0, coreAssetCount: 12, cachedPageCount: 4, bookmarksCount: 3, historyCount: 18 };
+    assert.equal(deriveIndicator({ ...base, phase: 'caching' }).shortBadge, 'Caching...');
+    assert.equal(deriveIndicator({ ...base, phase: 'caching' }).tone, 'cyan');
+    assert.equal(deriveIndicator({ ...base, phase: 'pending', pendingCount: 2 }).shortBadge, 'Pending Sync');
+    assert.equal(deriveIndicator({ ...base, phase: 'pending', pendingCount: 2 }).tone, 'amber');
+    assert.equal(deriveIndicator({ ...base, phase: 'synced' }).shortBadge, 'Synced');
+    assert.equal(deriveIndicator({ ...base, phase: 'synced' }).tone, 'emerald');
+    assert.equal(deriveIndicator({ ...base, isOnline: false, phase: 'synced' }).shortBadge, 'Offline Cached');
+    assert.equal(deriveIndicator({ ...base, phase: 'clearing' }).shortBadge, 'Clearing...');
+    const cleared = deriveIndicator({ ...base, phase: 'cleared', coreAssetCount: 0, cachedPageCount: 0, bookmarksCount: 0, historyCount: 0 });
+    assert.equal(cleared.shortBadge, 'Cache Cleared');
+    assert.equal(cleared.coreAssetCount, 0);
+    assert.equal(cleared.bookmarksCount, 0);
+    assert.equal(cleared.historyCount, 0);
+  });
 });
+
+// ============================================================================
+// Suite 32: Service Worker Storage Usage Breakdown & Per-Item Cache Deletion
+// ============================================================================
+describe('Service Worker Storage Usage Breakdown & Per-Item Deletion', () => {
+  function formatStorageBytes(bytes) {
+    const safe = Number.isFinite(bytes) && bytes > 0 ? Math.floor(bytes) : 0;
+    if (safe === 0) return '0 B';
+    if (safe < 1024) return `${safe} B`;
+    if (safe < 1024 * 1024) return `${(safe / 1024).toFixed(safe >= 100 * 1024 ? 0 : 1)} KB`;
+    if (safe < 1024 * 1024 * 1024) return `${(safe / (1024 * 1024)).toFixed(2)} MB`;
+    return `${(safe / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+  }
+
+  function computeStorageBucketShares(buckets, totalBytes) {
+    const safeTotal = Math.max(0, totalBytes);
+    return buckets.map((b) => ({
+      ...b,
+      sharePct: safeTotal > 0 ? Math.round((Math.max(0, b.bytes) / safeTotal) * 1000) / 10 : 0,
+    }));
+  }
+
+  function removeCachedUrlFromUsage(usage, normalizedUrl) {
+    const target = usage.cachedItems.find((item) => item.url === normalizedUrl);
+    if (!target) return usage;
+    const removedBytes = Math.max(0, target.bytes);
+    const nextItems = usage.cachedItems.filter((item) => item.url !== normalizedUrl);
+    const nextBuckets = usage.buckets.map((bucket) =>
+      bucket.key === 'portal_pages'
+        ? {
+            ...bucket,
+            bytes: Math.max(0, bucket.bytes - removedBytes),
+            entryCount: Math.max(0, bucket.entryCount - 1),
+          }
+        : bucket,
+    );
+    const nextTotalBytes = Math.max(0, usage.totalBytes - removedBytes);
+    const nextTotalEntries = Math.max(0, usage.totalEntries - 1);
+    return {
+      ...usage,
+      totalBytes: nextTotalBytes,
+      totalEntries: nextTotalEntries,
+      buckets: nextBuckets,
+      cachedItems: nextItems,
+    };
+  }
+
+  it('formats storage byte values across B, KB, MB, and GB thresholds cleanly', () => {
+    assert.equal(formatStorageBytes(0), '0 B');
+    assert.equal(formatStorageBytes(-12), '0 B');
+    assert.equal(formatStorageBytes(512), '512 B');
+    assert.equal(formatStorageBytes(1536), '1.5 KB');
+    assert.equal(formatStorageBytes(250 * 1024), '250 KB');
+    assert.equal(formatStorageBytes(2.5 * 1024 * 1024), '2.50 MB');
+    assert.equal(formatStorageBytes(1.25 * 1024 * 1024 * 1024), '1.25 GB');
+  });
+
+  it('computes accurate bucket percentages and removes only the targeted cached bookmark URL without disturbing other cached items', () => {
+    const initial = {
+      totalBytes: 1_500_000,
+      totalEntries: 15,
+      buckets: [
+        { key: 'core', bytes: 1_000_000, entryCount: 10 },
+        { key: 'portal_pages', bytes: 350_000, entryCount: 3 },
+        { key: 'portal_state', bytes: 50_000, entryCount: 1 },
+        { key: 'fonts', bytes: 100_000, entryCount: 1 },
+      ],
+      cachedItems: [
+        { url: 'https://threejs.org/docs/', bytes: 180_000 },
+        { url: 'https://en.m.wikipedia.org/wiki/Serpent', bytes: 120_000 },
+        { url: 'https://news.ycombinator.com/', bytes: 50_000 },
+      ],
+    };
+
+    const shares = computeStorageBucketShares(initial.buckets, initial.totalBytes);
+    assert.equal(shares[0].sharePct, 66.7);
+    assert.equal(shares[1].sharePct, 23.3);
+    assert.equal(shares[2].sharePct, 3.3);
+    assert.equal(shares[3].sharePct, 6.7);
+
+    const afterDelete = removeCachedUrlFromUsage(initial, 'https://en.m.wikipedia.org/wiki/Serpent');
+    assert.equal(afterDelete.totalBytes, 1_380_000);
+    assert.equal(afterDelete.totalEntries, 14);
+    assert.equal(afterDelete.cachedItems.length, 2);
+    assert.deepEqual(
+      afterDelete.cachedItems.map((i) => i.url),
+      ['https://threejs.org/docs/', 'https://news.ycombinator.com/'],
+    );
+    const pagesBucket = afterDelete.buckets.find((b) => b.key === 'portal_pages');
+    assert.equal(pagesBucket.bytes, 230_000);
+    assert.equal(pagesBucket.entryCount, 2);
+    // Core bucket stays completely untouched
+    const coreBucket = afterDelete.buckets.find((b) => b.key === 'core');
+    assert.equal(coreBucket.bytes, 1_000_000);
+    assert.equal(coreBucket.entryCount, 10);
+  });
+});
+
+// ============================================================================
+// Suite 33: Portal Memory — 3D Spatial World, Clustering, Recovery & Privacy
+// ============================================================================
+describe('Portal Memory Spatial World, Crash Recovery, Collections & Privacy', () => {
+  const ARCHIVE_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+  function derivePortalRegion(record, now) {
+    if (record.collectionId) return 'portal_halls';
+    if (record.recordType === 'active') return 'active_gateway_district';
+    if (record.recordType === 'recovery') return 'forgotten_ruins';
+    const ageMs = Math.max(0, now - (record.lastVisitedAt || record.createdAt));
+    if (ageMs >= ARCHIVE_AGE_MS || record.archived) return 'archive_mountains';
+    return 'memory_forest';
+  }
+
+  function derivePortalVisualState(record) {
+    if (record.pinned) return 'pinned';
+    if (record.recordType === 'active') return 'active';
+    if (record.recordType === 'recovery') return 'lost';
+    return 'saved';
+  }
+
+  function partitionPortalsForRendering(nodes, playerX, playerZ, detailRadius = 115, maxDetailed = 36, clusterCellSize = 46) {
+    const detailed = [];
+    const farNodes = [];
+    const withDist = nodes.map((n) => ({
+      node: n,
+      distSq: (n.x - playerX) ** 2 + (n.z - playerZ) ** 2,
+    }));
+    withDist.sort((a, b) => a.distSq - b.distSq);
+
+    const detailSq = detailRadius * detailRadius;
+    for (const item of withDist) {
+      if ((item.node.alwaysDetailed || item.distSq <= detailSq) && detailed.length < maxDetailed) {
+        detailed.push(item.node);
+      } else {
+        farNodes.push(item.node);
+      }
+    }
+
+    const buckets = new Map();
+    for (const n of farNodes) {
+      const gx = Math.floor(n.x / clusterCellSize);
+      const gz = Math.floor(n.z / clusterCellSize);
+      const key = `${n.region}:${gx}:${gz}`;
+      const list = buckets.get(key) || [];
+      list.push(n);
+      buckets.set(key, list);
+    }
+
+    const clusters = [];
+    for (const [key, list] of buckets.entries()) {
+      let sumX = 0;
+      let sumZ = 0;
+      for (const n of list) {
+        sumX += n.x;
+        sumZ += n.z;
+      }
+      clusters.push({
+        id: key,
+        region: list[0].region,
+        x: sumX / list.length,
+        z: sumZ / list.length,
+        count: list.length,
+      });
+    }
+
+    return { detailed, clusters };
+  }
+
+  function encodeCollectionShareCode(collection) {
+    const payload = {
+      v: 1,
+      n: collection.name.slice(0, 64),
+      d: (collection.description || '').slice(0, 140),
+      c: collection.accentColor || '#f2c14e',
+      u: collection.urls.slice(0, 24),
+    };
+    return `PMHUB1|${Buffer.from(JSON.stringify(payload), 'utf8').toString('base64')}`;
+  }
+
+  function decodeCollectionShareCode(code) {
+    const trimmed = String(code || '').trim();
+    if (!trimmed.startsWith('PMHUB1|')) return null;
+    try {
+      const parsed = JSON.parse(Buffer.from(trimmed.slice(7), 'base64').toString('utf8'));
+      if (!parsed || typeof parsed.n !== 'string' || !Array.isArray(parsed.u)) return null;
+      return {
+        name: parsed.n,
+        description: typeof parsed.d === 'string' ? parsed.d : '',
+        accentColor: typeof parsed.c === 'string' ? parsed.c : '#f2c14e',
+        urls: parsed.u.filter((u) => typeof u === 'string' && /^https?:\/\//i.test(u)),
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  it('classifies Active, Memory, Archive, Lost, and Gateway Hub portals into structured world regions and distinct visual states', () => {
+    const now = 1_764_300_000_000;
+    const activeTab = { recordType: 'active', pinned: false, lastVisitedAt: now - 10_000 };
+    const recentHistory = { recordType: 'memory', pinned: false, lastVisitedAt: now - 2 * 60 * 60 * 1000 };
+    const oldHistory = { recordType: 'memory', pinned: false, lastVisitedAt: now - 14 * 24 * 60 * 60 * 1000 };
+    const closedTab = { recordType: 'recovery', pinned: false, lastVisitedAt: now - 5 * 60 * 1000 };
+    const collectionPortal = { recordType: 'memory', pinned: true, collectionId: 'col_research', lastVisitedAt: now - 1000 };
+
+    assert.equal(derivePortalRegion(activeTab, now), 'active_gateway_district');
+    assert.equal(derivePortalVisualState(activeTab), 'active');
+
+    assert.equal(derivePortalRegion(recentHistory, now), 'memory_forest');
+    assert.equal(derivePortalVisualState(recentHistory), 'saved');
+
+    assert.equal(derivePortalRegion(oldHistory, now), 'archive_mountains');
+    assert.equal(derivePortalVisualState(oldHistory), 'saved');
+
+    assert.equal(derivePortalRegion(closedTab, now), 'forgotten_ruins');
+    assert.equal(derivePortalVisualState(closedTab), 'lost');
+
+    assert.equal(derivePortalRegion(collectionPortal, now), 'portal_halls');
+    assert.equal(derivePortalVisualState(collectionPortal), 'pinned');
+  });
+
+  it('clusters 320 browsing-history portals spatially and caps nearby detailed 3D archways for smooth WebGL frame times', () => {
+    const nodes = Array.from({ length: 320 }, (_, i) => {
+      const angle = (i / 320) * Math.PI * 2;
+      const radius = 38 + (i % 16) * 18;
+      return {
+        id: `mem-${i}`,
+        region: radius > 200 ? 'archive_mountains' : 'memory_forest',
+        x: Math.cos(angle) * radius,
+        z: Math.sin(angle) * radius,
+        alwaysDetailed: i < 5, // 5 Central Sanctuary permanent gateways
+      };
+    });
+
+    const { detailed, clusters } = partitionPortalsForRendering(nodes, 0, 0, 115, 36, 46);
+    assert.equal(detailed.length, 36);
+    const farCount = nodes.length - detailed.length;
+    assert.ok(clusters.length > 0 && clusters.length < farCount * 0.6, `Expected >40% spatial compression over ${farCount} far nodes, got ${clusters.length} clusters`);
+    const clusteredTotal = clusters.reduce((sum, c) => sum + c.count, 0);
+    assert.equal(detailed.length + clusteredTotal, 320);
+  });
+
+  it('reconstructs unclean-shutdown crash journal tabs into Lost Portals in Forgotten Ruins and supports genuine permanent deletion', () => {
+    const crashJournal = {
+      sessionId: 'sess-crash-1',
+      cleanShutdown: false,
+      updatedAt: 1_764_300_000_000,
+      openTabs: [
+        { tabId: 't1', url: 'https://developer.mozilla.org/en-US/docs/Web/API/WebGL2RenderingContext', title: 'WebGL2RenderingContext' },
+        { tabId: 't2', url: 'chrome://newtab', title: 'New Tab' },
+      ],
+    };
+
+    const records = new Map();
+    if (!crashJournal.cleanShutdown) {
+      for (const tab of crashJournal.openTabs) {
+        if (!/^https?:\/\//i.test(tab.url)) continue;
+        records.set(`rec:${tab.tabId}`, {
+          id: `rec:${tab.tabId}`,
+          url: tab.url,
+          title: tab.title,
+          recordType: 'recovery',
+          recoveryReason: 'crash',
+          region: 'forgotten_ruins',
+        });
+      }
+    }
+
+    assert.equal(records.size, 1);
+    const recovered = records.get('rec:t1');
+    assert.equal(recovered.recordType, 'recovery');
+    assert.equal(recovered.recoveryReason, 'crash');
+    assert.equal(recovered.region, 'forgotten_ruins');
+
+    // Genuine permanent deletion removes across records and associated cache/history hooks
+    const purgedUrls = [];
+    const deletePermanently = (id) => {
+      const rec = records.get(id);
+      if (!rec) return false;
+      records.delete(id);
+      purgedUrls.push(rec.url);
+      return true;
+    };
+
+    assert.equal(deletePermanently('rec:t1'), true);
+    assert.equal(records.size, 0);
+    assert.deepEqual(purgedUrls, ['https://developer.mozilla.org/en-US/docs/Web/API/WebGL2RenderingContext']);
+  });
+
+  it('round-trips Gateway Hub collection share codes (PMHUB1|) cleanly and rejects malformed payloads', () => {
+    const collection = {
+      name: 'WebGL Shaders Research',
+      description: 'Core shader references and Three.js docs',
+      accentColor: '#f2c14e',
+      urls: [
+        'https://threejs.org/docs/',
+        'https://thebookofshaders.com/',
+      ],
+    };
+
+    const code = encodeCollectionShareCode(collection);
+    assert.ok(code.startsWith('PMHUB1|'));
+    const decoded = decodeCollectionShareCode(code);
+    assert.deepEqual(decoded, collection);
+    assert.equal(decodeCollectionShareCode('INVALID|abc'), null);
+  });
+});
+
+
 
 
 

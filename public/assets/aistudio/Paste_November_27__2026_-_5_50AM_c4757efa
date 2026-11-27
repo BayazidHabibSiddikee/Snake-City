@@ -1,0 +1,1114 @@
+# **Snake City: traps, puzzles, combat, Soul Clan and movement — an engineering design**
+
+The strongest direction for Snake City is to make it feel like a **living mechanical-fantasy world**, not simply a game where a serpent walks around, fights enemies and collects items.
+
+Think of the player as an evolving organism operating inside an ancient world built from forgotten machines, energy systems, biological mechanisms and intelligent factions.
+
+The central design principle should be:
+
+**Every trap is a mechanism. Every puzzle is a system to understand. Every fight is a problem of timing, positioning and resource management. Every movement skill changes how the player interacts with the world.**
+
+I'll break it down as a game designer and a mechatronics engineer.
+
+## **1. The world as an interactive machine**
+
+[Mayachin Shrine Guide: How to Solve 'A Fixed Device' (Zelda: TotK) · GameMe RU](https://images.openai.com/static-rsc-4/-toErQMvK3iG-RVb2Wz8S_eSx2aPWIM7xS1Cn6dVc6K-4QZnn91ifZ8HOLvpJuQaRvDbYIsW_9EWU8U4eQCvOd6OlHISdJQ_6I9M8Qc3PaIXzd4398OUgMXGZTwTYt-SupbZyCZnZfWqJmMIJJig1iMHQ1vQhrhxJD5n6n1QmGU?purpose=inline)
+
+[Escape room Estel Sarajevo](https://images.openai.com/static-rsc-4/pnUCJShfNnWuWu9sbr6VO8YRsBdK92p3glZNDpWN9SDtNEEGt2ZT8TLA3nIoCybLPv7m2d7_HLCmoGyvjxDwAeLZD-sMoPr94-pNdNNTsNn6X8cT37P37YSMK0RgyiNfXJkUN2KMaC7ekYcgsDnt0RZ-7QA9fNMFJhD2ttGQ8H0?purpose=inline)
+
+[Hyperborean Wisdom - The Demiurge](https://images.openai.com/static-rsc-4/XOWFF1SAK6zuWzqk9Rjm9RAJakGXCI3l1oAbE5twxNbWxHcdV6o4_kelHsTep3uH4tW6ZRSAwxfO4Xp3h2BlwXSEqLjfyloNxB9fneUkHLZg8JwpycjrNFqCmYRc0g4cG19iumB9vldr1817xOuXGczdXh-A4vh-hgro4vS7fgQ?purpose=inline)
+
+18
+
+The environment should contain several interacting systems:
+
+- Mechanical systems: gears, pistons, pressure plates, counterweights, elevators and rotating platforms.
+- Electrical or energy systems: power nodes, conductive paths, energy barriers and overloaded circuits.
+- Fluid systems: water channels, hydraulic lifts, pressure pipes and movable gates.
+- Biological systems: vines, roots, poisonous spores, living walls and creatures that react to sound or heat.
+- Ancient technology: portals, soul-powered machines, artificial guardians and forgotten control systems.
+
+This gives you a way to build puzzles that are not arbitrary. The player observes a mechanism, develops a hypothesis, tests it and learns how the world works.
+
+## **2. Traps: the environment should be an enemy**
+
+[160 DnD Traps ideas | dungeon traps dnd, dnd dungeon traps, dungeon traps](https://images.openai.com/static-rsc-4/30uEyKPTtO0QNWOmDsZIaZIK9PklyMRzmCqLxNGURSHjLq2Yu3QywALSS2MmBpPDjUyILuormODAYWeX2PLXn3EPNLCnNZDybxbT8l2UJsHW_mfW4EUnITssI40gSK2EEx0uawqIPhbzJd-6vMVGvJ7lz09Os-6li6PR3qdY2DM?purpose=inline)
+
+[We Were Here Together](https://images.openai.com/static-rsc-4/Xf1-34h0EjF95einRYBnFdlgpQp_od7Wz0EuahSQo0XGRMNjFpHMbusOyD39p6pvfVom8z-RYnTWeLG5Ytg-n5Ucklx6Qy46fccT0mPIdpvcTdc31tl5BmWAvdtBair01J3NaWXTEp_PScOjqlYwGjTVEwc59RIQRpP_88ltitg?purpose=inline)
+
+20
+
+I would divide traps into six engineering categories.
+
+### **A. Mechanical traps**
+
+| Trap                | Engineering principle                     | Player's counter                              |
+| ------------------- | ----------------------------------------- | --------------------------------------------- |
+| Rotating blades     | Angular velocity and periodic motion      | Observe the cycle and pass between blades     |
+| Pressure plates     | Force threshold and switching             | Use a heavy object or avoid loading the plate |
+| Crushing walls      | Linear actuators and timed motion         | Sprint, slide or interrupt the mechanism      |
+| Counterweight gates | Torque and gravitational potential energy | Move weights to balance the mechanism         |
+| Spring launchers    | Elastic potential energy                  | Time the launch or redirect its force         |
+| Gear corridors      | Mechanical transmission                   | Change gear direction or stop the drive       |
+
+**Example: The Hall of Rotating Teeth**
+
+The player enters a corridor with three rotating blade assemblies.
+
+Each has:
+
+- Different rotational speed.
+- Different rotation direction.
+- Different phase.
+- A visible mechanical drive shaft.
+
+The player must identify a safe timing window.
+
+Engineering implementation:
+
+\\[ \theta(t)=\theta_0+\omega t \\]
+
+For a continuously rotating trap, the collision hazard can be calculated from the blade's angular position and the player's location.
+
+You could even allow the player to damage the drive shaft, changing the blade speed.
+
+### **B. Hydraulic and fluid traps**
+
+[CGWallpapers.com - Seite 2](https://images.openai.com/static-rsc-4/8EKPsb0IBQItDtxxprN71BbsSVfrmdRCg9XsDggmlOjl2LOI0LLSobQqTs2cvWcVTWkz4PPAEXSDrtYD0qfjY6a_lZ9BQlkjWhe4xOs7E79K1tB1_SOYL5kczAkwD7obdY6m0bBiDXJaqarF6N1BcE5SuXZQCNL9O3K1yELoE1o?purpose=inline)
+
+[de.cgwallpapers.com](https://de.cgwallpapers.com/index.php?start=36\&utm_source=chatgpt.com)
+
+These are particularly interesting for a mechatronics-themed game.
+
+Ideas:
+
+- A room gradually fills with water.
+- Water pressure opens a sealed gate.
+- A hydraulic piston lifts a platform.
+- Pressure pipes burst when overloaded.
+- Water conducts energy between exposed electrical nodes.
+
+The player might need to redirect water using valves.
+
+A simplified hydraulic relationship:
+
+\\[ F=P A \\]
+
+Where:
+
+- \\(F\\) = piston force
+- \\(P\\) = fluid pressure
+- \\(A\\) = piston area
+
+A puzzle could require the player to route pressure to the correct cylinder to lift a heavy door.
+
+### **C. Electrical traps**
+
+[Traps in new Overland Difficulty — Elder Scrolls Online](https://images.openai.com/static-rsc-4/mcCuPc_M_2LyRYWeaUPXue7eJiJrGvJBq96tj_HKomocYRCFiRFUWVJQrJ5ElrX-TQTqAB1yTebCwehG3pw5HW5UcIz-NyfQEU08E29hD94reSY1yqNC7HjdJ21gsgom5g1mGFBvytnxJrHDJ3jRvVk1puCcWIWC_IPagayVdTA?purpose=inline)
+
+[forums.elderscrollsonline.com](https://forums.elderscrollsonline.com/en/discussion/689287/traps-in-new-overland-difficulty?utm_source=chatgpt.com)
+
+Potential mechanisms:
+
+- Electrified floors.
+- Lightning conductors.
+- Energy beams.
+- Overloaded generators.
+- Conductive water.
+- Magnetic doors.
+
+The player could learn that different materials behave differently:
+
+- Metal conducts.
+- Wood is generally insulating.
+- Water can create dangerous conductive paths depending on the fictional energy system.
+- Insulators can protect the player or redirect current.
+
+A more advanced puzzle could require completing an electrical circuit:
+
+\\[ V=IR \\]
+
+The player must connect an energy source, conductor and receiver while avoiding an overloaded path.
+
+### **D. Biological traps**
+
+["alien jungle in the style of, gore, h..." | Gallery | Stablecog](https://images.openai.com/static-rsc-4/b5Ot5TI8tqvOfSmLD1vQVBHIL2DNao7PibDm4mYrMEnsubr1ciF1Y5qbKBfUau-8uJ3Z733Q6LbzqEnc4EGYYVgvMV4SGJKQaJcwmdISgOV1zX6kHHQ5bEbQkaIM-viLcjlDKvxnsq7imHBttU48qXvIsakvuEgYwiSZuCpVFq0?purpose=inline)
+
+[stablecog.com](https://stablecog.com/gallery/o/1836edfc-932a-4106-b17f-f55384122725?utm_source=chatgpt.com)
+
+This is where the game becomes more than a mechanical simulator.
+
+- Vines react to player movement.
+- Plants attack when they detect heat.
+- Spores spread through ventilation.
+- Carnivorous roots close around pathways.
+- Certain enemies attract or repel specific plants.
+
+The player might lure an enemy into a plant's attack range.
+
+### **E. Spatial and perception traps**
+
+- Fake floors.
+- Illusionary doors.
+- Invisible platforms revealed by energy.
+- Corridors that change orientation.
+- Portals that move the player to a different part of the map.
+- Rooms that repeat until a hidden condition is satisfied.
+
+### **F. Intelligent traps**
+
+These should feel like automated security systems.
+
+For example, an ancient guardian detects:
+
+1. Player entry.
+2. Movement pattern.
+3. Energy signature.
+4. Attempted interaction.
+
+It then changes its defensive strategy.
+
+This can use a finite-state machine rather than arbitrary scripted reactions.
+
+```
+IDLE
+  ↓ Player detected
+SCANNING
+  ↓ Threat confirmed
+ARMING
+  ↓ Attack condition met
+ATTACKING
+  ↓ Cooldown
+REPOSITIONING
+  ↓
+SCANNING
+```
+
+**Important design rule:** traps should be readable, predictable once understood, and sometimes usable against enemies. Otherwise, they become random punishment rather than interesting engineering problems. This is consistent with systemic hazard design, where the environment can be both a threat and a tool.&#x20;
+
+[image](https://www.google.com/s2/favicons?domain=https://github.com\&sz=32)
+
+GitHub+1
+
+
+
+## **3. Puzzle systems: make players think like engineers**
+
+[Ubisoft Escape Games | N°1 VR Escape and arcade Games | Ubisoft (EU / UK)](https://images.openai.com/static-rsc-4/PkvmZbHoqEy3cpovPpy24IKLYIAK8WHJ4mar99ZJMzJz6nRdNycQ7t61xytkCqpQ5Jc9tFSPZNaAUjIzltXB3V-8PRonEhl500GH33eHUu1s9j5J2879Ju3uEfVILXMrM_ygsMFTwWj6t0vVeY8yLhEYnQH0wDMtGTEY25Q8JKU?purpose=inline)
+
+[What is the mysterious Path of Light? news - ModDB](https://images.openai.com/static-rsc-4/3MJHz93Dhd1nQfKdWLhRVakHclFJDAn_YTqVNISA5GAuIzrBGmFMqDYCXb60GrAp09__kLi-dfAh9MUyRH6lvlSPRWBWNPETXgs-1_eBxjMY5HQTgVD3gIatkMJBkWem_nY9dyAwbahrvDm1Qj3aJY4N0Tw1gdSWjOqOH5W-aWA?purpose=inline)
+
+[Buy Aporia: Beyond The Valley - PC (Steam)](https://images.openai.com/static-rsc-4/y8qsrlCLAO30P5j7RfRPd7ndxSf-Gg8rFy29VL8jWbt0ZIMON4QffE_hqrT2l9g6_01EQqz1roUVz4vHvYWmmujGsOMWPodoZwGMvKfe4A1eyrFyZgwDb9nPdvUM2RR4y_qj47uGOhZrcGQ3XjiHSeZLUMsVKvc1KBdmazez7XE?purpose=inline)
+
+17
+
+I would build a puzzle system around multiple engineering disciplines.
+
+### **Puzzle 1 — Gear synchronization**
+
+Mechanical engineering
+
+The player finds three disconnected gears.
+
+The objective is to rotate a large central mechanism.
+
+The player must:
+
+- Identify the gear ratios.
+- Connect the correct gear pairs.
+- Reverse a gear direction where necessary.
+- Avoid exceeding the mechanism's torque limit.
+
+For ideal gears:
+
+\\[ \omega_1 r_1=\omega_2 r_2 \\]
+
+If one gear has twice the radius of another, its angular speed is half as large, assuming the gears mesh without slipping.
+
+**Advanced variation:** the gears must rotate at specific speeds simultaneously to open the gate.
+
+### **Puzzle 2 — Energy routing**
+
+Electrical engineering
+
+The room contains:
+
+- One energy source.
+- Four energy nodes.
+- Three switches.
+- Two receivers.
+- One overloaded circuit.
+
+The player must route energy without activating the overload.
+
+You can build a simple graph model:
+
+```
+Energy Core
+    |
+ Switch A
+    |
+ Node 1 ------ Node 2
+                 |
+              Receiver
+                 |
+             Gate Opens
+```
+
+The challenge can expand to multiple routes, switches and limited energy.
+
+### **Puzzle 3 — Hydraulic balancing**
+
+Fluid mechanics
+
+The player enters a room containing two water tanks.
+
+One tank is heavy enough to hold down a platform. The other controls a gate.
+
+The player must:
+
+1. Open the correct valve.
+2. Transfer water.
+3. Balance the two tanks.
+4. Raise a bridge.
+5. Cross before the water drains.
+
+A more sophisticated version uses fluid flow:
+
+\\[ Q=A v \\]
+
+Where \\(Q\\) is volumetric flow rate, \\(A\\) is pipe cross-sectional area and \\(v\\) is average fluid velocity.
+
+### **Puzzle 4 — Magnetic manipulation**
+
+Electromagnetics
+
+The player finds an ancient magnetic chamber.
+
+Possible interactions:
+
+- Attract metallic objects.
+- Repel magnetic platforms.
+- Change magnetic polarity.
+- Disable magnetic barriers.
+- Pull an enemy weapon away.
+
+The player must understand which objects respond to the magnetic field.
+
+### **Puzzle 5 — Structural engineering**
+
+Strength of materials
+
+A bridge is collapsing.
+
+The player must place support columns or move heavy objects to redistribute the load.
+
+You could simulate:
+
+- Beam bending.
+- Load distribution.
+- Structural instability.
+- Breaking points.
+
+The puzzle is not simply finding a key. It is understanding why the bridge is failing.
+
+### **Puzzle 6 — Logic and control systems**
+
+Automation and control
+
+The player discovers an ancient automated door.
+
+It has:
+
+- Two proximity sensors.
+- One pressure sensor.
+- One controller.
+- Two actuators.
+
+The door opens only if the correct conditions are satisfied.
+
+For example:
+
+```
+IF proximity_sensor == TRUE
+AND pressure_sensor == TRUE
+AND energy_level > threshold
+THEN open_door()
+ELSE remain_locked()
+```
+
+Later, introduce timers, sequential logic, faulty sensors and feedback loops.
+
+This creates an excellent progression from basic switches to industrial-style control systems.
+
+### **The important part: combine disciplines**
+
+The most memorable puzzles should combine multiple systems.
+
+For example, a boss chamber might require the player to:
+
+1. Redirect water through a pipe.
+2. Use the water to activate a hydraulic lift.
+3. Raise a metal conductor.
+4. Connect an electrical energy source.
+5. Disable the boss's protective shield.
+6. Attack during its vulnerability window.
+
+This is much more interesting than solving six unrelated riddles.
+
+A useful principle from game design is to introduce a mechanic in a simple environment first, then combine it with previously learned mechanics in later challenges.&#x20;
+
+[image](https://www.google.com/s2/favicons?domain=https://www.unrealengine.com\&sz=32)
+
+Unreal Engine+1
+
+
+
+## **4. Combat: fighting should be a skill system, not button mashing**
+
+[Stray Blade](https://images.openai.com/static-rsc-4/xT49n5O4rfNP6TmJLZLQ-9up_EWMUi9TU1PB9PHdhj6o3PU8SZEKsLfcu_F3CdoYBjhMDiyTLgrGRkLhZsfPxCPpM_qZIm8dfpT_a0-h6A85CegVIFQpwSkrNdVitmKRjZb8gr3Qlargrbhk623Jzp620pIORLhmzJmOA88XS38?purpose=inline)
+
+[half snake half human with teo Character Art](https://images.openai.com/static-rsc-4/VHf8GBKjkWKq-svq1oFRsSyWx5AoyJTEGW13GbCoF_1REfAljy9-MmoRVauRKoDDpDnHDY-NzSmNlEYkNV2Btu8KczKvB6YRrl8vssyu_OQWKUhFzpXZGP_GDbIGQ64OCQkPIvf6JRShEnORMH5JNQPkTbJLSmGQI3TYBqjucbc?purpose=inline)
+
+[古魂手游官方版下载-古魂魂之刃2官方正版下载 v2.5.0安卓版 - 多多软件站](https://images.openai.com/static-rsc-4/A6KTtC02vL05_TfCUG-GRIcofNbktSBiElKM0H1TQ0mZiQrLHLps0CQXtwRvPk5juMq19U6P4BejHumyTg-QOwFqgej23CRXdZdC-k9XpGsSS1Udim5PuM2-RKKU-tw4mhmNZy25qXYosr1BaNMWFBn96ITWEtB1KSdCcMGuHAA?purpose=inline)
+
+15
+
+I would design combat around five interconnected systems:
+
+1. Movement.
+2. Attack.
+3. Defense.
+4. Energy.
+5. Enemy behavior.
+
+### **Basic combat moves**
+
+| Move          | Function                  | Engineering/gameplay consideration            |
+| ------------- | ------------------------- | --------------------------------------------- |
+| Light attack  | Fast damage               | Short animation and recovery                  |
+| Heavy attack  | High damage               | Slow startup, high commitment                 |
+| Dodge         | Avoid attacks             | Invulnerability window or hitbox displacement |
+| Parry         | Counter an attack         | Strict timing window                          |
+| Block         | Reduce damage             | Consumes stamina                              |
+| Dash attack   | Close distance and strike | Movement and attack combined                  |
+| Launch attack | Attack airborne enemies   | Vertical hitbox                               |
+| Finisher      | Execute a weakened enemy  | Conditional animation                         |
+
+The player should not be able to cancel every attack into every other action. Attack startup, active frames and recovery frames create meaningful decisions.
+
+### **A. Attack architecture**
+
+Every attack should have a defined state:
+
+```
+IDLE
+ ↓
+STARTUP
+ ↓
+ACTIVE
+ ↓
+RECOVERY
+ ↓
+IDLE
+```
+
+For example, a heavy strike might have:
+
+- Startup: 0.45 seconds.
+- Active: 0.18 seconds.
+- Recovery: 0.65 seconds.
+
+These are prototype values, not final balance values.
+
+You can tune them through actual gameplay tests.
+
+### **B. Combat resources**
+
+I recommend three resources:
+
+**Health**
+
+# **HP**
+
+Survival
+
+**Stamina**
+
+# **SP**
+
+Movement and defense
+
+**Soul energy**
+
+# **SE**
+
+Special abilities
+
+The three resources should have different purposes.
+
+- HP: how much damage the player can survive.
+- SP: how long the player can sustain demanding physical actions.
+- SE: how much supernatural power the player can use.
+
+A good combat loop would reward skillful play:
+
+- Successful parries generate soul energy.
+- Dodging at the correct moment builds a combo bonus.
+- Heavy attacks consume more stamina.
+- Taking damage interrupts certain abilities.
+- Finishing enemies restores a limited amount of energy.
+
+This creates a connection between fighting and character progression.
+
+## **5. Soul Clan: make it a real combat faction**
+
+[번개장터](https://images.openai.com/static-rsc-4/ij7_I6A7W1TK8f-h3YK0PJqAIqwNKSmLYnYkUaxKCZW4RyfFKuiP2xunN6ONquJ-6Wzfk7eyzdYJJYoGPj1Ti-srvpM4vObvqUJpruzY85pwJOzNm-Pj-HZb7K4Au_8PpbjspvP3rFSQe_LQdQC-NInO3l4Fncsz0tiFoB3ViWk?purpose=inline)
+
+[三国アクションRPG『三国極戦』アップデート実施！新金武将「賈詡」や小喬新外観「雨霖鈴」期間限定で登場！ | Hero Entertainment Co., Ltdのプレスリリース](https://images.openai.com/static-rsc-4/n47Bm9Dbg3xQ5qVHc6kB52V1xu8m7Dej4jIYtb_aQTue2bjdbViDWOVGaALT-HES4zLSCLoroUxpmGC1itGBKoifJPALZwl-In2qFTCIt2lKj050ceA7KUuQYe_UxpJ3u3zFVpj33RByKhytdUKXKAQf36SDsNma0-5qTj_ntL8?purpose=inline)
+
+[WuWaBuilds - Wuthering Waves Builds & Leaderboards](https://images.openai.com/static-rsc-4/LDbOc_WnpEcbutjhNNEsGmwgOFxHyBzWlkx5mp2sCJKS1AOL3bj3tsR3-YEXjMGw0ykQdLisYsvdj-yzffesvtrJthI-jbfYz-ls1BgsxrnjsfaIkNuhD5e6-mI7ox7UcBoUSsJ-zLrzjq_SnAB4vwJUA6yJsl3ix-zp40U6AoM?purpose=inline)
+
+16
+
+I'd treat the Soul Clan as a faction with its own fighting philosophy, culture, abilities and internal hierarchy.
+
+The following is a proposed direction for Snake City, not an assertion that these characters or abilities already exist in the repository.
+
+### **Soul Clan combat identity**
+
+The Soul Clan could be an ancient order that learned to convert life force into combat techniques.
+
+Its warriors do not simply use magic. They manipulate their own energy, their surroundings and the energy of defeated enemies.
+
+I'd create four fighting disciplines.
+
+[「Knight」おしゃれまとめの人気アイデア｜Pinterest｜fuji えもん【2025】](https://images.openai.com/static-rsc-4/1xMit8T8XZfPU7Y-oTfMSus-DW0EU_ZD5enG2kFRlua7F3ZRhVXxMp2NlB4II-yi92JeAUt4yAIr_94PYmhlpkTBL8zzrcYEk3N9-SvdBmrTXKijW-v4rfFwaUG6NgxkYgX_g8xbgD4DLFLjsjlAT1NRhWIVPHHhVwsZ2u9080k?purpose=inline)
+
+**1. Soulblade — offensive discipline**
+
+- Fast energy-infused strikes.
+- Multi-hit combos.
+- Dash-through attacks.
+- Soul blade projection.
+- High damage, moderate energy consumption.
+
+*Combat identity:* aggressive and technical.
+
+[Energy Shield Revolution: Dominate PoE 2 with the Ghost Titan Build](https://images.openai.com/static-rsc-4/2KhxAo8zp8jEAfwBJpMkslTo7RuMJe3tmIAuCukLPlpZeqPb8mp8DVatI9FPwCgACjTaNf39OIvCDdXxlZgnxCzUUjx4rm2HqCNN35xyDK742pRkFsDuF8MULx7DUomp2Ol33us9IN5X3-AFQA7hycMDXRnRu8Ek0wfFbOxLNqY?purpose=inline)
+
+**2. Soulguard — defensive discipline**
+
+- Energy shields.
+- Perfect parries.
+- Damage reflection.
+- Counterattacks.
+- Temporary resistance.
+
+*Combat identity:* patience, timing and counterplay.
+
+[Helcurt Build Guide 2026 — Best Build, Counter, Tips | MLBB Vault](https://images.openai.com/static-rsc-4/VKR3Ea1AvuznE9SY1hf9co3972WDOp7UkB29IieahuwtG-8V8-LWNLBaWDgytydZ8MVM3S0LyxCe7vFxjDtyE5iWseCmOHe9gk2i0FeGCtPT2xcuM0ZwHgIgNUPL5eGBwh9MtthZeAifF0__m4cRzMYhFx9k4u0ziM3Eh8V-Q-0?purpose=inline)
+
+**3. Soulshade — mobility discipline**
+
+- Short-range teleportation.
+- Shadow clones.
+- Aerial attacks.
+- Backstab bonuses.
+- Temporary invisibility.
+
+*Combat identity:* speed and positioning.
+
+[Dark Fantasy Enigma Character Concept Art | AI Art Generator | Easy-Peasy.AI](https://images.openai.com/static-rsc-4/mn5j5z8FURqe5fr3ogyVT9EMu4a8bMX-_6f1MMJYavyqscKGj00x4uaVDbd2yIvYQA_w0BMF589orc4EtQBUdAcJFiJrYsrJDoYn_kunGP8xWFl2n7mX4QQwCQnH8_X7kXBORrN3x0MaDKM6HnyiDH_DLwcQQZ0xUfo5xXI7198?purpose=inline)
+
+**4. Soulweaver — control discipline**
+
+- Energy chains.
+- Enemy immobilization.
+- Area attacks.
+- Spirit summons.
+- Battlefield control.
+
+*Combat identity:* controlling the encounter rather than simply damaging enemies.
+
+### **Soul Clan progression**
+
+Instead of unlocking every ability at once, the player earns techniques through mastery.
+
+| Rank           | Unlock                       |
+| -------------- | ---------------------------- |
+| Initiate       | Basic soul energy            |
+| Awakened       | First discipline             |
+| Soul Adept     | Advanced combinations        |
+| Soul Knight    | Ultimate techniques          |
+| Soul Ascendant | Clan-specific transformation |
+
+A player should be able to specialize in one discipline or combine two.
+
+For example:
+
+**Soulblade + Soulshade**
+
+A fast warrior who teleports behind an enemy and performs a multi-hit combo.
+
+**Soulguard + Soulweaver**
+
+A defensive fighter who blocks an attack, captures the enemy with energy chains and counters.
+
+**Soulblade + Soulweaver**
+
+A heavy offensive fighter who pulls multiple enemies into a single attack zone.
+
+This gives the player a reason to experiment rather than simply selecting the strongest skill.
+
+## **6. Movement: the character should feel alive**
+
+[Asgard's Wrath 2 - Game Database - gamepressure.com](https://images.openai.com/static-rsc-4/nEm-Je8F_MU3Rj-Er02uoQws8cD3-PLBIUc72EPhTFu9eTJApJB8OTrRqZOcbmNkCNkqIz09QJ1a6654WA7AVPLOr1iv5rSOulNoNyLE12-NHtUHXObaVgcmyWLQx6okYKJbWRqZzOOOmw2kgCfpgdZwe2MAL9qVq33ZvVnNvkg?purpose=inline)
+
+[Prince of Persia™: The Lost Crown - Mask of Darkness bei Steam](https://images.openai.com/static-rsc-4/I5moEVHqCb03_VZ_D_psCkkkF9t3_LWntrH01pA67v4D2NtiiZK5dhdbTocTeBpqrm_c858EPX87AwXGRU5KG4NyoKuYawfJ0_fx7Qdf-3n5T400uK_j-M805tWcAQSFqTzi02rFyqSL63ZdejIIzrldO_WQNSC1-gjZE8LkCWs?purpose=inline)
+
+[Dnd 5e Yuan Ti Tactics - build challenging encounters against a Yuan Ti - ANGRY GOLEM GAMES](https://images.openai.com/static-rsc-4/LgyWdg8QgzBc-5HxqnFcQqTGXoOn0CebIUf4mr90Jp40qrY_Oyx39Ld_PZHjmuK2ds5DQpS2oedLuUo_rlGqBxhW2zRvQUxxkVTZ9uMrKiybMCa1mweiQHJlarIj8eekv3OHTpenB5DiEH-tY05M7fw3ejdy5CxtiiOkp8t7lnE?purpose=inline)
+
+14
+
+Movement should be one of Snake City's most important systems.
+
+Since the player evolves from a serpent into increasingly advanced forms, movement should evolve too.
+
+### **A. Serpent movement**
+
+Early evolution
+
+- Slithering.
+- Crawling through narrow passages.
+- Climbing certain surfaces.
+- Coil attack.
+- Constriction.
+- Swimming.
+- Burrowing through soft terrain.
+
+The serpent form should have advantages that later humanoid forms cannot completely replace.
+
+For example, a serpent might enter ventilation tunnels or squeeze through gaps that a humanoid character cannot access.
+
+### **B. Hybrid movement**
+
+Intermediate evolution
+
+- Wall climbing.
+- Short dashes.
+- Low slides.
+- Tail-assisted jumps.
+- Mid-air directional correction.
+- Quick turns.
+- Wall-to-wall traversal.
+
+This is where the player becomes more agile.
+
+### **C. Advanced humanoid movement**
+
+Advanced evolution
+
+- Sprinting.
+- Double jumping.
+- Wall running.
+- Vaulting.
+- Grappling.
+- Air dashing.
+- Dodging.
+- Ground slamming.
+- Aerial combat.
+
+### **D. Soul movement**
+
+Soul Clan mastery
+
+- Soul dash.
+- Blink teleport.
+- Air suspension.
+- Spirit projection.
+- Phase through designated barriers.
+- Energy-assisted wall running.
+- Mid-air direction changes.
+
+The key is to make movement useful in combat, exploration and puzzles.
+
+For instance, Soul Dash could let a player cross a collapsing bridge, evade a boss attack or pass through a temporary energy barrier.
+
+### **Movement combination examples**
+
+| Combination               | Result                    |
+| ------------------------- | ------------------------- |
+| Jump + dash               | Extended forward leap     |
+| Wall run + jump           | Vertical traversal        |
+| Dodge + light attack      | Counterattack             |
+| Air dash + heavy attack   | Diving strike             |
+| Grapple + jump            | Swing and launch          |
+| Parry + dash              | Counter-positioning       |
+| Soul dash + aerial attack | Teleporting aerial strike |
+
+### **Engineering the movement system**
+
+Don't implement these as unrelated key-triggered animations.
+
+Build a movement state machine:
+
+```
+                 ┌─────────┐
+                 │  IDLE   │
+                 └────┬────┘
+                      |
+                 ┌────▼────┐
+                 │  MOVE   │
+                 └────┬────┘
+                      |
+             ┌────────▼────────┐
+             │ MOVEMENT ACTION │
+             └────────┬────────┘
+                      |
+       ┌──────────────┼──────────────┐
+       ▼              ▼              ▼
+    JUMPING         DODGING       WALL RUN
+       |              |              |
+       └──────────────┼──────────────┘
+                      ▼
+                   LANDING
+                      |
+                      ▼
+                    IDLE
+```
+
+The real implementation needs transition conditions, priorities, interruption rules and animation synchronization.
+
+For example:
+
+- A dodge can interrupt a light attack during recovery.
+- A heavy attack cannot necessarily be interrupted.
+- Wall running requires a valid surface and sufficient speed.
+- Aerial attacks require the player to be airborne.
+- Soul Dash requires enough energy.
+
+This is how you avoid conflicting animations and unpredictable character behavior.
+
+### **Physics to measure**
+
+For a basic movement controller, start with:
+
+\\[ F=ma \\]
+
+\\[ v=u+at \\]
+
+\\[ d=ut+\frac{1}{2}at^2 \\]
+
+But don't simulate every body part with full rigid-body physics. Use a controlled character controller, explicit collision checks and carefully designed movement curves. Full physics simulation everywhere can make precise combat frustrating.
+
+## **7. Boss fights: combine combat, movement and engineering**
+
+[Как убить Уничтожителя в Террарии и сделать механического червя - CQ](https://images.openai.com/static-rsc-4/b5wSLnTsakbczYr9emR7-3ROMA0Le4fq9-h_SY-QHU83YthSlIrnoRpgWeWA8jyZ-lGM-Dc0K-vfXh_Q-vPuStGsOuznv1MvuozEEobRNARW18Rs1J06SGE5IFHgr4a9tJfaJE9FarbidXRd1ZWw1gHj8vkks2OaZkQ9Tzww4mc?purpose=inline)
+
+[Awesome GPT Image 2 Prompts](https://images.openai.com/static-rsc-4/3xrzssdXsHpA0Fczr-IyHqCaUVksSRTGvNZcmaBH7D9igCLmgn3BCOTx9H3x_OYlvXy2JUpJKonyIvcgcDzh86zzKNYx8I9Pt19tn5UbUYGh4uDlV_Hv8hEcQSAvdqrn7x9A8ApPFROT0XsBIpCZQcn_8Z99IFKb73MmqbnfoVo?purpose=inline)
+
+[Elden Ring elden ring guide: Complete Guide 2026 - Boss Guide | 3A Game Master](https://images.openai.com/static-rsc-4/u09z3IhwEHmy5trBJIZQq6KQDUAheGW8dH7hKPv-OUj0YyFDgQAIHPE3F-GPYurRzIZ1J-LUDTMvVDsukNYTA6KmZJSxONZ6o8CGSMf0C_IEug5675q9BojuQmEBPsjA9wM-ZL_7Zrgait9fOFexUD4JUjGyG8u0IJzRXJRoLIc?purpose=inline)
+
+16
+
+Boss fights should test everything the player has learned.
+
+Consider a proposed boss called **The Soulbound Colossus**.
+
+[The Clash of Rylanor and Fulgrim | Story.com](https://images.openai.com/static-rsc-4/bm52fxmDTfz7L1XUL6DguOlygBcRwZvaJyUFL3tj10_N7hSqjRFJFxC7686soZAldM0G_TzrHlTS-_9tzI7L1Jukrk3-jAFXkQkX6kD1FDGpJr0gLata05J-O6bg48jYeuA-i3x3zRkK47vGuAxVuQKZqUD4vYm4lOBjZYHrugU?purpose=inline)
+
+[story.com](https://www.story.com/ai-stories/ai-other-stories/the-clash-of-rylanor-and-fulgrim?utm_source=chatgpt.com)
+
+It has three phases.
+
+**Phase 1 — Mechanical defense**
+
+- Heavy physical attacks.
+- Rotating armor plates.
+- Ground shockwaves.
+- Slow but powerful movement.
+
+The player learns its attack patterns and dodges its strikes.
+
+**Phase 2 — Energy overload**
+
+- The boss activates its soul core.
+- Energy beams cover parts of the arena.
+- The player must redirect energy through the environment.
+- The armor becomes vulnerable after the core overheats.
+
+**Phase 3 — Soul combat**
+
+- The boss becomes faster.
+- It copies certain player abilities.
+- The player must parry, dodge and counter.
+- The final attack requires a specific opening.
+
+This is an important distinction: the boss should not just have a large health bar. It should be an interactive system with readable states and vulnerabilities.
+
+You could also create enemies that interact with traps. A charging enemy might be lured into rotating blades or electrified water. That turns combat into a tactical environmental puzzle.&#x20;
+
+[image](https://www.google.com/s2/favicons?domain=https://rileymcdonaldsmith.com\&sz=32)
+
+Part B+1
+
+
+
+## **8. Put it all together: an example dungeon**
+
+Imagine a location called **The Forgotten Soul Foundry**.
+
+[The art of making open world video games | Creative Bloq](https://images.openai.com/static-rsc-4/sYp5ekUn-PyFeqYdS3E7XLlMykGpyHLEI3SFByH5CywqqbL3FNKaMWTfksZS1yWtvR89aJ1OSZ-sJtlrboLkNcfVSUoN581AKKn8QIH7_Y7CZ7Y-PoAVmtSsg5MjrUtHHDTi3xTo9MKLqkJae9lT7Gkaqg0Xnz1r_rW9y0_oqVY?purpose=inline)
+
+[creativebloq.com](https://www.creativebloq.com/3d/video-game-design/the-art-of-making-a-video-game-open-world?utm_source=chatgpt.com)
+
+The player enters a massive abandoned underground factory.
+
+1. **Area 1 — The Broken Entrance**
+
+   The player must use serpent movement to crawl through a damaged ventilation system.
+2. **Area 2 — The Mechanical Hall**
+
+   Rotating blades and pressure plates introduce mechanical hazards. The player learns to read timing and avoid traps.
+3. **Area 3 — The Hydraulic Chamber**
+
+   Valves, water levels and pressure pistons control a large bridge.
+4. **Area 4 — The Energy Laboratory**
+
+   The player redirects power through nodes to reactivate an ancient machine.
+5. **Area 5 — Soul Clan Guardians**
+
+   The player fights Soul Clan warriors who demonstrate different combat disciplines.
+6. **Area 6 — The Forging Puzzle**
+
+   The player combines mechanical movement, hydraulic pressure and energy routing to activate the central forge.
+7. **Area 7 — The Colossus**
+
+   A boss encounter tests movement, parrying, energy management and environmental awareness.
+8. **Area 8 — The Soul Awakening**
+
+   The player earns a new Soul Clan ability and unlocks a previously inaccessible area.
+
+This gives the dungeon a learning curve: observe → experiment → master → combine → overcome.
+
+## **9. How I would actually engineer this in Snake City**
+
+This is where I would be particularly careful. If traps, combat, movement and puzzles are implemented independently, they will eventually conflict.
+
+I would create a shared gameplay simulation layer.
+
+### **Proposed architecture**
+
+```
+                 SNAKE CITY
+                     |
+              GAMEPLAY CORE
+                     |
+       ┌─────────────┼─────────────┐
+       |             |             |
+   MOVEMENT        COMBAT        WORLD
+   SYSTEM          SYSTEM        SYSTEM
+       |             |             |
+   Physics       Hitboxes       Traps
+   Collision     Weapons        Puzzles
+   Animation     Skills         Machines
+   Traversal     Enemies        Environment
+       |             |             |
+       └─────────────┼─────────────┘
+                     |
+               SOUL SYSTEM
+                     |
+             Abilities / Energy
+                     |
+              PROGRESSION
+                     |
+             Evolution / Skills
+```
+
+I'd organize the code approximately like this:
+
+```
+src/
+  game/
+    core/
+      GameLoop.ts
+      EventBus.ts
+      Entity.ts
+      StateMachine.ts
+
+    movement/
+      MovementController.ts
+      MovementState.ts
+      TraversalSystem.ts
+      DodgeSystem.ts
+      GrappleSystem.ts
+
+    combat/
+      CombatController.ts
+      AttackDefinition.ts
+      HitboxSystem.ts
+      DamageSystem.ts
+      ParrySystem.ts
+      ComboSystem.ts
+
+    soul/
+      SoulEnergy.ts
+      SoulAbilities.ts
+      SoulClan.ts
+      SoulSkillTree.ts
+
+    world/
+      hazards/
+        HazardSystem.ts
+        MechanicalTrap.ts
+        ElectricalTrap.ts
+        HydraulicTrap.ts
+
+      puzzles/
+        PuzzleManager.ts
+        CircuitPuzzle.ts
+        GearPuzzle.ts
+        HydraulicPuzzle.ts
+        LogicPuzzle.ts
+
+      machines/
+        MachineController.ts
+        ValveController.ts
+        GearController.ts
+        PowerNetwork.ts
+
+    ai/
+      EnemyController.ts
+      EnemyStateMachine.ts
+      BossController.ts
+      PerceptionSystem.ts
+
+    progression/
+      EvolutionManager.ts
+      SkillUnlocks.ts
+      DungeonProgression.ts
+```
+
+This is a proposed target architecture. I wouldn't move the existing project into it all at once.
+
+### **A. Use event-driven interaction**
+
+For example, the player activates a pressure plate.
+
+Instead of writing a custom connection between that plate and every machine, publish an event:
+
+```
+eventBus.emit("pressure_plate.activated", {
+  plateId: "plate_01",
+  force: 120,
+});
+```
+
+The connected machine listens:
+
+```
+eventBus.on("pressure_plate.activated", (event) => {
+  if (event.force >= requiredForce) {
+    hydraulicGate.open();
+  }
+});
+```
+
+This allows one pressure plate to control multiple mechanisms.
+
+The same system could connect:
+
+- Combat events to soul-energy generation.
+- Puzzle completion to portal activation.
+- Enemy deaths to progression.
+- Trap activation to environmental damage.
+- Boss phases to changes in the arena.
+
+### **B. Make puzzles data-driven**
+
+A puzzle should be defined by its components and conditions rather than hardcoded into the entire level.
+
+For example:
+
+```
+interface PuzzleDefinition {
+  id: string;
+  components: string[];
+  conditions: string[];
+  reward: string;
+  resettable: boolean;
+}
+```
+
+A gear puzzle, electrical puzzle and hydraulic puzzle can then share the same puzzle-management framework.
+
+### **C. Use deterministic simulation where possible**
+
+Separate actual gameplay calculations from visual effects.
+
+For example:
+
+- Trap activation and damage are simulation logic.
+- Gear rotation is simulation state.
+- Sparks, smoke and glowing particles are visual effects.
+- Attack hit detection is gameplay logic.
+- Sword trails are visual effects.
+
+This makes the system easier to test and debug.
+
+## **10. AI: make enemies intelligent**
+
+I would give different enemies different behavioral models.
+
+| Enemy         | Behavior                       |
+| ------------- | ------------------------------ |
+| Soul Scout    | Detects and follows the player |
+| Soul Assassin | Flanks and attacks from behind |
+| Soul Guardian | Blocks and counterattacks      |
+| Soul Hunter   | Tracks the player's movement   |
+| Soul Engineer | Activates traps and machines   |
+| Soul Warden   | Controls an area using energy  |
+| Soul Colossus | Uses multiple combat phases    |
+
+The Soul Engineer is particularly interesting.
+
+Imagine an enemy that recognizes that you are standing near a pressure plate. It deliberately moves away, activates another mechanism and tries to trap you.
+
+That makes the enemy feel like an intelligent opponent rather than a moving health bar.
+
+For implementation, start with finite-state machines. Later, use behavior trees or utility-based AI for more complex decisions.
+
+## **11. Engineering performance and testing**
+
+A system like this can become expensive if every object simulates everything continuously.
+
+I'd use different simulation frequencies.
+
+| System                   | Suggested update strategy       |
+| ------------------------ | ------------------------------- |
+| Player movement          | Every rendered simulation frame |
+| Combat collision         | Every relevant simulation frame |
+| Nearby traps             | Active simulation               |
+| Distant machines         | Event-driven or low-frequency   |
+| Distant enemies          | Simplified AI                   |
+| Particles                | Visual-only update              |
+| Inactive dungeon systems | Paused                          |
+
+For a fixed-step simulation:
+
+\\[ \Delta t = \frac{1}{60}\text{ s} \\]
+
+The rendering can run independently, with interpolation between simulation states.
+
+### **My initial acceptance tests**
+
+These are proposed development targets, not current performance claims.
+
+- Movement remains responsive at different frame rates.
+- No repeated attack registration from a single hitbox activation.
+- Dodge and parry windows behave consistently.
+- Trap collision matches visible geometry.
+- Puzzle state survives saving and reloading.
+- Soul energy cannot become negative.
+- Boss phases transition exactly once.
+- Enemies can interact with environmental hazards.
+- Failed puzzle attempts do not corrupt the world state.
+
+I would also build a developer debug overlay showing:
+
+- Player velocity and acceleration.
+- Current movement state.
+- Current combat state.
+- Active hitboxes.
+- Collision boundaries.
+- Soul energy.
+- Enemy AI state.
+- Trap activation state.
+- Puzzle completion conditions.
+
+This will save an enormous amount of debugging time.
+
+## **12. What I would build first**
+
+Don't attempt all of this simultaneously. Build a vertical slice that proves the core systems work together.
+
+## **Snake City — first playable engineering prototype**
+
+Recommended starting milestone
+
+[Boss Guide Lineage 2 – Antharas, Baium & Epic Boss L2VN](https://images.openai.com/static-rsc-4/tNJXHHEFQSr08EBJ9AYyhfz_sh-MAYVeo6ue2-q7lApnpzsY0oBhXUPxtHWyF-_7fiGQOBBlucKn9M5zj3E0wxcFmSJc9owfh37NWaT7kxs7FbHFgyeoBsWPDR4mhYzt_BaR4cXZaSjee2W7jFg5Hjfma7WvMYaXsM2oSjrFF44?purpose=inline)
+
+[l2vn.com](https://l2vn.com/boss-guide.html?utm_source=chatgpt.com)
+
+**Prototype contents**
+
+**Implementation checklist**
+
+0/8
+
+**Movement controller**
+
+Walk, sprint, jump, dodge and wall interaction.
+
+**Combat controller**
+
+Light attack, heavy attack, block and parry.
+
+**Soul energy**
+
+Resource generation and one special ability.
+
+**Mechanical traps**
+
+Rotating blades and pressure plates.
+
+**Puzzle framework**
+
+One gear puzzle and one electrical puzzle.
+
+**Enemy AI**
+
+One melee enemy and one Soul Guardian.
+
+**Boss encounter**
+
+Three attack patterns and two phases.
+
+**Persistence**
+
+Save player progression and puzzle state.
+
+## **13. My biggest recommendation**
+
+Don't make Snake City just a collection of features.
+
+Make it a world where the features depend on one another.
+
+For example:
+
+- Your movement abilities determine which traps you can bypass.
+- Your engineering knowledge determines which machines you can operate.
+- Your combat skills determine how you survive encounters.
+- Your Soul Clan discipline determines how you approach difficult situations.
+- Your evolution determines which previously inaccessible areas you can enter.
+- Your puzzle-solving unlocks new routes, abilities and discoveries.
+
+That creates an interconnected gameplay ecosystem.
+
+For design references, these are useful starting points:
+
+- Portal — spatial reasoning and physical puzzle interactions.
+- Sekiro: Shadows Die Twice — posture, timing, parrying and combat mastery.
+- Hollow Knight — movement progression and interconnected exploration.
+- The Legend of Zelda: Breath of the Wild — systemic environmental interactions.
+
+One useful engineering principle from real game-development examples is to reuse mechanics across both puzzles and combat, rather than building separate one-off interactions.&#x20;
+
+[image](https://www.google.com/s2/favicons?domain=https://dorian-gorski.com\&sz=32)
+
+dorian-gorski.com+2
+
+
+
+**The next implementation step I'd recommend is a playable dungeon prototype in the existing Snake City codebase:** one controllable evolving character, a complete movement controller, a Soul Clan combat opponent, a mechanical trap, an interactive puzzle and a small boss arena. That would establish whether the game's core systems actually work together before expanding the world.

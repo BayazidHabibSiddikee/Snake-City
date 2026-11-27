@@ -3,19 +3,31 @@
 # Starts the game server and opens it in your default browser.
 
 GAME_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PORT=3000
+PORT="${PORT:-3000}"
+
+NODE_MAJOR=$(node -e "console.log(process.versions.node.split('.')[0])")
+if [ "$NODE_MAJOR" -lt 22 ]; then
+  echo "❌  Node.js 22+ required (found $(node -v)). Please upgrade."
+  exit 1
+fi
 
 # Kill any process already on the port
 fuser -k "$PORT/tcp" 2>/dev/null || true
 
-echo "🐍 Starting Serpent Peaks on http://localhost:$PORT ..."
+cd "$GAME_DIR"
+if [ ! -f "$GAME_DIR/dist/index.html" ]; then
+  echo "🔨 Building production bundle first..."
+  npm run build
+fi
 
-# Serve the pre-built dist folder
-npx --yes serve "$GAME_DIR/dist" --listen "$PORT" --single &
+echo "🐍 Starting Serpent Peaks Express server on http://localhost:$PORT ..."
+
+# Run Express production server (serves dist/ + /api/browser/proxy + /api/compliment + /api/taunt)
+NODE_ENV=production PORT="$PORT" node "$GAME_DIR/server.ts" &
 SERVER_PID=$!
 
-# Wait until the server is up (max 5s)
-for i in {1..10}; do
+# Wait until the server is up (max 8s)
+for i in {1..16}; do
   curl -sf "http://localhost:$PORT" >/dev/null 2>&1 && break
   sleep 0.5
 done
@@ -29,5 +41,5 @@ elif command -v chromium-browser &>/dev/null; then
   chromium-browser --app="http://localhost:$PORT" --window-size=1280,720
 fi
 
-echo "✅ Game running. Close this terminal to stop the server."
+echo "✅ Serpent Peaks running with full backend APIs. Close this terminal to stop."
 wait "$SERVER_PID"

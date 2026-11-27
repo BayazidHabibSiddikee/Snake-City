@@ -3,12 +3,38 @@ import type { Request, Response } from 'express';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { GoogleGenAI, ThinkingLevel } from '@google/genai';
+import {
+  DailyBudgetTracker,
+  fetchWithSafeRedirects,
+  MAX_PROXY_HTML_BYTES,
+  MAX_PROXY_REDIRECTS,
+  MAX_PROXY_TEXT_BYTES,
+  PROXY_TIMEOUT_MS,
+  readResponseBodyWithLimit,
+  resolveTrustedParentOrigin,
+  ShortTtlCache,
+  SlidingWindowRateLimiter,
+} from './server/security.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 3000;
 const IS_PROD = process.env.NODE_ENV === 'production';
 
 const COMPLIMENT_MODEL = 'gemini-4-hydrogen';
+
+const aiRateLimiter = new SlidingWindowRateLimiter(15, 60_000);
+const proxyRateLimiter = new SlidingWindowRateLimiter(30, 60_000);
+const aiDailyBudget = new DailyBudgetTracker(600);
+const complimentCache = new ShortTtlCache<string>(35_000, 120);
+const tauntCache = new ShortTtlCache<string>(25_000, 120);
+
+function getClientIp(req: Request): string {
+  const fwd = req.headers['x-forwarded-for'];
+  if (typeof fwd === 'string' && fwd.trim()) {
+    return fwd.split(',')[0].trim().slice(0, 64);
+  }
+  return (req.ip || req.socket?.remoteAddress || 'unknown').slice(0, 64);
+}
 
 const COMPLIMENT_SYSTEM_INSTRUCTION = [
   'You are the warm, poetic Mountain Spirit watching over a cultivating serpent climbing alpine peaks.',
@@ -182,21 +208,46 @@ function buildTauntPrompt(body: TauntRequestBody): string {
 
 async function startServer(): Promise<void> {
   const app = express();
+  app.disable('x-powered-by');
   app.use(express.json({ limit: '16kb' }));
 
   app.post('/api/compliment', async (req: Request, res: Response) => {
+    const clientIp = getClientIp(req);
+    const rate = aiRateLimiter.check(`ai:${clientIp}`);
+    if (!rate.allowed) {
+      res.setHeader('Retry-After', String(rate.retryAfterSec));
+      res.status(429).json({
+        error: 'Rate limit exceeded. Please wait briefly before requesting another compliment.',
+      });
+      return;
+    }
+
     const ai = createGeminiClient();
     if (!ai) {
       res.status(503).json({
-        error: 'GEMINI_API_KEY is not configured. Add it in Settings > Secrets to enable live compliments.',
+        error: 'Live spirit compliments are temporarily unavailable.',
       });
       return;
     }
 
     try {
       const body = (req.body && typeof req.body === 'object' ? req.body : {}) as ComplimentRequestBody;
-      const prompt = buildComplimentPrompt(body);
+      const cacheKey = `${sanitizeText(body.event, 32, 'roaming')}:${Math.round(Number(body.level) || 1)}:${sanitizeText(body.weather, 16, 'mist')}:${Math.round(Number(body.peaksVisited) || 0)}`;
+      const cached = complimentCache.get(cacheKey);
+      if (cached) {
+        res.json({ compliment: cached, model: COMPLIMENT_MODEL, cached: true });
+        return;
+      }
 
+      const budget = aiDailyBudget.consume();
+      if (!budget.allowed) {
+        res.status(429).json({
+          error: 'Daily spirit voice quota reached. Try again tomorrow.',
+        });
+        return;
+      }
+
+      const prompt = buildComplimentPrompt(body);
       const response = await ai.models.generateContent({
         model: COMPLIMENT_MODEL,
         contents: prompt,
@@ -211,43 +262,61 @@ async function startServer(): Promise<void> {
       const rawText = (response.text ?? '').replace(/^["'“”]+|["'“”]+$/g, '').replace(/\s+/g, ' ').trim();
       if (!rawText) {
         res.status(502).json({
-          error: 'The model returned an empty compliment response.',
+          error: 'Unable to generate a spirit compliment right now.',
         });
         return;
       }
 
+      const safeText = rawText.slice(0, 180);
+      complimentCache.set(cacheKey, safeText);
       res.json({
-        compliment: rawText.slice(0, 180),
+        compliment: safeText,
         model: COMPLIMENT_MODEL,
       });
-    } catch (err: unknown) {
-      const status =
-        typeof err === 'object' && err !== null && 'status' in err && typeof err.status === 'number'
-          ? err.status
-          : 500;
-      const message =
-        err instanceof Error && err.message
-          ? err.message
-          : 'Failed to generate a compliment from Gemini.';
-      res.status(status >= 400 && status < 600 ? status : 500).json({
-        error: message,
+    } catch {
+      res.status(502).json({
+        error: 'Unable to generate a spirit compliment right now.',
       });
     }
   });
 
   app.post('/api/taunt', async (req: Request, res: Response) => {
+    const clientIp = getClientIp(req);
+    const rate = aiRateLimiter.check(`ai:${clientIp}`);
+    if (!rate.allowed) {
+      res.setHeader('Retry-After', String(rate.retryAfterSec));
+      res.status(429).json({
+        error: 'Rate limit exceeded. Please wait briefly before requesting another taunt.',
+      });
+      return;
+    }
+
     const ai = createGeminiClient();
     if (!ai) {
       res.status(503).json({
-        error: 'GEMINI_API_KEY is not configured. Add it in Settings > Secrets to enable live combat taunts.',
+        error: 'Live combat taunts are temporarily unavailable.',
       });
       return;
     }
 
     try {
       const body = (req.body && typeof req.body === 'object' ? req.body : {}) as TauntRequestBody;
-      const prompt = buildTauntPrompt(body);
+      const cacheKey = `${sanitizeText(body.enemyKind, 24, 'wolf')}:${sanitizeText(body.moment, 16, 'engage')}:${Math.round(Number(body.level) || 1)}`;
+      const cached = tauntCache.get(cacheKey);
+      if (cached) {
+        res.json({ taunt: cached, model: COMPLIMENT_MODEL, cached: true });
+        return;
+      }
 
+      const budget = aiDailyBudget.consume();
+      if (!budget.allowed) {
+        res.status(429).json({
+          error: 'Daily combat voice quota reached. Try again tomorrow.',
+        });
+        return;
+      }
+
+      const prompt = buildTauntPrompt(body);
       const response = await ai.models.generateContent({
         model: COMPLIMENT_MODEL,
         contents: prompt,
@@ -262,74 +331,43 @@ async function startServer(): Promise<void> {
       const rawText = (response.text ?? '').replace(/^["'“”]+|["'“”]+$/g, '').replace(/\s+/g, ' ').trim();
       if (!rawText) {
         res.status(502).json({
-          error: 'The model returned an empty combat taunt response.',
+          error: 'Unable to generate a combat taunt right now.',
         });
         return;
       }
 
+      const safeText = rawText.slice(0, 120);
+      tauntCache.set(cacheKey, safeText);
       res.json({
-        taunt: rawText.slice(0, 120),
+        taunt: safeText,
         model: COMPLIMENT_MODEL,
       });
-    } catch (err: unknown) {
-      const status =
-        typeof err === 'object' && err !== null && 'status' in err && typeof err.status === 'number'
-          ? err.status
-          : 500;
-      const message =
-        err instanceof Error && err.message
-          ? err.message
-          : 'Failed to generate a combat taunt from Gemini.';
-      res.status(status >= 400 && status < 600 ? status : 500).json({
-        error: message,
+    } catch {
+      res.status(502).json({
+        error: 'Unable to generate a combat taunt right now.',
       });
     }
   });
 
   app.get('/api/browser/proxy', async (req: Request, res: Response) => {
+    const clientIp = getClientIp(req);
+    const rate = proxyRateLimiter.check(`proxy:${clientIp}`);
+    if (!rate.allowed) {
+      res.setHeader('Retry-After', String(rate.retryAfterSec));
+      res.status(429).send('Portal proxy rate limit exceeded. Please wait briefly and try again.');
+      return;
+    }
+
     const rawUrl = typeof req.query.url === 'string' ? req.query.url.trim() : '';
     if (!rawUrl) {
       res.status(400).send('Missing url query parameter.');
       return;
     }
 
-    let parsed: URL;
-    try {
-      parsed = new URL(rawUrl);
-    } catch {
-      res.status(400).send('Invalid URL format.');
-      return;
-    }
-
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      res.status(400).send('Only HTTP and HTTPS protocols are supported by Portal Chromium.');
-      return;
-    }
-
-    const host = parsed.hostname.toLowerCase();
-    const isBlockedHost =
-      host === 'localhost' ||
-      host.endsWith('.localhost') ||
-      host.endsWith('.local') ||
-      host.endsWith('.internal') ||
-      host === '0.0.0.0' ||
-      host === '[::1]' ||
-      host === '::1' ||
-      /^127\./.test(host) ||
-      /^10\./.test(host) ||
-      /^192\.168\./.test(host) ||
-      /^169\.254\./.test(host) ||
-      /^172\.(1[6-9]|2\d|3[0-1])\./.test(host);
-
-    if (isBlockedHost) {
-      res.status(403).send('Access to private or local network addresses is restricted.');
-      return;
-    }
-
     const uaPreset = typeof req.query.ua === 'string' ? req.query.ua : 'serpent_portal';
     const UA_PRESETS: Record<string, string> = {
       serpent_portal:
-        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 SerpentPeaksPortal/2.4',
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 SerpentPeaksPortal/2.5',
       desktop_chrome:
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
       mobile_chrome:
@@ -337,14 +375,24 @@ async function startServer(): Promise<void> {
     };
     const resolvedUserAgent = UA_PRESETS[uaPreset] ?? UA_PRESETS.serpent_portal;
     const shieldEnabled = req.query.shield !== '0';
+    const bridgeToken =
+      typeof req.query.bt === 'string' && /^[a-zA-Z0-9_-]{8,64}$/.test(req.query.bt)
+        ? req.query.bt
+        : '';
+
+    const parentOrigin = resolveTrustedParentOrigin(
+      req.get('origin'),
+      req.get('referer'),
+      req.get('host'),
+      req.protocol,
+    );
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 9000);
+    const timeoutId = setTimeout(() => controller.abort(), PROXY_TIMEOUT_MS);
 
     try {
-      const upstream = await fetch(parsed.toString(), {
-        method: 'GET',
-        redirect: 'follow',
+      const { response: upstream, finalUrl } = await fetchWithSafeRedirects(rawUrl, {
+        maxRedirects: MAX_PROXY_REDIRECTS,
         signal: controller.signal,
         headers: {
           'User-Agent': resolvedUserAgent,
@@ -355,16 +403,28 @@ async function startServer(): Promise<void> {
         },
       });
 
-      const finalUrl = upstream.url || parsed.toString();
+      const finalParsed = new URL(finalUrl);
       const contentType = upstream.headers.get('content-type') || 'text/html; charset=utf-8';
-      const rawText = await upstream.text();
+      const isHtml = contentType.toLowerCase().includes('text/html');
+      const { text: rawText } = await readResponseBodyWithLimit(
+        upstream,
+        isHtml ? MAX_PROXY_HTML_BYTES : MAX_PROXY_TEXT_BYTES,
+      );
 
       res.removeHeader('X-Frame-Options');
       res.setHeader('X-Portal-Final-Url', finalUrl);
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('Referrer-Policy', 'no-referrer');
+      // Enforce opaque sandbox origin at HTTP header level so proxied third-party HTML
+      // can NEVER access parent localStorage, cookies, Firebase auth, or application DOM.
+      res.setHeader(
+        'Content-Security-Policy',
+        "sandbox allow-scripts allow-forms allow-popups; object-src 'none'; base-uri https: http:;",
+      );
 
-      if (!contentType.toLowerCase().includes('text/html')) {
+      if (!isHtml) {
         res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-        res.status(upstream.status).send(rawText.slice(0, 350000));
+        res.status(upstream.status).send(rawText);
         return;
       }
 
@@ -374,31 +434,37 @@ async function startServer(): Promise<void> {
 <script>
 (function(){
   try {
-    window.parent.postMessage({
+    var TARGET_ORIGIN = ${JSON.stringify(parentOrigin)};
+    var BRIDGE_TOKEN = ${JSON.stringify(bridgeToken)};
+    function postToParent(payload) {
+      payload.bridgeToken = BRIDGE_TOKEN;
+      window.parent.postMessage(payload, TARGET_ORIGIN);
+    }
+    postToParent({
       type: 'SERPENT_PORTAL_TAB_LOADED',
       url: ${JSON.stringify(finalUrl)},
-      title: document.title || ${JSON.stringify(parsed.hostname)}
-    }, '*');
+      title: document.title || ${JSON.stringify(finalParsed.hostname)}
+    });
     document.addEventListener('DOMContentLoaded', function() {
-      window.parent.postMessage({
+      postToParent({
         type: 'SERPENT_PORTAL_TAB_LOADED',
         url: ${JSON.stringify(finalUrl)},
-        title: document.title || ${JSON.stringify(parsed.hostname)}
-      }, '*');
+        title: document.title || ${JSON.stringify(finalParsed.hostname)}
+      });
     });
     document.addEventListener('click', function(e) {
       var a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
       if (!a) return;
       var href = a.getAttribute('href');
-      if (!href || href.startsWith('#') || href.startsWith('javascript:')) return;
+      if (!href || href.startsWith('#') || /^javascript:/i.test(href)) return;
       try {
         var resolved = new URL(href, ${JSON.stringify(finalUrl)}).toString();
         if (resolved.startsWith('http://') || resolved.startsWith('https://')) {
           e.preventDefault();
-          window.parent.postMessage({
+          postToParent({
             type: 'SERPENT_PORTAL_NAVIGATE',
             url: resolved
-          }, '*');
+          });
         }
       } catch (_) {}
     }, true);
@@ -416,10 +482,10 @@ async function startServer(): Promise<void> {
         });
         if (targetUrl.protocol === 'http:' || targetUrl.protocol === 'https:') {
           e.preventDefault();
-          window.parent.postMessage({
+          postToParent({
             type: 'SERPENT_PORTAL_NAVIGATE',
             url: targetUrl.toString()
-          }, '*');
+          });
         }
       } catch (_) {}
     }, true);
@@ -427,12 +493,11 @@ async function startServer(): Promise<void> {
 })();
 </script>`;
 
-      // Strip meta CSP tags that block framing or inline bridge
-      let rewrittenHtml = rawText
-        .slice(0, 750000)
-        .replace(/<meta[^>]+http-equiv=["']?Content-Security-Policy["']?[^>]*>/gi, '');
+      let rewrittenHtml = rawText.replace(
+        /<meta[^>]+http-equiv=["']?Content-Security-Policy["']?[^>]*>/gi,
+        '',
+      );
 
-      // When Privacy Tracker Shield is enabled, strip common third-party analytics/ad script tags
       if (shieldEnabled) {
         rewrittenHtml = rewrittenHtml.replace(
           /<script[^>]+src=["'][^"']*(?:googletagmanager|google-analytics|doubleclick|googlesyndication|adservice|facebook\.net\/[^"']*fbevents|hotjar|segment\.com\/analytics)[^"']*["'][^>]*>\s*<\/script>/gi,
@@ -449,18 +514,26 @@ async function startServer(): Promise<void> {
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
       res.status(upstream.status).send(rewrittenHtml);
     } catch (err: unknown) {
-      const msg =
-        err instanceof Error && err.message ? err.message : 'ERR_CONNECTION_TIMED_OUT';
-      const escapedUrl = parsed.toString().replace(/[<>&"]/g, '');
-      const escapedMsg = msg.replace(/[<>&"]/g, '');
+      const statusCode =
+        typeof err === 'object' && err !== null && 'statusCode' in err && typeof err.statusCode === 'number'
+          ? err.statusCode
+          : 502;
+      const safeReason =
+        statusCode === 403
+          ? 'Destination blocked by Portal Browser network safety policy.'
+          : statusCode === 400
+            ? 'Invalid or unsupported destination URL.'
+            : 'The remote site could not be reached via Portal Browser Proxy.';
+      const escapedUrl = rawUrl.slice(0, 260).replace(/[<>&"']/g, '');
       res
-        .status(502)
+        .status(statusCode)
         .setHeader('Content-Type', 'text/html; charset=utf-8')
+        .setHeader('Content-Security-Policy', "sandbox; default-src 'none'; style-src 'unsafe-inline';")
         .send(`<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<title>Portal Chromium — Connection Error</title>
+<title>Portal Browser — Connection Notice</title>
 <style>
   body { background:#0b1318; color:#d8ece4; font-family:system-ui,-apple-system,sans-serif; padding:36px 28px; margin:0; }
   .card { max-width:560px; margin:24px auto; background:#111f26; border:1px solid rgba(56,189,248,0.3); border-radius:14px; padding:24px 28px; }
@@ -471,10 +544,10 @@ async function startServer(): Promise<void> {
 </head>
 <body>
   <div class="card">
-    <h1>This site can’t be reached via Portal Chromium Proxy</h1>
+    <h1>This destination cannot be loaded via Portal Browser Proxy</h1>
     <p>Target URL: <strong>${escapedUrl}</strong></p>
-    <code>ERR_PORTAL_UPSTREAM_UNREACHABLE (${escapedMsg})</code>
-    <p>Try toggling <strong>Direct Embed</strong> in the Chromium toolbar or searching via DuckDuckGo / Wikipedia from the Omnibox.</p>
+    <code>${safeReason}</code>
+    <p>Try toggling <strong>Direct Embed</strong> in the toolbar or searching via DuckDuckGo / Wikipedia from the Omnibox.</p>
   </div>
 </body>
 </html>`);

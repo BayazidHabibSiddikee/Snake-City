@@ -7,6 +7,12 @@ import {
   derivePortalLandmarkName,
 } from './browser';
 import { PortalOfflineCacheController } from './offlineCache';
+import { PortalWorld } from './game/portal-world/PortalWorld';
+import { FoundryController } from './game/foundry/FoundryController';
+import type { SpatialPortalNode } from './game/portal-world/PortalClusters';
+import type { PortalProximityPrompt } from './game/portal-world/PortalInteraction';
+import type { PortalRegionId, PortalRegionMeta } from './ecosystem/memory/RetentionPolicy';
+import { PORTAL_REGIONS } from './ecosystem/memory/RetentionPolicy';
 import {
   ComplimentEventKind,
   ComplimentNotice,
@@ -445,8 +451,14 @@ export class SnakeGameController {
   private onLoreUnlocked?: (notice: LoreUnlockNotice) => void;
   public readonly portalBrowser = new PortalChromiumManager();
   public readonly offlineCache = new PortalOfflineCacheController();
+  public readonly portalWorld = new PortalWorld();
+  public readonly foundry = new FoundryController();
   public readonly portalMissions = new PortalMissionManager();
   public readonly portalLoot = new PortalLootManager();
+  private onPortalMemoryPromptChange?: (prompt: PortalProximityPrompt | null) => void;
+  private onPortalMemoryRegionChange?: (region: PortalRegionMeta) => void;
+  private onPortalMemoryActivate?: (node: SpatialPortalNode) => void;
+  private portalWorldElapsedSec = 0;
   private pendingPortalWarp: { x: number; z: number; variant: PortalVariant } | null = null;
   private portalTextureAnimAccum = 0;
   private portalWarpSeq = 0;
@@ -633,8 +645,62 @@ export class SnakeGameController {
 
     this.sound = new SoundEngine();
     this.world = new WorldEngine(container);
+    this.portalWorld.attachToScene(
+      this.world.scene,
+      this.world.renderer.capabilities.getMaxAnisotropy(),
+    );
+    this.foundry.attachToScene(this.world.scene);
+    this.foundry.bus.on('foundry.puzzle_solved', (ev) => {
+      this.sound.playEat(3, true);
+      this.onToast(`Foundry Mechanism Solved (${ev.puzzleId.replace('_', ' ')}) · +${ev.rewardSe} Soul Energy!`);
+    });
+    this.foundry.bus.on('boss.phase_changed', (ev) => {
+      this.sound.playShockwave(this.level);
+      this.onToast(`The Soulbound Colossus entered Phase ${ev.nextPhase}!`);
+    });
+    this.foundry.bus.on('foundry.boss_defeated', (ev) => {
+      this.sound.playLevelUp(this.level, this.level >= MAX_EVOLUTION_LEVEL);
+      this.score += 1200;
+      this.onToast(`Soulbound Colossus Vanquished! Rank: ${ev.unlockedRank} (+1,200 Score)`);
+    });
+    this.portalWorld.memory.setDeletionHooks({
+      onDeleteUrlFromBrowser: (url) => {
+        this.portalBrowser.removeHistoryByUrl(url);
+      },
+      onDeleteUrlFromOfflineCache: (url) => {
+        void this.offlineCache.deleteCachedPortalUrl(url);
+      },
+      onClearBrowserHistory: () => {
+        this.portalBrowser.clearHistory();
+      },
+    });
+    this.portalWorld.setEvents({
+      onPromptChange: (prompt) => {
+        this.onPortalMemoryPromptChange?.(prompt);
+      },
+      onRegionChange: (region) => {
+        this.onPortalMemoryRegionChange?.(region);
+      },
+      onActivatePortal: (node) => {
+        this.onPortalMemoryActivate?.(node);
+      },
+    });
+
+    const syncPortalMemoryFromBrowser = () => {
+      if (!this.portalWorld.memory.isHydrated()) return;
+      this.portalWorld.memory.syncBrowserSnapshot(
+        this.portalBrowser.getTabs(),
+        this.portalBrowser.getAllBookmarks(),
+        this.portalBrowser.getHistory(),
+      );
+    };
+
     this.portalBrowser.onChange(() => {
       this.syncPortalTextures();
+      syncPortalMemoryFromBrowser();
+    });
+    this.portalBrowser.subscribeTabClosed((closedTab) => {
+      this.portalWorld.memory.recordClosedTab(closedTab);
     });
     this.portalBrowser.subscribePersist(() => {
       this.offlineCache.schedulePortalStateSync(this.portalBrowser.exportOfflineStateSnapshot());
@@ -642,6 +708,28 @@ export class SnakeGameController {
     this.portalBrowser.subscribeBookmarkSaved((url) => {
       void this.offlineCache.precachePortalUrls([url], this.portalBrowser.getSettings());
     });
+
+    // Hydrate IndexedDB Portal Memory + detect any unclean previous session crash
+    void this.portalWorld.memory
+      .initializeFromBrowserState({
+        tabs: this.portalBrowser.getTabs(),
+        bookmarks: this.portalBrowser.getAllBookmarks(),
+        history: this.portalBrowser.getHistory(),
+      })
+      .then((res) => {
+        if (res.crashedRecovered > 0) {
+          this.onToast(
+            `Recovered ${res.crashedRecovered} lost session portal${res.crashedRecovered === 1 ? '' : 's'} in Forgotten Ruins.`,
+          );
+        }
+        this.emitMinimap();
+      });
+
+    if (typeof window !== 'undefined') {
+      window.addEventListener('pagehide', () => {
+        this.portalWorld.memory.recordSessionHeartbeat(this.portalBrowser.getTabs(), true);
+      });
+    }
 
     this.savedFormations = loadSavedFormations();
     this.bestScore = loadBestScore();
@@ -1258,6 +1346,7 @@ export class SnakeGameController {
     this.brakeHeld = false;
     this.stealthHeld = false;
     this.touchSteerAxis = 0;
+    this.foundry.setBlocking(false);
   }
 
   public isStealthActive(): boolean {
@@ -1803,12 +1892,60 @@ export class SnakeGameController {
     if (updateBiome) {
       this.world.setBiome(this.formation.biome);
       this.sound.setBiome(this.formation.biome);
+      this.portalWorld.setBiome(this.formation.biome);
     }
     this.world.syncFormation(this.formation);
     this.syncPortalTextures();
     this.rebuildObstacleCache();
     this.soulSentries = spawnPortalSentries(this.formation.props, this.formation.biome, 10);
     this.world.syncSoulSentries(this.soulSentries, 0);
+  }
+
+  public setPortalMemoryCallbacks(callbacks: {
+    onPromptChange?: (prompt: PortalProximityPrompt | null) => void;
+    onRegionChange?: (region: PortalRegionMeta) => void;
+    onActivatePortal?: (node: SpatialPortalNode) => void;
+  }): void {
+    this.onPortalMemoryPromptChange = callbacks.onPromptChange;
+    this.onPortalMemoryRegionChange = callbacks.onRegionChange;
+    this.onPortalMemoryActivate = callbacks.onActivatePortal;
+  }
+
+  public warpToPortalMemoryCoords(x: number, z: number, label: string): void {
+    if (this.mode === 'title') {
+      this.startGame();
+    }
+    if (this.mode === 'paused') {
+      this.mode = 'playing';
+    }
+    this.world.spawnBurst(this.headX, this.headY + 0.8, this.headZ, 0x2de3ff, 18);
+    // Land slightly in front of the destination portal facing it
+    const toOriginLen = Math.max(1, Math.hypot(x, z));
+    const offsetX = -(x / toOriginLen) * 8.5;
+    const offsetZ = -(z / toOriginLen) * 8.5;
+    this.headX = x + (toOriginLen > 4 ? offsetX : 0);
+    this.headZ = z + (toOriginLen > 4 ? offsetZ : -8.5);
+    this.headY = terrainHeightAt(this.headX, this.headZ, this.formation.biome);
+    this.heading = Math.atan2(x - this.headX, z - this.headZ);
+    this.invulnTimer = 1.1;
+    this.portalWorld.manager.interaction.suppressWalkInBriefly();
+    this.rebuildInitialPathHistory();
+    this.sound.playPortal();
+    this.world.spawnBurst(this.headX, this.headY + 0.8, this.headZ, 0xf2c14e, 22);
+    this.onToast(`Warped to ${label}`);
+    this.emitHud();
+    this.emitMinimap();
+  }
+
+  public warpToPortalMemoryRegion(regionId: PortalRegionId): void {
+    const meta = PORTAL_REGIONS[regionId];
+    if (!meta) return;
+    this.warpToPortalMemoryCoords(meta.centerX, meta.centerZ, meta.name);
+  }
+
+  public warpToForgottenFoundry(): void {
+    const entrance = this.foundry.getEntranceWorldCoords();
+    this.warpToPortalMemoryCoords(entrance.x, entrance.z, 'The Forgotten Soul Foundry');
   }
 
   public syncPortalTextures(): void {
@@ -2777,6 +2914,28 @@ export class SnakeGameController {
     const lightningStrike = this.world.consumeLightningStrike();
     if (lightningStrike > 0) {
       this.sound.playLightningThunder(lightningStrike);
+    }
+
+    this.portalWorldElapsedSec += dt;
+    this.portalWorld.update(
+      dt,
+      this.portalWorldElapsedSec,
+      this.headX,
+      this.headZ,
+      this.mode === 'playing' && !this.modalFreeze,
+    );
+
+    if (this.mode === 'playing' && !this.modalFreeze) {
+      const foundryStep = this.foundry.update(
+        dt,
+        this.headX,
+        this.headZ,
+        this.currentSpeed,
+        this.boostHeld,
+      );
+      if (foundryStep.playerDamageTaken > 0 && this.invulnTimer <= 0) {
+        this.hp = Math.max(1, this.hp - foundryStep.playerDamageTaken);
+      }
     }
 
     this.portalTextureAnimAccum += dt;
@@ -5139,6 +5298,13 @@ export class SnakeGameController {
         fromPlayer: p.fromPlayer,
       })),
       portals,
+      portalMemoryBlips: this.portalWorld.getMinimapBlips().map((b) => ({
+        x: b.x,
+        z: b.z,
+        visualState: b.visualState,
+        isSanctuary: b.isSanctuary,
+        count: b.count,
+      })),
       sentries: this.soulSentries
         .filter((s) => s.patrolMode !== 'banished')
         .map(

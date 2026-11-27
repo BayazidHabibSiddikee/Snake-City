@@ -36,14 +36,14 @@ export interface PortalBookmark {
 }
 
 export const CHROMIUM_ENGINE_META = {
-  browserName: 'Portal Chromium',
-  engineVersion: 'Chromium 131.0.6778.86 (Official Portal Blink Build) (64-bit)',
-  blinkVersion: '537.36 (@portal-wormhole-compositor)',
-  v8Version: '13.1.201.8-webgl2',
+  browserName: 'Portal Browser',
+  engineVersion: 'Snake-City Integrated Web Proxy v2.5 (Host Browser WebEngine)',
+  blinkVersion: 'Sandboxed iframe + Express Safe-Redirect Proxy',
+  v8Version: 'Host JS Runtime · Isolated Opaque Origin',
   userAgent:
-    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 SerpentPeaksPortal/2.4',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 SerpentPeaksPortal/2.5',
   commandLine:
-    '--enable-features=PortalWormholeCompositor,WebGL2Compute --ozone-platform=threejs-portal --process-per-portal-tab',
+    '--portal-proxy=ssrf-hardened --sandbox=opaque-origin --offline=saved-pages-cache',
 } as const;
 
 export const PORTAL_BOOKMARKS: PortalBookmark[] = [
@@ -908,14 +908,41 @@ export class PortalChromiumManager {
   private searchHistory: SearchHistoryEntry[] = [];
   private portalVisits: Record<string, PortalVisitRecord> = {};
   private readonly currentSessionId = `sess-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+  private readonly bridgeToken: string;
   private activePortalContextLabel = 'Standalone Session';
   private listeners: Array<() => void> = [];
   private persistListeners: Array<() => void> = [];
   private bookmarkSavedListeners: Array<(url: string) => void> = [];
+  private tabClosedListeners: Array<(tab: ChromiumTab) => void> = [];
 
   constructor() {
+    this.bridgeToken = this.generateBridgeToken();
     this.loadSettingsFromStorage();
     this.loadFromStorage();
+  }
+
+  private generateBridgeToken(): string {
+    try {
+      if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+        const bytes = new Uint8Array(16);
+        crypto.getRandomValues(bytes);
+        return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+      }
+    } catch {
+      // fallback below
+    }
+    return `bt_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 14)}`;
+  }
+
+  public getBridgeToken(): string {
+    return this.bridgeToken;
+  }
+
+  public subscribeTabClosed(fn: (tab: ChromiumTab) => void): () => void {
+    this.tabClosedListeners.push(fn);
+    return () => {
+      this.tabClosedListeners = this.tabClosedListeners.filter((cb) => cb !== fn);
+    };
   }
 
   private loadSettingsFromStorage(): void {
@@ -1422,6 +1449,22 @@ export class PortalChromiumManager {
     return true;
   }
 
+  public removeHistoryByUrl(rawUrl: string): number {
+    const target = String(rawUrl ?? '').trim();
+    if (!target) return 0;
+    const before = this.browsingHistory.length;
+    this.browsingHistory = this.browsingHistory.filter((entry) => entry.url !== target);
+    const removedHistory = before - this.browsingHistory.length;
+    const beforeBm = this.customBookmarks.length;
+    this.customBookmarks = this.customBookmarks.filter((bm) => bm.url !== target);
+    const removedBm = beforeBm - this.customBookmarks.length;
+    if (removedHistory > 0 || removedBm > 0) {
+      this.saveSettingsToStorage();
+      this.emitChange();
+    }
+    return removedHistory + removedBm;
+  }
+
   public clearCurrentSessionHistory(): number {
     const before = this.browsingHistory.length;
     this.browsingHistory = this.browsingHistory.filter(
@@ -1764,16 +1807,39 @@ export class PortalChromiumManager {
     return newTab;
   }
 
+  public openOrFocusUrl(rawUrl: string, preferredTitle?: string): ChromiumTab {
+    const clean = String(rawUrl ?? '').trim();
+    const existing = this.tabs.find(
+      (t) => t.displayUrl === clean || t.url === clean,
+    );
+    if (existing) {
+      return this.activateTab(existing.id);
+    }
+    const tab = this.createTab(clean, this.activePortalVariant);
+    if (preferredTitle && preferredTitle.trim()) {
+      tab.title = preferredTitle.trim().slice(0, 56);
+      this.emitChange();
+    }
+    return tab;
+  }
+
   public closeTab(id: string): ChromiumTab {
     if (this.tabs.length <= 1) {
+      const lastTab = this.tabs[0];
+      if (lastTab && lastTab.url !== 'chrome://newtab') {
+        const snapshot = { ...lastTab };
+        for (const fn of this.tabClosedListeners) fn(snapshot);
+      }
       // Reset the last remaining tab to chrome://newtab instead of leaving 0 tabs
       this.navigateActiveTab('chrome://newtab');
       return this.getActiveTab();
     }
     const idx = this.tabs.findIndex((t) => t.id === id);
     if (idx >= 0) {
-      const closedVariant = this.tabs[idx].portalVariant;
+      const closedTab = { ...this.tabs[idx] };
+      const closedVariant = closedTab.portalVariant;
       this.tabs.splice(idx, 1);
+      for (const fn of this.tabClosedListeners) fn(closedTab);
       if (this.activeTabId === id) {
         const samePortal = this.tabs.find((t) => t.portalVariant === closedVariant);
         const fallback = samePortal || this.tabs[Math.max(0, idx - 1)] || this.tabs[0];
@@ -1901,8 +1967,9 @@ export class PortalChromiumManager {
     if (tab.proxyMode) {
       const shield = this.settings.trackerShield ? '1' : '0';
       const ua = encodeURIComponent(this.settings.userAgentPreset);
+      const bt = encodeURIComponent(this.bridgeToken);
       return {
-        src: `/api/browser/proxy?url=${encodeURIComponent(tab.url)}&shield=${shield}&ua=${ua}`,
+        src: `/api/browser/proxy?url=${encodeURIComponent(tab.url)}&shield=${shield}&ua=${ua}&bt=${bt}`,
       };
     }
     return { src: tab.url };
@@ -1936,15 +2003,15 @@ export class PortalChromiumManager {
 <body>
   <div class="wrap">
     <div class="head">
-      <h1>PORTAL CHROMIUM // ENGINE TELEMETRY</h1>
+      <h1>PORTAL BROWSER // ARCHITECTURE &amp; ISOLATION</h1>
       <span class="badge">PORTAL ${tab.portalVariant} CHANNEL</span>
     </div>
     <table>
-      <tr><td class="k">Chromium</td><td class="v">${CHROMIUM_ENGINE_META.engineVersion}</td></tr>
-      <tr><td class="k">Blink Compositor</td><td class="v">${CHROMIUM_ENGINE_META.blinkVersion}</td></tr>
-      <tr><td class="k">JavaScript V8</td><td class="v">${CHROMIUM_ENGINE_META.v8Version}</td></tr>
-      <tr><td class="k">User-Agent</td><td class="v">${CHROMIUM_ENGINE_META.userAgent}</td></tr>
-      <tr><td class="k">Command-Line</td><td class="v">${CHROMIUM_ENGINE_META.commandLine}</td></tr>
+      <tr><td class="k">Browser Subsystem</td><td class="v">${CHROMIUM_ENGINE_META.engineVersion}</td></tr>
+      <tr><td class="k">Isolation Model</td><td class="v">${CHROMIUM_ENGINE_META.blinkVersion}</td></tr>
+      <tr><td class="k">Runtime</td><td class="v">${CHROMIUM_ENGINE_META.v8Version}</td></tr>
+      <tr><td class="k">User-Agent Preset</td><td class="v">${CHROMIUM_ENGINE_META.userAgent}</td></tr>
+      <tr><td class="k">Security Policy</td><td class="v">${CHROMIUM_ENGINE_META.commandLine}</td></tr>
       <tr><td class="k">Active Portal Tabs</td><td class="v">${this.tabs.length} tabs synced across Twin Portals A &amp; B</td></tr>
     </table>
   </div>
@@ -2857,73 +2924,85 @@ export class PortalChromiumManager {
   </div>
 
   <script>
-    document.getElementById('ntpForm').addEventListener('submit', function(e) {
-      e.preventDefault();
-      var val = document.getElementById('ntpInput').value.trim();
-      if (val) {
-        window.parent.postMessage({ type: 'SERPENT_PORTAL_NAVIGATE', url: val }, '*');
+    (function() {
+      var TARGET_ORIGIN = ${JSON.stringify(
+        typeof window !== 'undefined' && window.location && window.location.origin && window.location.origin !== 'null'
+          ? window.location.origin
+          : '*',
+      )};
+      var BRIDGE_TOKEN = ${JSON.stringify(this.bridgeToken)};
+      function sendPortalMsg(payload) {
+        payload.bridgeToken = BRIDGE_TOKEN;
+        window.parent.postMessage(payload, TARGET_ORIGIN);
       }
-    });
-    document.querySelectorAll('[data-url]').forEach(function(btn) {
-      btn.addEventListener('click', function() {
-        var u = btn.getAttribute('data-url');
-        if (u) window.parent.postMessage({ type: 'SERPENT_PORTAL_NAVIGATE', url: u }, '*');
-      });
-    });
-    document.querySelectorAll('[data-search-query]').forEach(function(btn) {
-      btn.addEventListener('click', function() {
-        var q = btn.getAttribute('data-search-query');
-        if (q) window.parent.postMessage({ type: 'SERPENT_PORTAL_NAVIGATE', url: q }, '*');
-      });
-    });
-    document.querySelectorAll('[data-remove-search]').forEach(function(btn) {
-      btn.addEventListener('click', function(e) {
-        e.stopPropagation();
-        var id = btn.getAttribute('data-remove-search');
-        if (id) window.parent.postMessage({ type: 'SERPENT_PORTAL_ACTION', action: 'remove_search_history', target: id }, '*');
-      });
-    });
-    document.querySelectorAll('[data-remove-bm]').forEach(function(btn) {
-      btn.addEventListener('click', function(e) {
-        e.stopPropagation();
-        var u = btn.getAttribute('data-remove-bm');
-        if (u) window.parent.postMessage({ type: 'SERPENT_PORTAL_ACTION', action: 'remove_bookmark', target: u }, '*');
-      });
-    });
-    document.querySelectorAll('[data-milestone]').forEach(function(btn) {
-      btn.addEventListener('click', function() {
-        var target = btn.getAttribute('data-milestone');
-        if (target) {
-          window.parent.postMessage({ type: 'SERPENT_PORTAL_ACTION', action: 'open_milestone', target: target }, '*');
+      document.getElementById('ntpForm').addEventListener('submit', function(e) {
+        e.preventDefault();
+        var val = document.getElementById('ntpInput').value.trim();
+        if (val) {
+          sendPortalMsg({ type: 'SERPENT_PORTAL_NAVIGATE', url: val });
         }
       });
-    });
-    document.querySelectorAll('[data-portal-action]').forEach(function(btn) {
-      btn.addEventListener('click', function() {
-        var mode = btn.getAttribute('data-portal-action');
-        var portalId = btn.getAttribute('data-portal-id') || '';
-        var variant = btn.getAttribute('data-portal-variant') === 'B' ? 'B' : 'A';
-        var x = Number(btn.getAttribute('data-portal-x') || 0);
-        var z = Number(btn.getAttribute('data-portal-z') || 0);
-        window.parent.postMessage({
-          type: 'SERPENT_PORTAL_ACTION',
-          action: 'open_portal',
-          mode: mode,
-          portalId: portalId,
-          variant: variant,
-          x: x,
-          z: z
-        }, '*');
+      document.querySelectorAll('[data-url]').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          var u = btn.getAttribute('data-url');
+          if (u) sendPortalMsg({ type: 'SERPENT_PORTAL_NAVIGATE', url: u });
+        });
       });
-    });
-    document.querySelectorAll('[data-action]').forEach(function(btn) {
-      btn.addEventListener('click', function() {
-        var act = btn.getAttribute('data-action');
-        if (act) {
-          window.parent.postMessage({ type: 'SERPENT_PORTAL_ACTION', action: act }, '*');
-        }
+      document.querySelectorAll('[data-search-query]').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          var q = btn.getAttribute('data-search-query');
+          if (q) sendPortalMsg({ type: 'SERPENT_PORTAL_NAVIGATE', url: q });
+        });
       });
-    });
+      document.querySelectorAll('[data-remove-search]').forEach(function(btn) {
+        btn.addEventListener('click', function(e) {
+          e.stopPropagation();
+          var id = btn.getAttribute('data-remove-search');
+          if (id) sendPortalMsg({ type: 'SERPENT_PORTAL_ACTION', action: 'remove_search_history', target: id });
+        });
+      });
+      document.querySelectorAll('[data-remove-bm]').forEach(function(btn) {
+        btn.addEventListener('click', function(e) {
+          e.stopPropagation();
+          var u = btn.getAttribute('data-remove-bm');
+          if (u) sendPortalMsg({ type: 'SERPENT_PORTAL_ACTION', action: 'remove_bookmark', target: u });
+        });
+      });
+      document.querySelectorAll('[data-milestone]').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          var target = btn.getAttribute('data-milestone');
+          if (target) {
+            sendPortalMsg({ type: 'SERPENT_PORTAL_ACTION', action: 'open_milestone', target: target });
+          }
+        });
+      });
+      document.querySelectorAll('[data-portal-action]').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          var mode = btn.getAttribute('data-portal-action');
+          var portalId = btn.getAttribute('data-portal-id') || '';
+          var variant = btn.getAttribute('data-portal-variant') === 'B' ? 'B' : 'A';
+          var x = Number(btn.getAttribute('data-portal-x') || 0);
+          var z = Number(btn.getAttribute('data-portal-z') || 0);
+          sendPortalMsg({
+            type: 'SERPENT_PORTAL_ACTION',
+            action: 'open_portal',
+            mode: mode,
+            portalId: portalId,
+            variant: variant,
+            x: x,
+            z: z
+          });
+        });
+      });
+      document.querySelectorAll('[data-action]').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          var act = btn.getAttribute('data-action');
+          if (act) {
+            sendPortalMsg({ type: 'SERPENT_PORTAL_ACTION', action: act });
+          }
+        });
+      });
+    })();
   </script>
 </body>
 </html>`;
