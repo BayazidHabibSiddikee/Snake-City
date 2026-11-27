@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Serpent Peaks — local launcher
-# Starts the game server and opens it in your default browser.
+# Starts the Express production server and opens it in your default browser.
 
 GAME_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PORT="${PORT:-3000}"
@@ -20,10 +20,11 @@ if [ ! -f "$GAME_DIR/dist/index.html" ]; then
   npm run build
 fi
 
-echo "🐍 Starting Serpent Peaks Express server on http://localhost:$PORT ..."
+echo "🐍 Starting Serpent Peaks Express production server (node server/index.js) on http://localhost:$PORT ..."
+echo "🔌 /api portal proxy and Gemini AI oracle endpoints are fully functional."
 
 # Run Express production server (serves dist/ + /api/browser/proxy + /api/compliment + /api/taunt)
-NODE_ENV=production PORT="$PORT" node "$GAME_DIR/server.ts" &
+NODE_ENV=production PORT="$PORT" node "$GAME_DIR/server/index.js" &
 SERVER_PID=$!
 
 # Wait until the server is up (max 8s)
@@ -41,5 +42,5 @@ elif command -v chromium-browser &>/dev/null; then
   chromium-browser --app="http://localhost:$PORT" --window-size=1280,720
 fi
 
-echo "✅ Serpent Peaks running with full backend APIs. Close this terminal to stop."
+echo "✅ Serpent Peaks running with full Express backend APIs and AI services. Close this terminal to stop."
 wait "$SERVER_PID"

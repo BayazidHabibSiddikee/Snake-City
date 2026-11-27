@@ -45,11 +45,11 @@ npm install --silent
 echo "🔨  Building production bundle ..."
 npm run build
 
-# --- Serve via Express backend (serves dist/ + /api/* routes) ---
+# --- Serve via Express production server (serves dist/ + /api proxy & AI endpoints) ---
 echo ""
-echo "  ✅  Build complete! Starting Serpent Peaks Express server on port $PORT ..."
+echo "  ✅  Build complete! Starting Serpent Peaks Express production server (node server/index.js) on port $PORT ..."
 echo "  🌐  Open http://localhost:$PORT in your browser."
-echo "  📱  On the same Wi-Fi? Visit http://$(hostname -I | awk '{print $1}'):$PORT"
+echo "  🔌  API Proxy & Gemini AI Endpoints (/api/browser/proxy, /api/compliment, /api/taunt) are fully active."
 echo ""
 
-NODE_ENV=production PORT="$PORT" node server.ts
+NODE_ENV=production PORT="$PORT" node server/index.js

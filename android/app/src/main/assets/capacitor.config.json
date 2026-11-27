@@ -1,0 +1,16 @@
+{
+	"appId": "com.serpentpeaks.game",
+	"appName": "Serpent Peaks",
+	"webDir": "dist",
+	"bundledWebRuntime": false,
+	"android": {
+		"backgroundColor": "#0a1414"
+	},
+	"plugins": {
+		"SplashScreen": {
+			"launchShowDuration": 2000,
+			"backgroundColor": "#0a1414",
+			"showSpinner": false
+		}
+	}
+}
