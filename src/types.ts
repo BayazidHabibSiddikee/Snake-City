@@ -211,6 +211,19 @@ export interface SentryHudAlert {
   portalLockTimer: number;
 }
 
+export interface NearestPeakPortalHud {
+  portalId: string;
+  peakTier: number;
+  peakName: string;
+  distanceMeters: number;
+  maxRangeMeters: number;
+  proximityFrac: number;
+  requiredRank: number;
+  unlocked: boolean;
+  phase: 'sealed' | 'awakening' | 'igniting' | 'open';
+  accentHex: number;
+}
+
 export interface MinimapSnapshot {
   biome: BiomeId;
   headX: number;
@@ -332,6 +345,7 @@ export interface HudSnapshot {
   cultivationBuffRemainingSec: number;
   permanentResonancePct: number;
   rareMaterialCount: number;
+  nearestPeakPortal: NearestPeakPortalHud | null;
 }
 
 export const WORLD_PLAY_RADIUS = 360;

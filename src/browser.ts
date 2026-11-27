@@ -878,20 +878,20 @@ function createProfileDefaultTabs(profileId: string): ChromiumTab[] {
     ];
   }
 
-  // Default: 'serpent-sovereign' — 12 surrounding Mirror-House tabs!
+  // Default: 'serpent-sovereign' — opens cleanly on New Tab with ready-to-browse tabs
   return [
-    mk(1, 'Wikipedia — World Encyclopedia', 'https://en.m.wikipedia.org/wiki/Main_Page', 'A'),
-    mk(2, 'Serpent Peaks Trial Atlas', 'chrome://peaks-atlas', 'B'),
+    mk(1, 'New Tab', 'chrome://newtab', 'A'),
+    mk(2, 'Wikipedia — Encyclopedia', 'https://en.m.wikipedia.org/wiki/Main_Page', 'A'),
     mk(3, 'DuckDuckGo — Web Search', 'https://lite.duckduckgo.com/lite/', 'A'),
-    mk(4, 'Hacker News — Tech Feed', 'https://news.ycombinator.com/', 'B'),
-    mk(5, 'Wuxia Cultivation Lore', 'https://en.m.wikipedia.org/wiki/Wuxia', 'A'),
-    mk(6, 'Mythic Naga Ascension', 'https://en.m.wikipedia.org/wiki/N%C4%81ga', 'B'),
-    mk(7, 'Portal New Tab Hub', 'chrome://newtab', 'A'),
+    mk(4, 'Hacker News', 'https://news.ycombinator.com/', 'B'),
+    mk(5, 'Serpent Peaks Trial Atlas', 'chrome://peaks-atlas', 'B'),
+    mk(6, 'Wuxia Cultivation Lore', 'https://en.m.wikipedia.org/wiki/Wuxia', 'A'),
+    mk(7, 'Mythic Naga Ascension', 'https://en.m.wikipedia.org/wiki/N%C4%81ga', 'B'),
     mk(8, 'Himalayas — Roof of the World', 'https://en.m.wikipedia.org/wiki/Himalayas', 'B'),
     mk(9, 'Chinese Dragon Mythology', 'https://en.m.wikipedia.org/wiki/Chinese_dragon', 'A'),
-    mk(10, 'About Chromium — Engine', 'chrome://version', 'B'),
-    mk(11, 'Hall of Mirrors — Optics', 'https://en.m.wikipedia.org/wiki/infinity_mirror', 'A'),
-    mk(12, 'Example Domain — Sandbox', 'https://example.com/', 'B'),
+    mk(10, 'About Browser', 'chrome://version', 'B'),
+    mk(11, 'Optics & Reflections', 'https://en.m.wikipedia.org/wiki/infinity_mirror', 'A'),
+    mk(12, 'Example Domain', 'https://example.com/', 'B'),
   ];
 }
 
@@ -2237,59 +2237,58 @@ export class PortalChromiumManager {
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>New Tab — Portal Chromium</title>
+<title>New Tab</title>
 <style>
   :root {
-    --bg: #081115;
-    --surface: #0e1a20;
-    --surface-hover: #13232b;
-    --border: rgba(182, 224, 206, 0.14);
-    --border-strong: rgba(182, 224, 206, 0.28);
-    --text: #edf7f2;
-    --muted: #8fb3a5;
-    --gold: #f2c14e;
-    --jade: #3de095;
-    --accent: ${accent};
+    --bg: #181a1f;
+    --surface: #20232a;
+    --surface-hover: #282c35;
+    --border: rgba(255, 255, 255, 0.08);
+    --border-strong: rgba(255, 255, 255, 0.16);
+    --text: #f3f4f6;
+    --muted: #9ca3af;
+    --gold: #e5b84b;
+    --jade: #34d399;
+    --accent: #3b82f6;
   }
   * { box-sizing: border-box; }
   body {
     margin: 0;
     min-height: 100vh;
-    background: radial-gradient(circle at 50% 0%, #10252e 0%, var(--bg) 58%);
+    background: var(--bg);
     color: var(--text);
-    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+    font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     -webkit-font-smoothing: antialiased;
-    padding: 20px 28px 36px;
+    padding: 20px 28px 40px;
   }
   .page {
-    max-width: 1120px;
+    max-width: 1040px;
     margin: 0 auto;
     display: flex;
     flex-direction: column;
     gap: 28px;
   }
-  /* 3-zone top bar */
+  /* Minimalist Browser Top Bar */
   .topbar {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 24px;
-    padding-bottom: 14px;
+    gap: 20px;
+    padding-bottom: 12px;
     border-bottom: 1px solid var(--border);
   }
   .brand-wordmark {
-    font-family: 'Cinzel', Georgia, serif;
-    font-size: 15px;
-    font-weight: 700;
-    letter-spacing: 0.04em;
-    color: var(--text);
+    font-size: 13.5px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    color: var(--muted);
     white-space: nowrap;
     flex-shrink: 0;
   }
   .top-nav {
     display: flex;
     align-items: center;
-    gap: 22px;
+    gap: 18px;
     overflow-x: auto;
   }
   .nav-link {
@@ -2298,49 +2297,47 @@ export class PortalChromiumManager {
     background: transparent;
     color: var(--muted);
     font-family: inherit;
-    font-size: 13px;
-    font-weight: 600;
+    font-size: 12.5px;
+    font-weight: 500;
     padding: 4px 0;
     cursor: pointer;
     white-space: nowrap;
     flex-shrink: 0;
-    transition: color 0.16s ease;
+    transition: color 0.15s ease;
   }
   .nav-link:hover, .nav-link:focus-visible {
     color: var(--text);
-    text-decoration: underline;
-    text-underline-offset: 4px;
     outline: none;
   }
   .top-cta {
     appearance: none;
-    border: 1px solid rgba(61, 224, 149, 0.45);
-    background: rgba(61, 224, 149, 0.14);
-    color: #e9fff5;
+    border: 1px solid var(--border-strong);
+    background: var(--surface);
+    color: var(--text);
     font-family: inherit;
-    font-size: 12.5px;
-    font-weight: 700;
-    padding: 8px 16px;
-    border-radius: 8px;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 6px 13px;
+    border-radius: 7px;
     cursor: pointer;
     white-space: nowrap;
     flex-shrink: 0;
-    transition: background-color 0.16s ease, border-color 0.16s ease;
+    transition: background-color 0.15s ease, border-color 0.15s ease;
   }
   .top-cta:hover, .top-cta:focus-visible {
-    background: rgba(61, 224, 149, 0.24);
-    border-color: var(--jade);
+    background: var(--surface-hover);
+    border-color: rgba(255, 255, 255, 0.24);
     outline: none;
   }
 
-  /* Focal Search Hero */
+  /* Clean Centered Search Hero */
   .hero {
     display: flex;
     flex-direction: column;
     align-items: center;
     text-align: center;
-    gap: 10px;
-    padding: 8px 0 4px;
+    gap: 12px;
+    padding: 20px 0 8px;
   }
   .hero-meta {
     display: flex;
@@ -2348,78 +2345,83 @@ export class PortalChromiumManager {
     justify-content: center;
     gap: 8px;
     flex-wrap: wrap;
-    font-size: 12.5px;
+    font-size: 12px;
     font-weight: 500;
     color: var(--muted);
     font-variant-numeric: tabular-nums;
   }
   .hero-title {
     margin: 0;
-    font-family: 'Cinzel', Georgia, serif;
-    font-size: clamp(24px, 3vw, 34px);
-    font-weight: 700;
-    line-height: 1.16;
-    text-wrap: balance;
-    color: #f6fbf8;
+    font-size: clamp(24px, 3vw, 32px);
+    font-weight: 600;
+    letter-spacing: -0.025em;
+    line-height: 1.18;
+    color: #f9fafb;
   }
   .search-form {
-    width: min(640px, 100%);
-    margin-top: 6px;
+    width: min(620px, 100%);
+    margin-top: 4px;
     display: flex;
+    align-items: center;
     gap: 8px;
+    padding: 5px 5px 5px 16px;
+    border-radius: 999px;
+    border: 1px solid var(--border-strong);
+    background: var(--surface);
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.18);
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  }
+  .search-form:focus-within {
+    border-color: rgba(96, 165, 250, 0.72);
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.18);
   }
   .search-input {
     flex: 1;
-    height: 44px;
-    padding: 0 16px;
-    border-radius: 10px;
-    border: 1px solid var(--border-strong);
-    background: var(--surface);
+    height: 36px;
+    padding: 0 4px;
+    border: none;
+    background: transparent;
     color: var(--text);
     font-family: inherit;
     font-size: 14px;
     outline: none;
-    transition: border-color 0.16s ease, box-shadow 0.16s ease;
   }
-  .search-input::placeholder { color: #709387; }
-  .search-input:focus {
-    border-color: var(--accent);
-    box-shadow: 0 0 0 3px rgba(88, 225, 255, 0.16);
-  }
+  .search-input::placeholder { color: #6b7280; }
   .search-submit {
-    height: 44px;
-    padding: 0 20px;
-    border-radius: 10px;
-    border: 1px solid rgba(242, 193, 78, 0.52);
-    background: var(--gold);
-    color: #091316;
+    height: 36px;
+    padding: 0 18px;
+    border-radius: 999px;
+    border: none;
+    background: var(--accent);
+    color: #ffffff;
     font-family: inherit;
-    font-size: 13.5px;
-    font-weight: 700;
+    font-size: 13px;
+    font-weight: 600;
     cursor: pointer;
     white-space: nowrap;
     flex-shrink: 0;
-    transition: transform 0.15s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.15s ease;
+    transition: background-color 0.15s ease;
   }
-  .search-submit:hover { opacity: 0.92; }
-  .search-submit:active { transform: translateY(1px); }
-  .search-submit:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+  .search-submit:hover { background: #2563eb; }
+  .search-submit:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2px; }
 
   /* Two-Column Workspace */
   .workspace-grid {
     display: grid;
-    grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
-    gap: 24px;
+    grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+    gap: 20px;
     align-items: start;
+    padding-top: 8px;
+    border-top: 1px solid var(--border);
   }
   .panel {
     background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 18px 20px;
+    border-radius: 10px;
+    padding: 16px 18px;
     display: flex;
     flex-direction: column;
-    gap: 14px;
+    gap: 12px;
   }
   .panel-head {
     display: flex;
@@ -2431,8 +2433,8 @@ export class PortalChromiumManager {
   }
   .panel-title {
     margin: 0;
-    font-size: 15px;
-    font-weight: 700;
+    font-size: 14px;
+    font-weight: 600;
     color: var(--text);
   }
   .panel-sub {
@@ -2775,51 +2777,56 @@ export class PortalChromiumManager {
 <body>
   <div class="page">
     <header class="topbar">
-      <span class="brand-wordmark">Serpent Peaks</span>
+      <span class="brand-wordmark">${escapeHtml(activeProfile.name)}</span>
       <nav class="top-nav" aria-label="Browser Shortcuts">
-        <button type="button" class="nav-link" data-action="open_mirror_house">Mirror House</button>
-        <button type="button" class="nav-link" data-url="chrome://peaks-atlas">Peaks Atlas</button>
         <button type="button" class="nav-link" data-url="chrome://history">History</button>
+        <button type="button" class="nav-link" data-url="chrome://bookmarks">Bookmarks</button>
+        <button type="button" class="nav-link" data-url="chrome://peaks-atlas">Peaks Atlas</button>
+        <button type="button" class="nav-link" data-action="open_mirror_house">Tab Overview</button>
         <button type="button" class="nav-link" data-action="open_settings">Settings</button>
       </nav>
-      <button type="button" class="top-cta" data-action="play_game">Return to World</button>
+      <button type="button" class="top-cta" data-action="play_game">Return to Game</button>
     </header>
 
     <section class="hero" aria-label="Web Search">
-      <div class="hero-meta">
-        <span>${escapeHtml(activeProfile.name)}</span>
-        <span aria-hidden="true">·</span>
-        <span>Portal Channel ${tab.portalVariant}</span>
-        <span aria-hidden="true">·</span>
-        <span>${escapeHtml(activeEngine.name)}</span>
-        <span aria-hidden="true">·</span>
-        <span>${c.isOffline ? 'Offline Mode · Cached Bookmarks & History Ready' : this.settings.trackerShield ? 'Privacy Shield active' : 'Privacy Shield off'}</span>
-      </div>
-      <h1 class="hero-title">Portal Chromium</h1>
+      <h1 class="hero-title">Search the Web</h1>
       <form class="search-form" id="ntpForm">
         <input
           class="search-input"
           id="ntpInput"
           type="text"
-          placeholder="Search ${escapeHtml(activeEngine.name)} or enter a web address..."
+          placeholder="Search ${escapeHtml(activeEngine.name)} or type a URL"
           autocomplete="off"
           aria-label="Search the web or enter URL"
         />
         <button type="submit" class="search-submit">Search</button>
       </form>
+      <div class="hero-meta">
+        <span>${escapeHtml(activeEngine.name)}</span>
+        <span aria-hidden="true">·</span>
+        <span>${c.isOffline ? 'Offline mode' : this.settings.trackerShield ? 'Privacy Shield active' : 'Standard browsing'}</span>
+      </div>
       ${recentSearchesHtml}
+    </section>
+
+    <section class="bookmarks-section" aria-labelledby="bookmarksHeading">
+      <div class="section-bar">
+        <h2 class="section-heading" id="bookmarksHeading">Shortcuts &amp; Bookmarks${customBookmarkCount > 0 ? ` · ${customBookmarkCount} saved` : ''}</h2>
+        <button type="button" class="nav-link" data-url="chrome://history">View all history</button>
+      </div>
+      <div class="bm-grid">${bookmarksHtml}</div>
     </section>
 
     <main class="workspace-grid">
       <section class="panel" aria-labelledby="frequentPortalsHeading">
         <div class="panel-head">
-          <h2 class="panel-title" id="frequentPortalsHeading">Frequently Visited Portals</h2>
-          <span class="panel-sub">${hasVisitedPortals ? `${frequentPortals.length} tracked` : 'Nearby mountain gates'}</span>
+          <h2 class="panel-title" id="frequentPortalsHeading">Mountain Portals</h2>
+          <span class="panel-sub">${hasVisitedPortals ? `${frequentPortals.length} visited` : 'Nearby gates'}</span>
         </div>
         ${
           hasVisitedPortals
             ? ''
-            : '<p class="panel-note">No portal visits recorded yet. Jump into an active mountain gate below to begin ranking your most frequently visited portals.</p>'
+            : '<p class="panel-note">Visit portals in the 3D world to see your most frequented mountain gates here.</p>'
         }
         <div class="rows">${portalsHtml}</div>
       </section>
@@ -2913,14 +2920,6 @@ export class PortalChromiumManager {
         </div>
       </section>
     </main>
-
-    <section class="bookmarks-section" aria-labelledby="bookmarksHeading">
-      <div class="section-bar">
-        <h2 class="section-heading" id="bookmarksHeading">Saved Bookmarks &amp; Quick Sites${customBookmarkCount > 0 ? ` · ${customBookmarkCount} saved` : ''}</h2>
-        <button type="button" class="nav-link" data-url="chrome://history">Open history &amp; bookmarks</button>
-      </div>
-      <div class="bm-grid">${bookmarksHtml}</div>
-    </section>
   </div>
 
   <script>

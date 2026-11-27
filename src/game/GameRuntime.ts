@@ -4,6 +4,7 @@ import { extractBookmarkCacheableUrls } from '../offlineCache';
 
 export interface GameRuntimeHandle {
   destroy: () => void;
+  captureViewportSnapshot: () => HTMLCanvasElement | null;
 }
 
 export interface GameRuntimeOptions {
@@ -27,6 +28,7 @@ export function mountGameRuntime(
   root.appendChild(canvasHost);
 
   let disposed = false;
+  let ui: GameUI | null = null;
 
   const game = new SnakeGameController(
     canvasHost,
@@ -65,7 +67,19 @@ export function mountGameRuntime(
     },
   );
 
-  const ui = new GameUI(root, game);
+  ui = new GameUI(root, game);
+
+  const webglCanvas = game.world.renderer.domElement;
+  const onWebglContextLost = (ev: Event) => {
+    ev.preventDefault();
+    ui?.showToast('3D graphics context paused — restoring viewport…');
+  };
+  const onWebglContextRestored = () => {
+    ui?.showToast('3D graphics context restored.');
+    game.emitHud();
+  };
+  webglCanvas.addEventListener('webglcontextlost', onWebglContextLost);
+  webglCanvas.addEventListener('webglcontextrestored', onWebglContextRestored);
 
   // Hook game main menu & standalone browser triggers to orchestrator callbacks
   const origReturnToTitle = game.returnToTitle.bind(game);
@@ -529,6 +543,25 @@ export function mountGameRuntime(
   }
 
   return {
+    captureViewportSnapshot: () => {
+      if (disposed) return null;
+      try {
+        game.world.renderer.render(game.world.scene, game.world.camera);
+        const srcCanvas = game.world.renderer.domElement;
+        if (!srcCanvas || srcCanvas.width === 0 || srcCanvas.height === 0) return null;
+        const maxW = 1280;
+        const scale = srcCanvas.width > maxW ? maxW / srcCanvas.width : 1;
+        const snap = document.createElement('canvas');
+        snap.width = Math.max(320, Math.round(srcCanvas.width * scale));
+        snap.height = Math.max(240, Math.round(srcCanvas.height * scale));
+        const ctx = snap.getContext('2d');
+        if (!ctx) return null;
+        ctx.drawImage(srcCanvas, 0, 0, snap.width, snap.height);
+        return snap;
+      } catch {
+        return null;
+      }
+    },
     destroy: () => {
       if (disposed) return;
       disposed = true;
@@ -538,6 +571,8 @@ export function mountGameRuntime(
       window.removeEventListener('keyup', onKeyUp);
       window.removeEventListener('blur', onBlur);
       document.removeEventListener('visibilitychange', onVisibilityChange);
+      webglCanvas.removeEventListener('webglcontextlost', onWebglContextLost);
+      webglCanvas.removeEventListener('webglcontextrestored', onWebglContextRestored);
       game.world.dispose();
       root.innerHTML = '';
     },

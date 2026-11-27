@@ -1,4 +1,4 @@
-import { BiomeId, WATER_LEVEL, WORLD_PLAY_RADIUS } from './types';
+import { WATER_LEVEL, WORLD_PLAY_RADIUS, type BiomeId } from './types.ts';
 
 export interface MountainLandmark {
   id: string;

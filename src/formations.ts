@@ -1,7 +1,22 @@
-import { isDeepWater, isInWorldBounds, isNearSpawn, WORLD_LANDMARKS } from './terrain';
-import { BiomeId, FormationData, FormationProp, PropType, WORLD_PLAY_RADIUS } from './types';
+import {
+  isDeepWater,
+  isInWorldBounds,
+  isNearSpawn,
+  terrainDownhillGradient,
+  terrainHeightAt,
+  WORLD_LANDMARKS,
+} from './terrain.ts';
+import {
+  WATER_LEVEL,
+  WORLD_PLAY_RADIUS,
+  type BiomeId,
+  type FormationData,
+  type FormationProp,
+  type PropType,
+} from './types.ts';
 
-export const PORTAL_NETWORK_TARGET_COUNT = 28;
+export const PORTAL_NETWORK_TARGET_COUNT = 12;
+export const SAFE_RESPAWN_MIN_PORTAL_CLEARANCE = 32;
 
 const CUSTOM_STORAGE_KEY = 'serpent_peaks_mountain_courses_v3';
 const BEST_SCORE_KEY = 'serpent_peaks_best_score_v1';
@@ -22,7 +37,313 @@ function buildProps(entries: Array<[number, number, PropType]>): FormationProp[]
 }
 
 /**
+ * Computes a clean, dry side-terrace portal coordinate anchored to a specific Trial Peak.
+ * Always positioned perpendicular/offset from the origin-to-peak approach so the snake
+ * never spawns facing directly into a portal and every peak owns exactly one portal.
+ */
+function pickPeakPortalSpot(
+  landmark: (typeof WORLD_LANDMARKS)[number],
+  biome: BiomeId,
+  angleStep = 0,
+  minPlayerDist = 0,
+  playerX = 0,
+  playerZ = 0,
+): { x: number; z: number } {
+  // Base azimuth perpendicular to the spawn->peak vector so Peak 1 (0, -52) sits off to the side
+  const fromOriginAngle = Math.atan2(landmark.z, landmark.x);
+  const sideSign = landmark.tier % 2 === 1 ? 1 : -1;
+  const baseAngle = fromOriginAngle + sideSign * (Math.PI * 0.5) + angleStep * 1.15;
+  const ringRadius = landmark.radius + 10.5;
+
+  for (let attempt = 0; attempt < 24; attempt++) {
+    const angle = baseAngle + attempt * ((Math.PI * 2) / 24);
+    const radius = ringRadius + (attempt >= 12 ? 4.5 : 0);
+    const x = Math.round((landmark.x + Math.cos(angle) * radius) * 10) / 10;
+    const z = Math.round((landmark.z + Math.sin(angle) * radius) * 10) / 10;
+
+    if (!isInWorldBounds(x, z)) continue;
+    if (Math.hypot(x, z) > WORLD_PLAY_RADIUS - 16) continue;
+    if (isNearSpawn(x, z, 38)) continue;
+    if (isDeepWater(x, z, biome)) continue;
+    if (minPlayerDist > 0 && Math.hypot(x - playerX, z - playerZ) < minPlayerDist) continue;
+    return { x, z };
+  }
+
+  // Fallback directly beside the peak outside spawn clearance
+  const fallbackAngle = fromOriginAngle + sideSign * (Math.PI * 0.5);
+  return {
+    x: Math.round((landmark.x + Math.cos(fallbackAngle) * ringRadius) * 10) / 10,
+    z: Math.round((landmark.z + Math.sin(fallbackAngle) * ringRadius) * 10) / 10,
+  };
+}
+
+/**
+ * Builds strictly 12 dedicated portals — exactly one portal anchored beside each
+ * of the 12 Trial Peaks in WORLD_LANDMARKS, with zero portals near spawn (0, 0).
+ */
+export function buildPeakPortalNetwork(
+  biome: BiomeId,
+  shiftSequence = 0,
+): FormationProp[] {
+  return WORLD_LANDMARKS.map((landmark, idx) => {
+    const spot = pickPeakPortalSpot(landmark, biome, shiftSequence);
+    const portalType: 'portalA' | 'portalB' = idx % 2 === 0 ? 'portalA' : 'portalB';
+    const suffix = shiftSequence > 0 ? `-s${shiftSequence}` : '';
+    return {
+      id: `peak-portal-${landmark.tier}-${landmark.id}${suffix}`,
+      type: portalType,
+      x: spot.x,
+      z: spot.z,
+    };
+  });
+}
+
+export interface SafeRespawnOptions {
+  minPortalClearance?: number;
+  preferredTargetX?: number;
+  preferredTargetZ?: number;
+  hasObstacleNear?: (x: number, z: number, pad: number) => boolean;
+}
+
+export interface SafeRespawnSpot {
+  x: number;
+  z: number;
+  heading: number;
+  nearestPortalDist: number;
+}
+
+function normalizeAngleDelta(a: number, b: number): number {
+  return ((a - b + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
+}
+
+function isHeadingAimedAtAnyPortal(
+  x: number,
+  z: number,
+  heading: number,
+  portals: readonly FormationProp[],
+  coneHalfAngleRad = 0.62,
+  corridorDist = 56,
+): boolean {
+  for (const p of portals) {
+    const dx = p.x - x;
+    const dz = p.z - z;
+    const dist = Math.hypot(dx, dz);
+    if (dist <= 0.01 || dist > corridorDist) continue;
+    const angleToPortal = Math.atan2(dx, dz);
+    if (Math.abs(normalizeAngleDelta(angleToPortal, heading)) < coneHalfAngleRad) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isCorridorClearAhead(
+  x: number,
+  z: number,
+  heading: number,
+  biome: BiomeId,
+  portals: readonly FormationProp[],
+  hasObstacleNear?: (x: number, z: number, pad: number) => boolean,
+): boolean {
+  if (isHeadingAimedAtAnyPortal(x, z, heading, portals)) return false;
+  const sinH = Math.sin(heading);
+  const cosH = Math.cos(heading);
+  for (const step of [8, 16, 24]) {
+    const px = x + sinH * step;
+    const pz = z + cosH * step;
+    if (!isInWorldBounds(px, pz) || Math.hypot(px, pz) > WORLD_PLAY_RADIUS - 18) return false;
+    if (isDeepWater(px, pz, biome)) return false;
+    if (hasObstacleNear?.(px, pz, 2.2)) return false;
+  }
+  return true;
+}
+
+/**
+ * Finds a verified open, dry, obstacle-free respawn coordinate that stays well clear of
+ * EVERY portal and shrine structure, and selects an initial heading that points into open
+ * free terrain rather than in front of any portal.
+ */
+export function findSafeFreeRespawnSpot(
+  anchorX: number,
+  anchorZ: number,
+  props: readonly FormationProp[],
+  biome: BiomeId,
+  options: SafeRespawnOptions = {},
+): SafeRespawnSpot {
+  const minPortalClearance = options.minPortalClearance ?? SAFE_RESPAWN_MIN_PORTAL_CLEARANCE;
+  const portals = props.filter((p) => p.type === 'portalA' || p.type === 'portalB');
+  const solidProps = props.filter((p) => p.type === 'wall' || p.type === 'totem');
+  const hasObstacleNear = options.hasObstacleNear;
+
+  const nearestPortalDistance = (x: number, z: number): number => {
+    let minD = Infinity;
+    for (const p of portals) {
+      const d = Math.hypot(x - p.x, z - p.z);
+      if (d < minD) minD = d;
+    }
+    return minD;
+  };
+
+  const evaluateCandidate = (
+    x: number,
+    z: number,
+    portalMinDist: number,
+    requireLandmarkMargin: boolean,
+  ): { ok: boolean; score: number; portalDist: number } => {
+    if (!isInWorldBounds(x, z) || Math.hypot(x, z) > WORLD_PLAY_RADIUS - 28) {
+      return { ok: false, score: -Infinity, portalDist: 0 };
+    }
+    if (isDeepWater(x, z, biome)) {
+      return { ok: false, score: -Infinity, portalDist: 0 };
+    }
+    const y = terrainHeightAt(x, z, biome);
+    if (y < WATER_LEVEL + 0.85) {
+      return { ok: false, score: -Infinity, portalDist: 0 };
+    }
+    const portalDist = nearestPortalDistance(x, z);
+    if (portalDist < portalMinDist) {
+      return { ok: false, score: -Infinity, portalDist };
+    }
+    if (requireLandmarkMargin) {
+      for (const lm of WORLD_LANDMARKS) {
+        if (Math.hypot(x - lm.x, z - lm.z) < lm.radius + 9.5) {
+          return { ok: false, score: -Infinity, portalDist };
+        }
+      }
+    }
+    for (const sp of solidProps) {
+      if (Math.hypot(x - sp.x, z - sp.z) < 6.5) {
+        return { ok: false, score: -Infinity, portalDist };
+      }
+    }
+    if (hasObstacleNear?.(x, z, 4.5)) {
+      return { ok: false, score: -Infinity, portalDist };
+    }
+    // Check immediate 6m safety halo for deep water so snake doesn't immediately slide into a lake
+    for (let i = 0; i < 8; i++) {
+      const a = (i * Math.PI * 2) / 8;
+      if (isDeepWater(x + Math.cos(a) * 6.5, z + Math.sin(a) * 6.5, biome)) {
+        return { ok: false, score: -Infinity, portalDist };
+      }
+    }
+
+    const grad = terrainDownhillGradient(x, z, biome);
+    const slope = Math.hypot(grad.gx, grad.gz);
+    const distFromAnchor = Math.hypot(x - anchorX, z - anchorZ);
+    // Prefer gentle open ground close to the anchor yet generously separated from portals
+    const portalBonus = Math.min(28, portalDist - portalMinDist) * 0.6;
+    const score = portalBonus - distFromAnchor * 0.42 - slope * 18;
+    return { ok: true, score, portalDist };
+  };
+
+  let bestX = 0;
+  let bestZ = 4;
+  let bestScore = -Infinity;
+  let bestPortalDist = nearestPortalDistance(bestX, bestZ);
+  let found = false;
+
+  // 1. Check anchor itself first (ideal for central open valley spawn)
+  const anchorEval = evaluateCandidate(anchorX, anchorZ, minPortalClearance, true);
+  if (anchorEval.ok) {
+    bestX = anchorX;
+    bestZ = anchorZ;
+    bestScore = anchorEval.score + 8;
+    bestPortalDist = anchorEval.portalDist;
+    found = true;
+  }
+
+  // 2. Concentric free-area rings around anchor (plus open valley fallbacks)
+  const rings = [16, 24, 32, 42, 52, 64, 78];
+  const baseAzimuth = Math.atan2(-anchorX, -anchorZ); // bias gently toward open central valley
+  for (const radius of rings) {
+    const samples = 24;
+    for (let i = 0; i < samples; i++) {
+      const ang = baseAzimuth + (i * Math.PI * 2) / samples;
+      const cx = Math.round((anchorX + Math.sin(ang) * radius) * 10) / 10;
+      const cz = Math.round((anchorZ + Math.cos(ang) * radius) * 10) / 10;
+      const res = evaluateCandidate(cx, cz, minPortalClearance, true);
+      if (res.ok && res.score > bestScore) {
+        bestX = cx;
+        bestZ = cz;
+        bestScore = res.score;
+        bestPortalDist = res.portalDist;
+        found = true;
+      }
+    }
+    if (found && radius >= 32) break;
+  }
+
+  // 3. Fallback to guaranteed open central valley points if anchor was hemmed in
+  if (!found) {
+    const valleyFallbacks: Array<[number, number]> = [
+      [0, 6],
+      [14, 14],
+      [-14, 14],
+      [18, -10],
+      [-18, -10],
+      [0, 26],
+      [26, 20],
+      [-26, 20],
+    ];
+    for (const [fx, fz] of valleyFallbacks) {
+      const res = evaluateCandidate(fx, fz, minPortalClearance, false);
+      if (res.ok && res.score > bestScore) {
+        bestX = fx;
+        bestZ = fz;
+        bestScore = res.score;
+        bestPortalDist = res.portalDist;
+        found = true;
+      }
+    }
+  }
+
+  // 4. Pick a heading that leads into open terrain and NEVER directly in front of any portal
+  const preferredHeading =
+    options.preferredTargetX !== undefined && options.preferredTargetZ !== undefined
+      ? Math.atan2(options.preferredTargetX - bestX, options.preferredTargetZ - bestZ)
+      : Math.hypot(bestX, bestZ) > 12
+        ? Math.atan2(-bestX, -bestZ)
+        : Math.PI; // Open north-valley direction
+
+  let chosenHeading = preferredHeading;
+  if (!isCorridorClearAhead(bestX, bestZ, chosenHeading, biome, portals, hasObstacleNear)) {
+    let bestHeadingScore = -Infinity;
+    for (let i = 0; i < 24; i++) {
+      const candH = preferredHeading + (i * Math.PI * 2) / 24;
+      const clearAhead = isCorridorClearAhead(bestX, bestZ, candH, biome, portals, hasObstacleNear);
+      const aimedAtPortal = isHeadingAimedAtAnyPortal(bestX, bestZ, candH, portals);
+      // Score clearance away from nearest portal direction
+      let minAngularGap = Math.PI;
+      for (const p of portals) {
+        const d = Math.hypot(p.x - bestX, p.z - bestZ);
+        if (d > 85) continue;
+        const gap = Math.abs(normalizeAngleDelta(Math.atan2(p.x - bestX, p.z - bestZ), candH));
+        if (gap < minAngularGap) minAngularGap = gap;
+      }
+      const alignmentToPreferred = Math.cos(normalizeAngleDelta(candH, preferredHeading));
+      const hScore =
+        (clearAhead ? 100 : 0) -
+        (aimedAtPortal ? 80 : 0) +
+        minAngularGap * 16 +
+        alignmentToPreferred * 6;
+      if (hScore > bestHeadingScore) {
+        bestHeadingScore = hScore;
+        chosenHeading = candH;
+      }
+    }
+  }
+
+  return {
+    x: bestX,
+    z: bestZ,
+    heading: chosenHeading,
+    nearestPortalDist: bestPortalDist,
+  };
+}
+
+/**
  * Open-world mountain expedition formations placed directly across peaks, passes, and valleys.
+ * Portals are strictly anchored to the 12 Trial Peaks via buildPeakPortalNetwork (never near spawn).
  */
 export const PRESET_FORMATIONS: FormationData[] = [
   {
@@ -55,19 +376,6 @@ export const PRESET_FORMATIONS: FormationData[] = [
       [-124, -62, 'wall'],
       [12, 128, 'wall'],
       [-12, 128, 'wall'],
-      // Dimensional Pocket-World Portals (Portal A & Portal B) placed right in front of spawn & across 12 mountain landmarks!
-      [0, -12, 'portalA'],
-      [-10, -20, 'portalB'],
-      [10, -20, 'portalA'],
-      [0, -40, 'portalB'],
-      [-18, -56, 'portalA'],
-      [44, -24, 'portalB'],
-      [-46, -32, 'portalA'],
-      [56, 52, 'portalB'],
-      [-56, 48, 'portalA'],
-      [14, -96, 'portalB'],
-      [-12, -146, 'portalA'],
-      [22, 42, 'portalB'],
       // Regional sprint boost runes
       [48, -20, 'boost'],
       [98, -48, 'boost'],
@@ -101,14 +409,6 @@ export const PRESET_FORMATIONS: FormationData[] = [
       [-46, -16, 'totem'],
       [-86, -42, 'wall'],
       [-120, -68, 'totem'],
-      // Multi-point Dimensional Portals across the Gauntlet (starting right ahead at [0, -12])
-      [0, -12, 'portalA'],
-      [-10, -20, 'portalB'],
-      [12, -46, 'portalB'],
-      [-38, -26, 'portalA'],
-      [38, -26, 'portalB'],
-      [-132, 82, 'portalA'],
-      [126, -62, 'portalB'],
       [-44, 48, 'boost'],
       [54, 52, 'boost'],
       [120, 62, 'boost'],
@@ -138,14 +438,6 @@ export const PRESET_FORMATIONS: FormationData[] = [
       [-58, -24, 'boost'],
       [104, 62, 'boost'],
       [-106, 66, 'boost'],
-      // Jungle sanctuary multi-point dimensional portals (starting right ahead at [0, -12])
-      [0, -12, 'portalA'],
-      [-10, -20, 'portalB'],
-      [12, -44, 'portalB'],
-      [-42, -30, 'portalA'],
-      [42, -30, 'portalB'],
-      [-136, -78, 'portalA'],
-      [134, 72, 'portalB'],
     ]),
   },
   {
@@ -155,11 +447,6 @@ export const PRESET_FORMATIONS: FormationData[] = [
     props: buildProps([
       [0, -30, 'boost'],
       [0, -148, 'boost'],
-      [0, -12, 'portalA'],
-      [-10, -20, 'portalB'],
-      [12, -52, 'portalB'],
-      [14, -126, 'portalA'],
-      [-98, 96, 'portalB'],
     ]),
   },
 ];
@@ -200,86 +487,27 @@ export interface ShiftPortalsOptions {
 }
 
 /**
- * Generates additional randomized colossal 3D portals across the expanded 360m-radius continent
- * so every expedition has 26-28+ discoverable mission & browser portals across inner valleys,
- * mid ridges, and outer mountain frontiers without overlapping landmarks or deep lakes.
+ * Ensures the world contains strictly 12 portals — one dedicated portal anchored
+ * beside each of the 12 Trial Peaks — stripping any stray or spawn-area portals.
  */
 export function generateRandomPortalNetwork(
   existingProps: FormationProp[],
   biome: BiomeId,
   targetPortalCount = PORTAL_NETWORK_TARGET_COUNT,
-  seed?: number,
+  _seed?: number,
 ): FormationProp[] {
-  const baseProps = existingProps.filter(
-    (p) => !p.id.startsWith('rand-portal-') && !p.id.startsWith('shift-portal-'),
+  const nonPortals = existingProps.filter(
+    (p) => p.type !== 'portalA' && p.type !== 'portalB',
   );
-  const portals: Array<{ x: number; z: number; type: 'portalA' | 'portalB' }> = [];
-  for (const p of baseProps) {
-    if (p.type === 'portalA' || p.type === 'portalB') {
-      portals.push({ x: p.x, z: p.z, type: p.type });
-    }
-  }
-
-  const needed = Math.max(0, Math.floor(targetPortalCount) - portals.length);
-  if (needed === 0) return baseProps;
-
-  // Deterministic LCG when seed provided (for reproducible tests) or fresh random per run
-  let s =
-    typeof seed === 'number' && Number.isFinite(seed)
-      ? Math.max(1, Math.floor(Math.abs(seed)) % 2147483647)
-      : Math.max(1, Math.floor(Math.random() * 2147483646));
-  const rand = (): number => {
-    s = (s * 16807) % 2147483647;
-    return (s - 1) / 2147483646;
-  };
-
-  const added: FormationProp[] = [];
-  const maxRadius = WORLD_PLAY_RADIUS - 22;
-  const minSpacing = 36;
-  let attempts = 0;
-
-  while (added.length < needed && attempts < needed * 85) {
-    attempts++;
-    // Stratified radial bands so inner, mid, and outer 360m zones all get portals
-    const band = added.length % 3;
-    const minR = band === 0 ? 34 : band === 1 ? 120 : 225;
-    const maxR = band === 0 ? 125 : band === 1 ? 235 : maxRadius;
-    const dist = minR + Math.sqrt(rand()) * Math.max(12, maxR - minR);
-    const angle = rand() * Math.PI * 2;
-    const x = Math.round(Math.cos(angle) * dist * 10) / 10;
-    const z = Math.round(Math.sin(angle) * dist * 10) / 10;
-
-    if (!isInWorldBounds(x, z) || isNearSpawn(x, z, 22)) continue;
-    if (isDeepWater(x, z, biome)) continue;
-    if (WORLD_LANDMARKS.some((lm) => Math.hypot(x - lm.x, z - lm.z) < lm.radius + 14)) continue;
-    if (portals.some((pt) => Math.hypot(x - pt.x, z - pt.z) < minSpacing)) continue;
-    if (
-      baseProps.some(
-        (bp) => bp.type !== 'portalA' && bp.type !== 'portalB' && Math.hypot(x - bp.x, z - bp.z) < 12,
-      )
-    ) {
-      continue;
-    }
-
-    const portalType: 'portalA' | 'portalB' = (portals.length + added.length) % 2 === 0 ? 'portalA' : 'portalB';
-    const prop: FormationProp = {
-      id: `rand-portal-${added.length + 1}-${Math.round(x)}_${Math.round(z)}`,
-      type: portalType,
-      x,
-      z,
-    };
-    added.push(prop);
-    portals.push({ x, z, type: portalType });
-  }
-
-  return [...baseProps, ...added];
+  const peakPortals = buildPeakPortalNetwork(biome, 0);
+  const count = Math.max(1, Math.min(peakPortals.length, Math.floor(targetPortalCount)));
+  return [...nonPortals, ...peakPortals.slice(0, count)];
 }
 
 /**
- * Dynamically relocates the just-completed portal and shifts a wave of additional portals
- * to fresh valid dry locations across the 360m-radius continent after a player completes a
- * Portal Mission. Every relocated portal receives a new unique ID so it automatically binds
- * to a fresh uncompleted Trial Floor mission, keeping exploration endlessly replayable.
+ * Rotates the just-completed peak portal to a fresh dry terrace angle around its same
+ * Trial Peak so the world always keeps strictly 12 portals (1 per peak) while granting
+ * the relocated portal a new ID for replayable Trial Floor missions.
  */
 export function shiftPortalsAfterMission(
   existingProps: FormationProp[],
@@ -290,151 +518,56 @@ export function shiftPortalsAfterMission(
     completedPortalKey,
     playerX = 0,
     playerZ = 0,
-    shiftWaveCount = 5,
-    targetPortalCount = PORTAL_NETWORK_TARGET_COUNT,
     shiftSequence = 1,
-    seed,
   } = options;
 
-  let s =
-    typeof seed === 'number' && Number.isFinite(seed)
-      ? Math.max(1, Math.floor(Math.abs(seed)) % 2147483647)
-      : Math.max(1, Math.floor(Math.random() * 2147483646));
-  const rand = (): number => {
-    s = (s * 16807) % 2147483647;
-    return (s - 1) / 2147483646;
-  };
-
   const nonPortals: FormationProp[] = [];
-  const portals: FormationProp[] = [];
+  const existingPortals: FormationProp[] = [];
   for (const p of existingProps) {
     if (p.type === 'portalA' || p.type === 'portalB') {
-      portals.push({ ...p });
+      existingPortals.push({ ...p });
     } else {
       nonPortals.push({ ...p });
     }
   }
 
-  const indicesToShift = new Set<number>();
-  let completedIdx = -1;
-  if (completedPortalKey) {
-    completedIdx = portals.findIndex((p) => p.id === completedPortalKey);
-    if (completedIdx >= 0) {
-      indicesToShift.add(completedIdx);
-    }
-  }
-
-  // Pick additional portals to shift across the continent (shuffled deterministically via rand)
-  const candidateIndices: number[] = [];
-  for (let i = 0; i < portals.length; i++) {
-    if (!indicesToShift.has(i)) candidateIndices.push(i);
-  }
-  for (let i = candidateIndices.length - 1; i > 0; i--) {
-    const j = Math.floor(rand() * (i + 1));
-    const tmp = candidateIndices[i];
-    candidateIndices[i] = candidateIndices[j];
-    candidateIndices[j] = tmp;
-  }
-
-  const extraCount = Math.min(Math.max(0, Math.floor(shiftWaveCount)), candidateIndices.length);
-  for (let k = 0; k < extraCount; k++) {
-    indicesToShift.add(candidateIndices[k]);
-  }
-
-  const stationaryPortals = portals.filter((_, idx) => !indicesToShift.has(idx));
-  const occupiedPortals: Array<{ x: number; z: number }> = stationaryPortals.map((p) => ({
-    x: p.x,
-    z: p.z,
-  }));
-
-  const maxRadius = WORLD_PLAY_RADIUS - 22;
-  const minPortalSpacing = 36;
-  const minShiftDistance = 42;
-  const minPlayerClearance = 26;
-
-  const findFreshSpot = (oldX: number, oldZ: number, bandIdx: number): { x: number; z: number } | null => {
-    for (let attempt = 0; attempt < 110; attempt++) {
-      const band = (bandIdx + Math.floor(attempt / 30)) % 3;
-      const minR = band === 0 ? 34 : band === 1 ? 122 : 228;
-      const maxR = band === 0 ? 126 : band === 1 ? 236 : maxRadius;
-      const dist = minR + Math.sqrt(rand()) * Math.max(12, maxR - minR);
-      const angle = rand() * Math.PI * 2;
-      const x = Math.round(Math.cos(angle) * dist * 10) / 10;
-      const z = Math.round(Math.sin(angle) * dist * 10) / 10;
-
-      if (!isInWorldBounds(x, z) || isNearSpawn(x, z, 18)) continue;
-      if (isDeepWater(x, z, biome)) continue;
-      if (Math.hypot(x - oldX, z - oldZ) < minShiftDistance) continue;
-      if (Math.hypot(x - playerX, z - playerZ) < minPlayerClearance) continue;
-      if (WORLD_LANDMARKS.some((lm) => Math.hypot(x - lm.x, z - lm.z) < lm.radius + 14)) continue;
-      if (occupiedPortals.some((pt) => Math.hypot(x - pt.x, z - pt.z) < minPortalSpacing)) continue;
-      if (nonPortals.some((np) => Math.hypot(x - np.x, z - np.z) < 12)) continue;
-
-      return { x, z };
-    }
-    return null;
-  };
+  // Ensure all 12 peaks have exactly one portal mapped to them
+  const defaultPeakPortals = buildPeakPortalNetwork(biome, 0);
+  const peakPortals: FormationProp[] = WORLD_LANDMARKS.map((landmark, idx) => {
+    const existing = existingPortals.find(
+      (p) => p.id.startsWith(`peak-portal-${landmark.tier}-${landmark.id}`),
+    );
+    return existing ?? defaultPeakPortals[idx];
+  });
 
   const shifted: PortalShiftEntry[] = [];
-  const nextPortals: FormationProp[] = [...stationaryPortals];
   let completedPortalRelocated = false;
-  let shiftOrdinal = 0;
 
-  for (const idx of indicesToShift) {
-    const oldProp = portals[idx];
-    const portalType = oldProp.type === 'portalB' ? 'portalB' : 'portalA';
-    const fresh = findFreshSpot(oldProp.x, oldProp.z, shiftOrdinal);
-    shiftOrdinal++;
+  const nextPortals = peakPortals.map((prop, idx) => {
+    const isCompleted = Boolean(completedPortalKey && prop.id === completedPortalKey);
+    if (!isCompleted) return prop;
 
-    if (fresh) {
-      const newId = `shift-portal-s${shiftSequence}-${shiftOrdinal}-${Math.round(fresh.x)}_${Math.round(fresh.z)}`;
-      const movedProp: FormationProp = {
-        id: newId,
-        type: portalType,
-        x: fresh.x,
-        z: fresh.z,
-      };
-      nextPortals.push(movedProp);
-      occupiedPortals.push({ x: fresh.x, z: fresh.z });
-      shifted.push({
-        oldId: oldProp.id,
-        newId,
-        type: portalType,
-        oldX: oldProp.x,
-        oldZ: oldProp.z,
-        newX: fresh.x,
-        newZ: fresh.z,
-      });
-      if (idx === completedIdx) {
-        completedPortalRelocated = true;
-      }
-    } else {
-      // Fallback: keep original if no valid spot found
-      nextPortals.push(oldProp);
-      occupiedPortals.push({ x: oldProp.x, z: oldProp.z });
-    }
-  }
-
-  // Ensure total portal count stays at least targetPortalCount across the continent
-  let topUpGuard = 0;
-  while (nextPortals.length < targetPortalCount && topUpGuard < 32) {
-    topUpGuard++;
-    const fresh = findFreshSpot(playerX, playerZ, nextPortals.length);
-    if (!fresh) break;
-    const portalType: 'portalA' | 'portalB' = nextPortals.length % 2 === 0 ? 'portalA' : 'portalB';
-    const newId = `shift-portal-s${shiftSequence}-topup-${topUpGuard}-${Math.round(fresh.x)}_${Math.round(fresh.z)}`;
-    nextPortals.push({ id: newId, type: portalType, x: fresh.x, z: fresh.z });
-    occupiedPortals.push({ x: fresh.x, z: fresh.z });
+    const landmark = WORLD_LANDMARKS[idx];
+    const fresh = pickPeakPortalSpot(landmark, biome, shiftSequence, 18, playerX, playerZ);
+    const portalType: 'portalA' | 'portalB' = prop.type === 'portalB' ? 'portalB' : 'portalA';
+    const newId = `peak-portal-${landmark.tier}-${landmark.id}-s${shiftSequence}`;
     shifted.push({
-      oldId: 'spawned-fresh',
+      oldId: prop.id,
       newId,
       type: portalType,
-      oldX: playerX,
-      oldZ: playerZ,
+      oldX: prop.x,
+      oldZ: prop.z,
       newX: fresh.x,
       newZ: fresh.z,
     });
-  }
+    completedPortalRelocated = true;
+    return {
+      id: newId,
+      type: portalType,
+      x: fresh.x,
+      z: fresh.z,
+    };
+  });
 
   return {
     nextProps: [...nonPortals, ...nextPortals],

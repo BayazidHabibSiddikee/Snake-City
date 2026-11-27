@@ -1,4 +1,4 @@
-import { BiomeId, WeatherMode } from './types';
+import type { BiomeId, WeatherMode } from './types.ts';
 
 export type WeatherAudioCueKind =
   | 'rain_splash'
@@ -678,6 +678,324 @@ const TIER_SOUNDSCAPES: readonly EvolutionSoundscapeProfile[] = [
   },
 ];
 
+export type PeakAcousticCharacter =
+  | 'foothill_breeze'
+  | 'pine_wind'
+  | 'tarn_water'
+  | 'mist_veil'
+  | 'crag_resonance'
+  | 'glacier_crystal'
+  | 'sunstone_radiance'
+  | 'thunder_charge'
+  | 'obsidian_abyss'
+  | 'frostfang_chime'
+  | 'dragonspine_gale'
+  | 'crown_celestial';
+
+export interface CultivationPeakSoundscapeProfile {
+  peakId: string;
+  tier: number;
+  character: PeakAcousticCharacter;
+  rootHz: number;
+  masteryIntervalRatio: number;
+  tensionIntervalRatio: number;
+  overtoneRatio: number;
+  airBandHz: number;
+  airQ: number;
+  airBaseGain: number;
+  padBaseFilterHz: number;
+  breathLfoHz: number;
+}
+
+/**
+ * 12 bespoke acoustic signatures matching the 12 Trial Peaks in WORLD_LANDMARKS.
+ * Each peak blends its elemental air texture and modal harmony with the player's
+ * current Cultivation Tier (1..12) to create an evolving atmospheric soundscape.
+ */
+export const CULTIVATION_PEAK_SOUNDSCAPES: readonly CultivationPeakSoundscapeProfile[] = [
+  {
+    peakId: 'whispering-foothill',
+    tier: 1,
+    character: 'foothill_breeze',
+    rootHz: 110.0, // A2
+    masteryIntervalRatio: 1.5, // Perfect 5th
+    tensionIntervalRatio: 1.335, // Sus4
+    overtoneRatio: 3.0,
+    airBandHz: 540,
+    airQ: 2.2,
+    airBaseGain: 0.048,
+    padBaseFilterHz: 420,
+    breathLfoHz: 0.11,
+  },
+  {
+    peakId: 'pinecrest-lookout',
+    tier: 2,
+    character: 'pine_wind',
+    rootHz: 123.47, // B2
+    masteryIntervalRatio: 1.5,
+    tensionIntervalRatio: 1.335,
+    overtoneRatio: 3.0,
+    airBandHz: 1180,
+    airQ: 3.1,
+    airBaseGain: 0.052,
+    padBaseFilterHz: 480,
+    breathLfoHz: 0.13,
+  },
+  {
+    peakId: 'emerald-tarn-ridge',
+    tier: 3,
+    character: 'tarn_water',
+    rootHz: 130.81, // C3
+    masteryIntervalRatio: 1.498,
+    tensionIntervalRatio: 1.335,
+    overtoneRatio: 4.0,
+    airBandHz: 1460,
+    airQ: 4.2,
+    airBaseGain: 0.056,
+    padBaseFilterHz: 560,
+    breathLfoHz: 0.14,
+  },
+  {
+    peakId: 'misty-pass',
+    tier: 4,
+    character: 'mist_veil',
+    rootHz: 146.83, // D3
+    masteryIntervalRatio: 1.5,
+    tensionIntervalRatio: 1.414, // Tritone mist suspension
+    overtoneRatio: 3.0,
+    airBandHz: 780,
+    airQ: 2.6,
+    airBaseGain: 0.062,
+    padBaseFilterHz: 520,
+    breathLfoHz: 0.095,
+  },
+  {
+    peakId: 'ironback-ridge',
+    tier: 5,
+    character: 'crag_resonance',
+    rootHz: 98.0, // G2 deep granite resonance
+    masteryIntervalRatio: 1.5,
+    tensionIntervalRatio: 1.189, // Minor 3rd dark crag
+    overtoneRatio: 2.5,
+    airBandHz: 380,
+    airQ: 4.6,
+    airBaseGain: 0.064,
+    padBaseFilterHz: 460,
+    breathLfoHz: 0.085,
+  },
+  {
+    peakId: 'grand-glacier',
+    tier: 6,
+    character: 'glacier_crystal',
+    rootHz: 164.81, // E3
+    masteryIntervalRatio: 1.5,
+    tensionIntervalRatio: 1.414,
+    overtoneRatio: 4.0,
+    airBandHz: 2680,
+    airQ: 5.5,
+    airBaseGain: 0.068,
+    padBaseFilterHz: 740,
+    breathLfoHz: 0.16,
+  },
+  {
+    peakId: 'sunstone-citadel',
+    tier: 7,
+    character: 'sunstone_radiance',
+    rootHz: 174.61, // F3
+    masteryIntervalRatio: 1.5, // Warm Lydian-bright fifth
+    tensionIntervalRatio: 1.335,
+    overtoneRatio: 3.375, // Major 9th glint
+    airBandHz: 1320,
+    airQ: 3.2,
+    airBaseGain: 0.058,
+    padBaseFilterHz: 860,
+    breathLfoHz: 0.12,
+  },
+  {
+    peakId: 'sapphire-abyss',
+    tier: 8,
+    character: 'thunder_charge',
+    rootHz: 146.83, // D3
+    masteryIntervalRatio: 1.5,
+    tensionIntervalRatio: 1.414,
+    overtoneRatio: 3.5,
+    airBandHz: 920,
+    airQ: 6.2,
+    airBaseGain: 0.072,
+    padBaseFilterHz: 790,
+    breathLfoHz: 0.21,
+  },
+  {
+    peakId: 'obsidian-saddle',
+    tier: 9,
+    character: 'obsidian_abyss',
+    rootHz: 87.31, // F2 volcanic abyss
+    masteryIntervalRatio: 1.498,
+    tensionIntervalRatio: 1.059, // Minor 2nd abyssal dread
+    overtoneRatio: 2.828,
+    airBandHz: 260,
+    airQ: 3.8,
+    airBaseGain: 0.076,
+    padBaseFilterHz: 440,
+    breathLfoHz: 0.075,
+  },
+  {
+    peakId: 'frostfang-bastion',
+    tier: 10,
+    character: 'frostfang_chime',
+    rootHz: 196.0, // G3
+    masteryIntervalRatio: 1.5,
+    tensionIntervalRatio: 1.414,
+    overtoneRatio: 4.5,
+    airBandHz: 3150,
+    airQ: 6.4,
+    airBaseGain: 0.074,
+    padBaseFilterHz: 940,
+    breathLfoHz: 0.18,
+  },
+  {
+    peakId: 'dragonspine-spire',
+    tier: 11,
+    character: 'dragonspine_gale',
+    rootHz: 207.65, // G#3
+    masteryIntervalRatio: 1.5,
+    tensionIntervalRatio: 1.335,
+    overtoneRatio: 4.0,
+    airBandHz: 1850,
+    airQ: 5.0,
+    airBaseGain: 0.078,
+    padBaseFilterHz: 1080,
+    breathLfoHz: 0.19,
+  },
+  {
+    peakId: 'crown-of-humanity',
+    tier: 12,
+    character: 'crown_celestial',
+    rootHz: 220.0, // A3 radiant summit
+    masteryIntervalRatio: 1.5,
+    tensionIntervalRatio: 1.414, // Lydian #4 celestial lift
+    overtoneRatio: 4.5, // Celestial major 9th halo
+    airBandHz: 2280,
+    airQ: 4.4,
+    airBaseGain: 0.07,
+    padBaseFilterHz: 1320,
+    breathLfoHz: 0.125,
+  },
+];
+
+export interface PeakTierSoundscapeParams {
+  activePeakId: string;
+  peakTier: number;
+  playerTier: number;
+  character: PeakAcousticCharacter;
+  proximity01: number;
+  masteryResonance: boolean;
+  harmonicTension01: number;
+  padRootHz: number;
+  padIntervalHz: number;
+  padOvertoneHz: number;
+  padFilterHz: number;
+  padGain: number;
+  overtoneGain: number;
+  airFilterHz: number;
+  airFilterQ: number;
+  airGain: number;
+  breathLfoHz: number;
+}
+
+/**
+ * Pure synthesizer curve blending the active Cultivation Peak's elemental signature
+ * with the player's current Cultivation Tier (1..12) and biome.
+ * - Approaching a peak smoothly raises harmonic pad & elemental air intensity.
+ * - Climbing a peak above the player's tier introduces modal harmonic tension;
+ *   matching or surpassing the peak's tier blooms into consonant mastery resonance.
+ */
+export function computePeakTierSoundscapeParams(
+  peakId: string | null | undefined,
+  peakTier: number,
+  proximity01: number,
+  playerTier: number,
+  biome: BiomeId = 'mountain',
+): PeakTierSoundscapeParams {
+  const clampedPeakTier = Math.max(1, Math.min(12, Math.round(peakTier || 1)));
+  const clampedPlayerTier = Math.max(1, Math.min(12, Math.round(playerTier || 1)));
+  const clampedProx = Math.max(0, Math.min(1, Number.isFinite(proximity01) ? proximity01 : 0));
+
+  const profile =
+    CULTIVATION_PEAK_SOUNDSCAPES.find((p) => p.peakId === peakId) ??
+    CULTIVATION_PEAK_SOUNDSCAPES[clampedPeakTier - 1] ??
+    CULTIVATION_PEAK_SOUNDSCAPES[0];
+
+  const tierNorm = (clampedPlayerTier - 1) / 11; // 0..1 across 12 tiers
+  const tierDelta = clampedPeakTier - clampedPlayerTier;
+  const masteryResonance = clampedPlayerTier >= clampedPeakTier;
+  const harmonicTension01 = masteryResonance
+    ? 0
+    : Number(Math.min(1, tierDelta / 6).toFixed(4));
+
+  // Blend modal interval between mastery resonance and perilous higher-peak tension
+  const intervalRatio =
+    profile.masteryIntervalRatio * (1 - harmonicTension01) +
+    profile.tensionIntervalRatio * harmonicTension01;
+
+  // Higher player tiers lift the peak's tonal center slightly and open harmonic brightness
+  const tierPitchLift = 1 + tierNorm * 0.14;
+  const biomeWarmthMul = biome === 'jungle' ? 0.92 : 1.0;
+
+  const padRootHz = Number((profile.rootHz * tierPitchLift * biomeWarmthMul).toFixed(2));
+  const padIntervalHz = Number((padRootHz * intervalRatio).toFixed(2));
+  const padOvertoneHz = Number(
+    (padRootHz * profile.overtoneRatio * (masteryResonance ? 1.0 : 0.94)).toFixed(2),
+  );
+
+  const smoothProx = Math.pow(clampedProx, 1.2);
+  const padFilterHz = Number(
+    (
+      (profile.padBaseFilterHz + tierNorm * 580 + smoothProx * 340 - harmonicTension01 * 140) *
+      biomeWarmthMul
+    ).toFixed(1),
+  );
+  const padGain = Number(
+    (smoothProx * (0.022 + tierNorm * 0.02 + (masteryResonance ? 0.006 : 0.002))).toFixed(4),
+  );
+  const overtoneGain = Number(
+    (
+      smoothProx *
+      (0.004 + tierNorm * 0.015) *
+      (masteryResonance ? 1.18 : 0.65)
+    ).toFixed(4),
+  );
+
+  const airFilterHz = Number(
+    Math.max(180, profile.airBandHz * (biome === 'jungle' ? 0.84 : 1.0) + tierNorm * 180).toFixed(1),
+  );
+  const airFilterQ = Number((profile.airQ + harmonicTension01 * 1.4).toFixed(2));
+  const airGain = Number(
+    (smoothProx * profile.airBaseGain * (0.82 + tierNorm * 0.35)).toFixed(4),
+  );
+  const breathLfoHz = Number((profile.breathLfoHz + harmonicTension01 * 0.09).toFixed(3));
+
+  return {
+    activePeakId: profile.peakId,
+    peakTier: profile.tier,
+    playerTier: clampedPlayerTier,
+    character: profile.character,
+    proximity01: Number(clampedProx.toFixed(4)),
+    masteryResonance,
+    harmonicTension01,
+    padRootHz,
+    padIntervalHz,
+    padOvertoneHz,
+    padFilterHz,
+    padGain,
+    overtoneGain,
+    airFilterHz,
+    airFilterQ,
+    airGain,
+    breathLfoHz,
+  };
+}
+
 /**
  * Procedural Web Audio synthesizer + dynamic biome-, weather-, and 12-tier
  * evolution-adaptive ambient soundscape.
@@ -699,6 +1017,7 @@ export class SoundEngine {
   private masterVolume = 0.82;
   private ambientVolume = 1.0;
   private sfxVolume = 1.0;
+  private musicVolume = 1.0;
   // A single master gain node that all SFX route through
   private sfxBus: GainNode | null = null;
 
@@ -760,6 +1079,23 @@ export class SoundEngine {
   private portalDroneGain: GainNode | null = null;
   private lastMirrorOrbitShimmerAt = 0;
 
+  // Dynamic Cultivation Peak + Player Tier Atmosphere nodes
+  private activePeakId: string | null = null;
+  private activePeakTier = 1;
+  private activePeakProximity = 0;
+  private lastAnnouncedPeakId: string | null = null;
+  private lastPeakAccentAt = 0;
+  private peakOscA: OscillatorNode | null = null;
+  private peakOscB: OscillatorNode | null = null;
+  private peakOvertoneOsc: OscillatorNode | null = null;
+  private peakOvertoneGain: GainNode | null = null;
+  private peakPadFilter: BiquadFilterNode | null = null;
+  private peakPadGain: GainNode | null = null;
+  private peakBreathLfo: OscillatorNode | null = null;
+  private peakBreathLfoGain: GainNode | null = null;
+  private peakAirFilter: BiquadFilterNode | null = null;
+  private peakAirGain: GainNode | null = null;
+
   public setWeatherAudioCueListener(fn: ((cue: WeatherAudioCueEvent) => void) | null): void {
     this.onWeatherAudioCue = fn;
   }
@@ -774,6 +1110,7 @@ export class SoundEngine {
   }
 
   private ensureContext(): AudioContext | null {
+    if (typeof window === 'undefined') return null;
     if (!this.ctx) {
       const AudioCtx =
         window.AudioContext ||
@@ -844,6 +1181,13 @@ export class SoundEngine {
     }
   }
 
+  /** Music / Tier soundscape volume 0..1. */
+  public getMusicVolume(): number { return this.musicVolume; }
+  public setMusicVolume(v: number): void {
+    this.musicVolume = Math.max(0, Math.min(1, v));
+    this.updateAmbientGain();
+  }
+
   public setPausedDuck(ducked: boolean): void {
     this.pausedDuck = ducked;
     this.updateAmbientGain();
@@ -874,6 +1218,7 @@ export class SoundEngine {
     this.biome = biome;
     if (!this.ctx || !this.ambientStarted) return;
     this.applyBiomeParams(this.ctx, true);
+    this.applyPeakAtmosphereParams(this.ctx, true);
   }
 
   public setWeather(weather: WeatherMode): void {
@@ -991,6 +1336,7 @@ export class SoundEngine {
 
     this.applyEvolutionTierParams(this.ctx, true);
     this.applyBiomeParams(this.ctx, true);
+    this.applyPeakAtmosphereParams(this.ctx, true);
 
     if (announceTransition && !this.muted && !this.tabHidden && this.ctx.state === 'running') {
       const profile = this.getTierProfile(clamped);
@@ -1531,10 +1877,230 @@ export class SoundEngine {
     this.portalDroneFilter = portalDroneFilter;
     this.portalDroneGain = portalDroneGain;
 
+    // 8. Dynamic Cultivation Peak + Player Tier Environmental Soundscape Layer
+    // Blends each Trial Peak's elemental air texture and modal harmony with the player's
+    // live cultivation tier, creating distinct summit atmospheres across all 12 peaks.
+    const peakPadGain = ctx.createGain();
+    peakPadGain.gain.value = 0.0001;
+    peakPadGain.connect(weatherTone);
+
+    const peakPadFilter = ctx.createBiquadFilter();
+    peakPadFilter.type = 'lowpass';
+    peakPadFilter.frequency.value = 460;
+    peakPadFilter.Q.value = 1.65;
+    peakPadFilter.connect(peakPadGain);
+
+    const peakOscA = ctx.createOscillator();
+    peakOscA.type = 'sine';
+    peakOscA.frequency.value = 110;
+
+    const peakOscB = ctx.createOscillator();
+    peakOscB.type = 'triangle';
+    peakOscB.frequency.value = 165;
+    const peakOscBGain = ctx.createGain();
+    peakOscBGain.gain.value = 0.56;
+
+    const peakOvertoneOsc = ctx.createOscillator();
+    peakOvertoneOsc.type = 'sine';
+    peakOvertoneOsc.frequency.value = 330;
+    const peakOvertoneGain = ctx.createGain();
+    peakOvertoneGain.gain.value = 0.0001;
+
+    const peakBreathLfo = ctx.createOscillator();
+    peakBreathLfo.type = 'sine';
+    peakBreathLfo.frequency.value = 0.11;
+    const peakBreathLfoGain = ctx.createGain();
+    peakBreathLfoGain.gain.value = 95;
+    peakBreathLfo.connect(peakBreathLfoGain);
+    peakBreathLfoGain.connect(peakPadFilter.frequency);
+
+    peakOscA.connect(peakPadFilter);
+    peakOscB.connect(peakOscBGain);
+    peakOscBGain.connect(peakPadFilter);
+    peakOvertoneOsc.connect(peakOvertoneGain);
+    peakOvertoneGain.connect(peakPadFilter);
+
+    // Peak elemental air bed (glacial shimmer, solar wind, granite resonance, abyssal hum)
+    const peakAirSrc = ctx.createBufferSource();
+    peakAirSrc.buffer = this.pinkNoiseBuffer;
+    peakAirSrc.loop = true;
+    const peakAirFilter = ctx.createBiquadFilter();
+    peakAirFilter.type = 'bandpass';
+    peakAirFilter.frequency.value = 540;
+    peakAirFilter.Q.value = 2.4;
+    const peakAirGain = ctx.createGain();
+    peakAirGain.gain.value = 0.0001;
+    peakAirSrc.connect(peakAirFilter);
+    peakAirFilter.connect(peakAirGain);
+    peakAirGain.connect(weatherTone);
+
+    peakOscA.start(ctx.currentTime);
+    peakOscB.start(ctx.currentTime);
+    peakOvertoneOsc.start(ctx.currentTime);
+    peakBreathLfo.start(ctx.currentTime);
+    peakAirSrc.start(ctx.currentTime, 1.35);
+
+    this.peakOscA = peakOscA;
+    this.peakOscB = peakOscB;
+    this.peakOvertoneOsc = peakOvertoneOsc;
+    this.peakOvertoneGain = peakOvertoneGain;
+    this.peakPadFilter = peakPadFilter;
+    this.peakPadGain = peakPadGain;
+    this.peakBreathLfo = peakBreathLfo;
+    this.peakBreathLfoGain = peakBreathLfoGain;
+    this.peakAirFilter = peakAirFilter;
+    this.peakAirGain = peakAirGain;
+
     this.applyEvolutionTierParams(ctx, false);
     this.applyBiomeParams(ctx, false);
+    this.applyPeakAtmosphereParams(ctx, false);
     this.scheduleNextWildlifeEvent(1100);
     this.scheduleNextTierEvent(1900);
+  }
+
+  /**
+   * Dynamically adapts the environmental soundscape to the active Cultivation Peak
+   * and the player's current Cultivation Tier (1..12). Smoothly crossfades harmonic
+   * resonance and peak-specific elemental air textures as the player ascends each peak.
+   */
+  public setCultivationPeakAtmosphere(
+    peakId: string | null,
+    peakTier: number,
+    proximity01: number,
+    playerTier = this.evolutionLevel,
+  ): void {
+    const clampedProx = Math.max(0, Math.min(1, Number.isFinite(proximity01) ? proximity01 : 0));
+    const clampedTier = Math.max(1, Math.min(12, Math.round(peakTier || 1)));
+    const clampedPlayer = Math.max(1, Math.min(12, Math.round(playerTier || this.evolutionLevel)));
+
+    const peakChanged = peakId !== this.activePeakId;
+    const proxDelta = Math.abs(clampedProx - this.activePeakProximity);
+    const playerChanged = clampedPlayer !== this.evolutionLevel;
+
+    if (!peakChanged && !playerChanged && proxDelta < 0.02) return;
+
+    this.activePeakId = peakId;
+    this.activePeakTier = clampedTier;
+    this.activePeakProximity = clampedProx;
+    if (playerChanged) {
+      this.evolutionLevel = clampedPlayer;
+    }
+
+    if (!this.ctx || !this.ambientStarted) return;
+    const params = this.applyPeakAtmosphereParams(this.ctx, true);
+
+    // Trigger a gentle peak-signature arrival swell when entering a new peak's upper slopes
+    const nowMs = performance.now();
+    if (
+      peakId &&
+      clampedProx >= 0.36 &&
+      peakId !== this.lastAnnouncedPeakId &&
+      nowMs - this.lastPeakAccentAt >= 7500 &&
+      !this.muted &&
+      !this.tabHidden &&
+      this.ctx.state === 'running'
+    ) {
+      this.lastAnnouncedPeakId = peakId;
+      this.lastPeakAccentAt = nowMs;
+      this.playPeakArrivalAccent(this.ctx, params);
+    } else if (clampedProx < 0.12 && this.lastAnnouncedPeakId === peakId) {
+      this.lastAnnouncedPeakId = null;
+    }
+  }
+
+  private applyPeakAtmosphereParams(
+    ctx: AudioContext,
+    smooth: boolean,
+  ): PeakTierSoundscapeParams {
+    const now = ctx.currentTime;
+    const tau = smooth ? 0.65 : 0.06;
+    const params = computePeakTierSoundscapeParams(
+      this.activePeakId,
+      this.activePeakTier,
+      this.activePeakProximity,
+      this.evolutionLevel,
+      this.biome,
+    );
+
+    const mutedOrSilent = this.muted || this.tabHidden || params.proximity01 <= 0.005;
+    if (this.peakPadGain) {
+      this.peakPadGain.gain.setTargetAtTime(
+        mutedOrSilent ? 0.0001 : Math.max(0.0001, params.padGain),
+        now,
+        tau,
+      );
+    }
+    if (this.peakOvertoneGain) {
+      this.peakOvertoneGain.gain.setTargetAtTime(
+        mutedOrSilent ? 0.0001 : Math.max(0.0001, params.overtoneGain),
+        now,
+        tau,
+      );
+    }
+    if (this.peakAirGain) {
+      this.peakAirGain.gain.setTargetAtTime(
+        mutedOrSilent ? 0.0001 : Math.max(0.0001, params.airGain),
+        now,
+        tau * 1.15,
+      );
+    }
+    if (this.peakOscA) {
+      this.peakOscA.frequency.setTargetAtTime(params.padRootHz, now, tau);
+    }
+    if (this.peakOscB) {
+      this.peakOscB.frequency.setTargetAtTime(params.padIntervalHz, now, tau);
+    }
+    if (this.peakOvertoneOsc) {
+      this.peakOvertoneOsc.frequency.setTargetAtTime(params.padOvertoneHz, now, tau);
+    }
+    if (this.peakPadFilter) {
+      this.peakPadFilter.frequency.setTargetAtTime(params.padFilterHz, now, tau);
+    }
+    if (this.peakBreathLfo) {
+      this.peakBreathLfo.frequency.setTargetAtTime(params.breathLfoHz, now, tau);
+    }
+    if (this.peakBreathLfoGain) {
+      this.peakBreathLfoGain.gain.setTargetAtTime(
+        75 + params.proximity01 * 120 + params.harmonicTension01 * 55,
+        now,
+        tau,
+      );
+    }
+    if (this.peakAirFilter) {
+      this.peakAirFilter.frequency.setTargetAtTime(params.airFilterHz, now, tau);
+      this.peakAirFilter.Q.setTargetAtTime(params.airFilterQ, now, tau);
+    }
+    return params;
+  }
+
+  /**
+   * Subtle atmospheric harmonic swell played when entering an active Cultivation Peak's zone,
+   * voiced according to the peak's tonal center and whether the player's tier resonates with it.
+   */
+  private playPeakArrivalAccent(ctx: AudioContext, params: PeakTierSoundscapeParams): void {
+    if (!this.ambientMasterGain) return;
+    const now = ctx.currentTime;
+    const out = ctx.createGain();
+    out.gain.setValueAtTime(0.0001, now);
+    out.gain.linearRampToValueAtTime(0.042, now + 0.35);
+    out.gain.exponentialRampToValueAtTime(0.0001, now + 2.3);
+    out.connect(this.ambientMasterGain);
+
+    const freqs = params.masteryResonance
+      ? [params.padRootHz * 2, params.padIntervalHz * 2, params.padOvertoneHz]
+      : [params.padRootHz * 2, params.padIntervalHz * 2];
+
+    freqs.forEach((hz, idx) => {
+      const osc = ctx.createOscillator();
+      osc.type = idx === freqs.length - 1 ? 'sine' : 'triangle';
+      osc.frequency.setValueAtTime(Math.min(2600, hz), now + idx * 0.08);
+      const voiceGain = ctx.createGain();
+      voiceGain.gain.setValueAtTime(idx === 0 ? 0.45 : 0.28, now);
+      osc.connect(voiceGain);
+      voiceGain.connect(out);
+      osc.start(now + idx * 0.08);
+      osc.stop(now + 2.35);
+    });
   }
 
   /**
@@ -1813,6 +2379,13 @@ export class SoundEngine {
         now,
         0.1,
       );
+    }
+    if (this.tierDroneGain) {
+      let musicTarget = 0.024 * this.musicVolume * this.masterVolume;
+      if (this.muted || this.tabHidden) {
+        musicTarget = 0.0001;
+      }
+      this.tierDroneGain.gain.setTargetAtTime(Math.max(0.0001, musicTarget), now, 0.35);
     }
   }
 
@@ -2810,6 +3383,108 @@ export class SoundEngine {
     osc2.start(now);
     osc.stop(now + 0.24);
     osc2.stop(now + 0.24);
+  }
+
+  /**
+   * Procedural 2.2-second dimensional portal awakening sequence sound:
+   * deep stone-seal bass swell, rising harmonic Qi chord scaled to the Peak's rank,
+   * and a crystalline ignition bloom as the vortex tears open.
+   */
+  public playPortalOpeningSequence(requiredRank: number): void {
+    if (this.muted) return;
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    const dest = this.getSfxDest(ctx);
+    const rank = Math.max(1, Math.min(12, Math.round(requiredRank || 1)));
+    const baseHz = 110 * Math.pow(2, (rank - 1) / 14);
+
+    // 1. Sub-bass seal unsealing rumble
+    const subOsc = ctx.createOscillator();
+    const subGain = ctx.createGain();
+    subOsc.type = 'sine';
+    subOsc.frequency.setValueAtTime(baseHz * 0.5, now);
+    subOsc.frequency.exponentialRampToValueAtTime(baseHz * 0.92, now + 1.55);
+    subGain.gain.setValueAtTime(0.001, now);
+    subGain.gain.linearRampToValueAtTime(0.14, now + 0.45);
+    subGain.gain.exponentialRampToValueAtTime(0.001, now + 2.15);
+    subOsc.connect(subGain);
+    subGain.connect(dest);
+    subOsc.start(now);
+    subOsc.stop(now + 2.2);
+
+    // 2. Rising cultivation harmonic triad (root, fifth, octave)
+    const ratios = [1, 1.5, 2.0, 3.0];
+    ratios.forEach((ratio, idx) => {
+      const osc = ctx.createOscillator();
+      const filter = ctx.createBiquadFilter();
+      const gain = ctx.createGain();
+      osc.type = idx % 2 === 0 ? 'triangle' : 'sine';
+      const startFreq = baseHz * ratio * 0.86;
+      const peakFreq = baseHz * ratio * 1.18;
+      osc.frequency.setValueAtTime(startFreq, now + idx * 0.08);
+      osc.frequency.exponentialRampToValueAtTime(peakFreq, now + 1.65);
+
+      filter.type = 'lowpass';
+      filter.frequency.setValueAtTime(420, now);
+      filter.frequency.exponentialRampToValueAtTime(3400, now + 1.55);
+
+      gain.gain.setValueAtTime(0.0005, now + idx * 0.08);
+      gain.gain.linearRampToValueAtTime(0.055 / (1 + idx * 0.25), now + 1.42);
+      gain.gain.exponentialRampToValueAtTime(0.0005, now + 2.35);
+
+      osc.connect(filter);
+      filter.connect(gain);
+      gain.connect(dest);
+      osc.start(now + idx * 0.08);
+      osc.stop(now + 2.4);
+    });
+
+    // 3. Crystalline rift-ignition shimmer crest at t + 1.48s
+    const burstOsc = ctx.createOscillator();
+    const burstGain = ctx.createGain();
+    burstOsc.type = 'sine';
+    burstOsc.frequency.setValueAtTime(baseHz * 4, now + 1.48);
+    burstOsc.frequency.exponentialRampToValueAtTime(baseHz * 6, now + 2.05);
+    burstGain.gain.setValueAtTime(0.0005, now + 1.48);
+    burstGain.gain.linearRampToValueAtTime(0.075, now + 1.56);
+    burstGain.gain.exponentialRampToValueAtTime(0.0005, now + 2.25);
+    burstOsc.connect(burstGain);
+    burstGain.connect(dest);
+    burstOsc.start(now + 1.48);
+    burstOsc.stop(now + 2.3);
+  }
+
+  /**
+   * Muted bronze-and-stone seal chime played when an under-ranked cultivator
+   * bumps against a sealed Trial Peak portal.
+   */
+  public playPortalSealedChime(): void {
+    if (this.muted) return;
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    const dest = this.getSfxDest(ctx);
+
+    const osc = ctx.createOscillator();
+    const overtone = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'triangle';
+    overtone.type = 'sine';
+    osc.frequency.setValueAtTime(164, now);
+    osc.frequency.exponentialRampToValueAtTime(118, now + 0.34);
+    overtone.frequency.setValueAtTime(246, now);
+    overtone.frequency.exponentialRampToValueAtTime(182, now + 0.3);
+
+    gain.gain.setValueAtTime(0.09, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.38);
+    osc.connect(gain);
+    overtone.connect(gain);
+    gain.connect(dest);
+    osc.start(now);
+    overtone.start(now);
+    osc.stop(now + 0.4);
+    overtone.stop(now + 0.4);
   }
 
   /**
@@ -4062,10 +4737,84 @@ export class SoundEngine {
     });
   }
 
+  /**
+   * Spatial HRTF spectral whispering sound effect for nearby Soul Clan spirits in 3D terrain.
+   */
+  public playSoulSpiritWhisper(x: number, y: number, z: number, proximity01: number): void {
+    const ctx = this.ensureContext();
+    if (!ctx || this.muted || this.tabHidden || !this.sfxBus) return;
+    const now = ctx.currentTime;
+    const intensity = Math.max(0.1, Math.min(1.0, proximity01));
+
+    const voiceMaster = ctx.createGain();
+    const peakGain = 0.045 * intensity * this.sfxVolume * this.masterVolume;
+    voiceMaster.gain.setValueAtTime(0.0001, now);
+    voiceMaster.gain.linearRampToValueAtTime(peakGain, now + 0.05);
+    voiceMaster.gain.exponentialRampToValueAtTime(0.0001, now + 0.85);
+
+    // HRTF 3D spatial panner
+    let audioTarget: AudioNode = voiceMaster;
+    if (typeof ctx.createPanner === 'function') {
+      const panner3d = ctx.createPanner();
+      panner3d.panningModel = 'HRTF';
+      panner3d.distanceModel = 'inverse';
+      panner3d.refDistance = 1.5;
+      panner3d.maxDistance = 22;
+      panner3d.rolloffFactor = 1.0;
+      if (panner3d.positionX) {
+        panner3d.positionX.setValueAtTime(x, now);
+        panner3d.positionY.setValueAtTime(y, now);
+        panner3d.positionZ.setValueAtTime(z, now);
+      } else {
+        panner3d.setPosition(x, y, z);
+      }
+      panner3d.connect(this.sfxBus);
+      audioTarget = panner3d;
+    } else {
+      voiceMaster.connect(this.sfxBus);
+    }
+
+    // Spectral whispering noise + formant filter sweep
+    if (this.pinkNoiseBuffer) {
+      const src = ctx.createBufferSource();
+      src.buffer = this.pinkNoiseBuffer;
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'bandpass';
+      filter.frequency.setValueAtTime(1400, now);
+      filter.frequency.exponentialRampToValueAtTime(2800, now + 0.4);
+      filter.frequency.exponentialRampToValueAtTime(1100, now + 0.85);
+      filter.Q.value = 6.0;
+
+      src.connect(filter);
+      filter.connect(audioTarget);
+      src.start(now);
+      src.stop(now + 0.9);
+    }
+
+    // Eerie haunting spectral sine formant
+    const osc = ctx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(320, now);
+    osc.frequency.exponentialRampToValueAtTime(440, now + 0.3);
+    osc.frequency.exponentialRampToValueAtTime(280, now + 0.85);
+    
+    const oscGain = ctx.createGain();
+    oscGain.gain.setValueAtTime(0.0001, now);
+    oscGain.gain.linearRampToValueAtTime(peakGain * 0.5, now + 0.1);
+    oscGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.85);
+
+    osc.connect(oscGain);
+    oscGain.connect(audioTarget);
+    osc.start(now);
+    osc.stop(now + 0.9);
+  }
+
   public dispose(): void {
-    window.clearTimeout(this.ambientTimer);
-    window.clearTimeout(this.tierAmbientTimer);
-    window.clearTimeout(this.tierTransitionTimer);
+    if (typeof window !== 'undefined') {
+      window.clearTimeout(this.ambientTimer);
+      window.clearTimeout(this.tierAmbientTimer);
+      window.clearTimeout(this.tierTransitionTimer);
+    }
     this.ctx?.close().catch(() => {});
     this.ctx = null;
     this.sfxBus = null;

@@ -29,6 +29,22 @@ import {
 } from './models';
 import { SENTRY_ARCHETYPES, SoulSentryEntity } from './sentries';
 import {
+  CombatTextBillboardSystem,
+  type CombatTextSpawnOptions,
+} from './combatText';
+import { BreakthroughParticleSystem } from './breakthroughParticles';
+import {
+  PeakElementalParticleSystem,
+  createPeakWeatherSample,
+  samplePeakElementalWeather,
+} from './game/engine/PeakElementalWeather';
+import {
+  computePortalActivationSnapshot,
+  createInitialPortalActivation,
+  getPortalLandmark,
+  type PortalActivationSnapshot,
+} from './portalActivation';
+import {
   WORLD_LAKES,
   WORLD_LANDMARKS,
   isDeepWater,
@@ -63,6 +79,7 @@ import {
   WorldPoint2D,
 } from './types';
 import { WeatherAudioCueEvent } from './audio';
+import { CameraShake, type CultivationShakeMove } from './game/engine/CameraShake';
 
 export interface WeatherVfxIntensity {
   rainSplash: number;
@@ -403,47 +420,6 @@ interface BurstParticle {
   life: number;
   scale: number;
   color: THREE.Color;
-}
-
-interface EvoShardParticle {
-  active: boolean;
-  kind: 'core' | 'ring' | 'helix';
-  pos: THREE.Vector3;
-  vel: THREE.Vector3;
-  originX: number;
-  originY: number;
-  originZ: number;
-  orbitAngle: number;
-  orbitRadius: number;
-  orbitSpeed: number;
-  riseSpeed: number;
-  delay: number;
-  age: number;
-  life: number;
-  scale: number;
-  spinX: number;
-  spinY: number;
-  color: THREE.Color;
-}
-
-interface EvoSparkParticle {
-  active: boolean;
-  pos: THREE.Vector3;
-  vel: THREE.Vector3;
-  delay: number;
-  age: number;
-  life: number;
-  baseColor: THREE.Color;
-}
-
-interface EvoShockRing {
-  mesh: THREE.Mesh;
-  mat: THREE.MeshBasicMaterial;
-  delay: number;
-  age: number;
-  life: number;
-  maxRadius: number;
-  riseSpeed: number;
 }
 
 interface MistParticle {
@@ -802,8 +778,6 @@ const WEATHER_PRESETS: Record<BiomeId, Record<WeatherMode, WeatherAtmosphere>> =
 
 const MAX_SNAKE_SEGMENTS = 120;
 const MAX_BURST_PARTICLES = 180;
-const MAX_EVO_SHARDS = 260;
-const MAX_EVO_SPARKS = 220;
 const MAX_COLLECTIBLES = 42;
 const MAX_ROLLING_BOULDERS = 24;
 const MAX_PROJECTILES = 56;
@@ -830,6 +804,7 @@ const _targetHemiSkyColor = new THREE.Color();
 const _targetHemiGroundColor = new THREE.Color();
 const _targetRimColor = new THREE.Color();
 const _levelTintColor = new THREE.Color();
+const _peakTintColor = new THREE.Color();
 const _yAxis = new THREE.Vector3(0, 1, 0);
 
 export class WorldEngine {
@@ -899,6 +874,10 @@ export class WorldEngine {
   // GPU-driven Dynamic Weather Particle System (snowflakes, ash/embers, storm spray, mist motes)
   private climateParticles!: THREE.Points;
   private climateParticleMat!: THREE.ShaderMaterial;
+  // 12-Peak Elemental Weather Particle System (falling petals, snowflakes, embers, wisps, celestial starlight)
+  private peakElementalParticles!: PeakElementalParticleSystem;
+  private readonly peakWeatherScratch = createPeakWeatherSample();
+  private peakLightningTimer = 4.2;
 
   // Fullscreen Three.js ShaderMaterial Atmospheric Climate Overlay
   private overlayScene!: THREE.Scene;
@@ -1053,6 +1032,7 @@ export class WorldEngine {
   // Animated player-placed props
   private animatedTotems: Array<{ core: THREE.Object3D; ring: THREE.Object3D; baseY: number }> = [];
   private animatedPortals: Array<{
+    portalId: string;
     root: THREE.Group;
     halo: THREE.Object3D;
     innerWheel?: THREE.Object3D | null;
@@ -1060,11 +1040,20 @@ export class WorldEngine {
     skyBeam?: THREE.Object3D | null;
     climateLight?: THREE.PointLight | null;
     climateCore?: THREE.Mesh | null;
+    vortexMat?: THREE.ShaderMaterial | null;
+    particleMat?: THREE.ShaderMaterial | null;
+    shockwaveRing?: THREE.Mesh | null;
+    ringMat?: THREE.MeshStandardMaterial | null;
+    innerRingMat?: THREE.MeshStandardMaterial | null;
     s1: THREE.Object3D;
     s2: THREE.Object3D;
     screen?: THREE.Object3D | null;
     crest?: THREE.Object3D | null;
+    spinAngle: number;
+    innerSpinAngle: number;
+    orbitAngle: number;
   }> = [];
+  private portalActivations = new Map<string, PortalActivationSnapshot>();
   private animatedBoosts: Array<{ core: THREE.Object3D; ring: THREE.Object3D }> = [];
   private portalCanvasA: HTMLCanvasElement | null = null;
   private portalCanvasB: HTMLCanvasElement | null = null;
@@ -1101,24 +1090,12 @@ export class WorldEngine {
   private burstInstanced!: THREE.InstancedMesh;
   private burstParticles: BurstParticle[] = [];
 
-  // Celebratory Evolution Tier-Up WebGL Particle Explosion (pooled, zero-GC)
+  // Floating 3D Combat & Qi Absorption Billboard Text (pooled THREE.Sprite)
+  private combatText!: CombatTextBillboardSystem;
+
+  // Celebratory Evolution Tier-Up WebGL Particle Explosion (single-draw-call GPU BufferGeometry)
   private sparkGlowMap!: THREE.CanvasTexture;
-  private evoShardInstanced!: THREE.InstancedMesh;
-  private evoShards: EvoShardParticle[] = [];
-  private evoSparkPoints!: THREE.Points;
-  private evoSparkPositions!: Float32Array;
-  private evoSparkColors!: Float32Array;
-  private evoSparkMat!: THREE.PointsMaterial;
-  private evoSparks: EvoSparkParticle[] = [];
-  private evoRings: EvoShockRing[] = [];
-  private evoPillarMesh!: THREE.Mesh;
-  private evoPillarMat!: THREE.MeshBasicMaterial;
-  private evoFlashLight!: THREE.PointLight;
-  private evoActive = false;
-  private evoAge = 0;
-  private evoDuration = 3.2;
-  private evoOrigin = new THREE.Vector3();
-  private evoFlashPeak = 16;
+  private breakthroughParticles!: BreakthroughParticleSystem;
 
   // Camera state
   private cameraTargetPos = new THREE.Vector3(0, 14, 24);
@@ -1130,7 +1107,7 @@ export class WorldEngine {
   private builderPitch = 0.92;
   private builderDist = 82;
   private builderFocus = new THREE.Vector3(0, 8, -12);
-  private shakeIntensity = 0;
+  private readonly cameraShake = new CameraShake();
 
   // Half-human hand cannon procedural weapon recoil & 2D screen-space camera shake state
   private gunRecoil = 0;
@@ -1230,6 +1207,8 @@ export class WorldEngine {
     this.initCombatFxPools();
     this.initBuilderHelpers();
     this.initBurstParticles();
+    this.combatText = new CombatTextBillboardSystem(this.maxAnisotropy);
+    this.scene.add(this.combatText.group);
     this.initSoulSkillEffect();
     this.initEvolutionExplosion();
     this.initWeatherSystem();
@@ -1650,6 +1629,14 @@ export class WorldEngine {
     }
   }
 
+  public spawnCombatText(options: CombatTextSpawnOptions): void {
+    this.combatText?.spawn(options);
+  }
+
+  public clearCombatText(): void {
+    this.combatText?.clear();
+  }
+
   private initSoulSkillEffect(): void {
     const count = 96;
     this.soulVortexPositions = new Float32Array(count * 3);
@@ -1843,142 +1830,15 @@ export class WorldEngine {
   }
 
   private initEvolutionExplosion(): void {
-    this.evoExplosionGroup.visible = false;
-
-    // 1. Faceted Luminous Celebration Shards (InstancedMesh, additive glow)
-    const shardGeo = new THREE.OctahedronGeometry(0.24, 0);
-    shardGeo.scale(0.68, 1.45, 0.68);
-    const shardMat = new THREE.MeshBasicMaterial({
-      color: 0xffffff,
-      transparent: true,
-      opacity: 0.95,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-    });
-    this.evoShardInstanced = new THREE.InstancedMesh(shardGeo, shardMat, MAX_EVO_SHARDS);
-    this.evoShardInstanced.frustumCulled = false;
-    this.evoShardInstanced.renderOrder = 5;
-
-    this.evoShards = [];
-    for (let i = 0; i < MAX_EVO_SHARDS; i++) {
-      this.evoShards.push({
-        active: false,
-        kind: 'core',
-        pos: new THREE.Vector3(0, -300, 0),
-        vel: new THREE.Vector3(),
-        originX: 0,
-        originY: 0,
-        originZ: 0,
-        orbitAngle: 0,
-        orbitRadius: 1,
-        orbitSpeed: 3,
-        riseSpeed: 3,
-        delay: 0,
-        age: 0,
-        life: 1.4,
-        scale: 1,
-        spinX: 6,
-        spinY: 8,
-        color: new THREE.Color(0xffe066),
-      });
-      _mat4.makeScale(0, 0, 0);
-      this.evoShardInstanced.setMatrixAt(i, _mat4);
-      this.evoShardInstanced.setColorAt(i, _color.setHex(0xffe066));
-    }
-    this.evoShardInstanced.instanceMatrix.needsUpdate = true;
-    if (this.evoShardInstanced.instanceColor) {
-      this.evoShardInstanced.instanceColor.needsUpdate = true;
-    }
-    this.evoExplosionGroup.add(this.evoShardInstanced);
-
-    // 2. Radiant Star-Spark Bokeh Cloud (THREE.Points with vertex colors + additive glow)
-    this.evoSparkPositions = new Float32Array(MAX_EVO_SPARKS * 3);
-    this.evoSparkColors = new Float32Array(MAX_EVO_SPARKS * 3);
-    this.evoSparks = [];
-    for (let i = 0; i < MAX_EVO_SPARKS; i++) {
-      this.evoSparkPositions[i * 3 + 1] = -300;
-      this.evoSparkColors[i * 3] = 1;
-      this.evoSparkColors[i * 3 + 1] = 0.92;
-      this.evoSparkColors[i * 3 + 2] = 0.55;
-      this.evoSparks.push({
-        active: false,
-        pos: new THREE.Vector3(0, -300, 0),
-        vel: new THREE.Vector3(),
-        delay: 0,
-        age: 0,
-        life: 1.6,
-        baseColor: new THREE.Color(0xffe066),
-      });
-    }
-    const sparkGeo = new THREE.BufferGeometry();
-    sparkGeo.setAttribute('position', new THREE.BufferAttribute(this.evoSparkPositions, 3));
-    sparkGeo.setAttribute('color', new THREE.BufferAttribute(this.evoSparkColors, 3));
-    this.evoSparkMat = new THREE.PointsMaterial({
-      map: this.sparkGlowMap,
-      size: 1.55,
-      transparent: true,
-      opacity: 0.96,
-      vertexColors: true,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-      sizeAttenuation: true,
-    });
-    this.evoSparkPoints = new THREE.Points(sparkGeo, this.evoSparkMat);
-    this.evoSparkPoints.frustumCulled = false;
-    this.evoSparkPoints.renderOrder = 6;
-    this.evoExplosionGroup.add(this.evoSparkPoints);
-
-    // 3. Three Staggered Expanding Ascension Shockwave Torus Rings
-    const ringGeo = new THREE.TorusGeometry(1, 0.085, 10, 48);
-    ringGeo.rotateX(Math.PI / 2);
-    this.evoRings = [];
-    for (let i = 0; i < 3; i++) {
-      const mat = new THREE.MeshBasicMaterial({
-        color: i === 0 ? 0xfff5c0 : 0xffe066,
-        transparent: true,
-        opacity: 0,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-      });
-      const mesh = new THREE.Mesh(ringGeo, mat);
-      mesh.visible = false;
-      mesh.renderOrder = 5;
-      this.evoExplosionGroup.add(mesh);
-      this.evoRings.push({
-        mesh,
-        mat,
-        delay: i * 0.14,
-        age: 0,
-        life: 1.15 + i * 0.22,
-        maxRadius: 12 + i * 3.8,
-        riseSpeed: 0.65 + i * 0.55,
-      });
-    }
-
-    // 4. Translucent Ascension Sky Light Pillar
-    const pillarGeo = new THREE.CylinderGeometry(0.45, 2.0, 34, 18, 1, true);
-    pillarGeo.translate(0, 17, 0);
-    this.evoPillarMat = new THREE.MeshBasicMaterial({
-      color: 0xffe999,
-      transparent: true,
-      opacity: 0,
-      side: THREE.DoubleSide,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-    });
-    this.evoPillarMesh = new THREE.Mesh(pillarGeo, this.evoPillarMat);
-    this.evoPillarMesh.visible = false;
-    this.evoPillarMesh.renderOrder = 4;
-    this.evoExplosionGroup.add(this.evoPillarMesh);
-
-    // 5. Transient Dynamic Illumination Flash on Surrounding Mountain Terrain & Serpent
-    this.evoFlashLight = new THREE.PointLight(0xffe699, 0, 38, 1.5);
-    this.evoExplosionGroup.add(this.evoFlashLight);
+    this.breakthroughParticles = new BreakthroughParticleSystem(this.renderer.getPixelRatio());
+    this.evoExplosionGroup.add(this.breakthroughParticles.group);
+    this.evoExplosionGroup.visible = true;
   }
 
   /**
    * Triggers a celebratory multi-layered WebGL particle explosion at the snake's location
    * whenever a new Evolution Tier is reached (scaled up for Tier 12 Ascended Human).
+   * Rendered in a single GPU BufferGeometry draw call.
    */
   public spawnEvolutionExplosion(
     x: number,
@@ -1990,306 +1850,33 @@ export class WorldEngine {
     isHuman: boolean,
     bodyTrail?: Array<{ x: number; y: number; z: number }>,
   ): void {
-    this.evoActive = true;
-    this.evoAge = 0;
-    this.evoDuration = isHuman ? 3.8 : 3.0;
-    this.evoOrigin.set(x, y, z);
-    this.evoExplosionGroup.visible = true;
-
-    const powerScale = isHuman ? 1.45 : 0.92 + (level / 12) * 0.42;
-    const palette = [
-      0xfff8dc, // incandescent white-gold core
-      0xffe066, // radiant ascension gold
-      manaColorHex, // newly awakened magic tier color
-      scaleColorHex, // newly evolved scale/form hue
-    ];
-
-    // Configure 260 faceted shards across 3 choreographed layers:
-    // [0..109] Core Radial Supernova, [110..179] Equatorial Crown Ring, [180..259] Ascending Spirit Helix
-    for (let i = 0; i < MAX_EVO_SHARDS; i++) {
-      const p = this.evoShards[i];
-      p.active = true;
-      p.age = 0;
-      p.spinX = (Math.random() - 0.5) * 14;
-      p.spinY = (Math.random() - 0.5) * 14;
-
-      if (i < 110) {
-        // Wave 1: Spherical-hemisphere supernova explosion
-        p.kind = 'core';
-        const trailPt =
-          bodyTrail && bodyTrail.length > 0 && i % 4 === 0
-            ? bodyTrail[i % bodyTrail.length]
-            : null;
-        const ox = trailPt ? trailPt.x : x;
-        const oy = trailPt ? trailPt.y + 0.7 : y;
-        const oz = trailPt ? trailPt.z : z;
-        p.pos.set(ox, oy, oz);
-        p.originX = ox;
-        p.originY = oy;
-        p.originZ = oz;
-
-        const theta = Math.random() * Math.PI * 2;
-        const elev = -0.15 + Math.random() * 1.45;
-        const speed = (6.8 + Math.random() * 11.5) * powerScale;
-        const horiz = Math.cos(elev) * speed;
-        p.vel.set(
-          Math.cos(theta) * horiz,
-          Math.sin(elev) * speed + 2.4 * powerScale,
-          Math.sin(theta) * horiz,
-        );
-        p.delay = Math.random() * 0.08;
-        p.life = 1.25 + Math.random() * 0.95;
-        p.scale = (0.85 + Math.random() * 1.15) * (isHuman ? 1.2 : 1.0);
-        p.color.setHex(palette[i % palette.length]);
-      } else if (i < 180) {
-        // Wave 2: Crisp horizontal equatorial crown burst
-        p.kind = 'ring';
-        const ringIdx = i - 110;
-        const theta = (ringIdx / 70) * Math.PI * 2 + (Math.random() - 0.5) * 0.06;
-        const speed = (10.5 + Math.random() * 4.2) * powerScale;
-        p.pos.set(x + Math.cos(theta) * 0.5, y + 0.15, z + Math.sin(theta) * 0.5);
-        p.originX = x;
-        p.originY = y;
-        p.originZ = z;
-        p.vel.set(Math.cos(theta) * speed, 1.2 + Math.random() * 2.2, Math.sin(theta) * speed);
-        p.delay = 0.06 + (ringIdx % 2) * 0.09;
-        p.life = 1.1 + Math.random() * 0.55;
-        p.scale = (0.9 + Math.random() * 0.65) * (isHuman ? 1.22 : 1.0);
-        p.color.setHex(ringIdx % 2 === 0 ? 0xffe066 : manaColorHex);
-      } else {
-        // Wave 3: Ascending dual-helix spirit embers spiraling skyward around the evolved form
-        p.kind = 'helix';
-        const hIdx = i - 180;
-        p.originX = x;
-        p.originY = y - 0.2;
-        p.originZ = z;
-        p.orbitAngle = (hIdx % 2) * Math.PI + (hIdx / 80) * Math.PI * 4;
-        p.orbitRadius = 0.95 + Math.random() * 2.4 * powerScale;
-        p.orbitSpeed = (2.6 + Math.random() * 2.2) * (hIdx % 2 === 0 ? 1 : -1);
-        p.riseSpeed = (2.8 + Math.random() * 4.4) * powerScale;
-        p.delay = 0.05 + Math.random() * 0.55;
-        p.life = 1.85 + Math.random() * 1.1;
-        p.scale = (0.65 + Math.random() * 0.85) * (isHuman ? 1.25 : 1.0);
-        p.pos.set(
-          x + Math.cos(p.orbitAngle) * p.orbitRadius,
-          p.originY,
-          z + Math.sin(p.orbitAngle) * p.orbitRadius,
-        );
-        p.vel.set(0, 0, 0);
-        p.color.setHex(hIdx % 3 === 0 ? 0xfff8dc : hIdx % 3 === 1 ? 0xffe066 : manaColorHex);
-      }
-    }
-
-    // Configure 220 glowing additive star-spark motes
-    this.evoSparkMat.size = isHuman ? 2.0 : 1.55;
-    for (let i = 0; i < MAX_EVO_SPARKS; i++) {
-      const sp = this.evoSparks[i];
-      sp.active = true;
-      sp.age = 0;
-      sp.delay = Math.random() * 0.24;
-      sp.life = 1.45 + Math.random() * 1.35;
-      const theta = Math.random() * Math.PI * 2;
-      const phi = -0.1 + Math.random() * 1.55;
-      const speed = (3.4 + Math.random() * 12.0) * powerScale;
-      const h = Math.cos(phi) * speed;
-      sp.pos.set(
-        x + (Math.random() - 0.5) * 1.4,
-        y + (Math.random() - 0.5) * 0.8,
-        z + (Math.random() - 0.5) * 1.4,
-      );
-      sp.vel.set(Math.cos(theta) * h, Math.sin(phi) * speed + 2.8 * powerScale, Math.sin(theta) * h);
-      sp.baseColor.setHex(palette[i % palette.length]);
-    }
-
-    // Configure 3 staggered expanding ascension rings
-    const ringColors = [0xfff6cc, manaColorHex, isHuman ? 0xffe066 : scaleColorHex];
-    for (let i = 0; i < this.evoRings.length; i++) {
-      const r = this.evoRings[i];
-      r.age = 0;
-      r.delay = i * 0.14;
-      r.life = (1.1 + i * 0.22) * (isHuman ? 1.25 : 1.0);
-      r.maxRadius = (11.5 + i * 3.6) * powerScale;
-      r.riseSpeed = 0.65 + i * 0.65;
-      r.mat.color.setHex(ringColors[i]);
-      r.mat.opacity = 0;
-      r.mesh.position.set(x, y + 0.15, z);
-      r.mesh.scale.setScalar(0.5);
-      r.mesh.visible = true;
-    }
-
-    // Configure vertical ascension sky beam
-    this.evoPillarMat.color.setHex(isHuman ? 0xfff0a8 : manaColorHex);
-    this.evoPillarMat.opacity = 0.55;
-    this.evoPillarMesh.position.set(x, y - 0.4, z);
-    this.evoPillarMesh.scale.set(1, 1, 1);
-    this.evoPillarMesh.visible = true;
-
-    // Configure dynamic local flash PointLight
-    this.evoFlashLight.position.set(x, y + 2.2, z);
-    this.evoFlashLight.color.setHex(isHuman ? 0xffe999 : manaColorHex);
-    this.evoFlashPeak = isHuman ? 24 : 15;
-    this.evoFlashLight.intensity = this.evoFlashPeak;
-
-    // Also fire a crisp burst of solid sparks right at the origin for layered depth
-    this.spawnBurst(x, y + 0.4, z, 0xffe066, isHuman ? 48 : 28);
+    this.breakthroughParticles.spawn({
+      x,
+      y,
+      z,
+      scaleColorHex,
+      manaColorHex,
+      level,
+      isHuman,
+      bodyTrail,
+      pixelRatio: this.renderer.getPixelRatio(),
+    });
   }
 
   private updateEvolutionExplosion(dt: number): void {
-    if (!this.evoActive) return;
-    this.evoAge += dt;
-
-    let anyAlive = false;
-
-    // 1. Update 260 faceted shards
-    for (let i = 0; i < MAX_EVO_SHARDS; i++) {
-      const p = this.evoShards[i];
-      if (!p.active) continue;
-
-      if (this.evoAge < p.delay) {
-        anyAlive = true;
-        _mat4.makeScale(0, 0, 0);
-        this.evoShardInstanced.setMatrixAt(i, _mat4);
-        continue;
-      }
-
-      p.age += dt;
-      if (p.age >= p.life) {
-        p.active = false;
-        _mat4.makeScale(0, 0, 0);
-        this.evoShardInstanced.setMatrixAt(i, _mat4);
-        continue;
-      }
-
-      anyAlive = true;
-      const u = p.age / p.life;
-
-      if (p.kind === 'helix') {
-        const ang = p.orbitAngle + p.age * p.orbitSpeed;
-        const rad = p.orbitRadius * (1 + u * 0.95);
-        p.pos.set(
-          p.originX + Math.cos(ang) * rad,
-          p.originY + p.age * p.riseSpeed,
-          p.originZ + Math.sin(ang) * rad,
-        );
-      } else {
-        const drag = p.kind === 'ring' ? Math.exp(-2.1 * dt) : Math.exp(-1.35 * dt);
-        p.vel.x *= drag;
-        p.vel.z *= drag;
-        p.vel.y = p.vel.y * Math.exp(-0.9 * dt) - (p.kind === 'ring' ? 3.2 : 6.4) * dt;
-        p.pos.addScaledVector(p.vel, dt);
-      }
-
-      // Snappy pop-in then silky shrink-out
-      const env = u < 0.12 ? u / 0.12 : Math.pow(1 - (u - 0.12) / 0.88, 1.35);
-      const s = Math.max(0.001, p.scale * env);
-      _euler.set(p.age * p.spinX, p.age * p.spinY, p.age * 3.2);
-      _quat.setFromEuler(_euler);
-      _scale.setScalar(s);
-      _mat4.compose(p.pos, _quat, _scale);
-      this.evoShardInstanced.setMatrixAt(i, _mat4);
-      this.evoShardInstanced.setColorAt(i, p.color);
-    }
-    this.evoShardInstanced.instanceMatrix.needsUpdate = true;
-    if (this.evoShardInstanced.instanceColor) {
-      this.evoShardInstanced.instanceColor.needsUpdate = true;
-    }
-
-    // 2. Update 220 glowing star-spark bokeh motes
-    const sparkPosAttr = this.evoSparkPoints.geometry.attributes.position as THREE.BufferAttribute;
-    const sparkColAttr = this.evoSparkPoints.geometry.attributes.color as THREE.BufferAttribute;
-    for (let i = 0; i < MAX_EVO_SPARKS; i++) {
-      const sp = this.evoSparks[i];
-      const idx = i * 3;
-      if (!sp.active || this.evoAge < sp.delay) {
-        if (sp.active) anyAlive = true;
-        this.evoSparkPositions[idx] = 0;
-        this.evoSparkPositions[idx + 1] = -300;
-        this.evoSparkPositions[idx + 2] = 0;
-        continue;
-      }
-      sp.age += dt;
-      if (sp.age >= sp.life) {
-        sp.active = false;
-        this.evoSparkPositions[idx + 1] = -300;
-        continue;
-      }
-      anyAlive = true;
-      const drag = Math.exp(-1.7 * dt);
-      sp.vel.x *= drag;
-      sp.vel.z *= drag;
-      sp.vel.y = sp.vel.y * Math.exp(-1.1 * dt) - 2.1 * dt;
-      sp.pos.addScaledVector(sp.vel, dt);
-
-      const u = sp.age / sp.life;
-      const shimmer = 0.72 + 0.28 * Math.sin(sp.age * 24 + i * 1.7);
-      const brightness = Math.pow(1 - u, 1.4) * shimmer;
-
-      this.evoSparkPositions[idx] = sp.pos.x;
-      this.evoSparkPositions[idx + 1] = sp.pos.y;
-      this.evoSparkPositions[idx + 2] = sp.pos.z;
-      this.evoSparkColors[idx] = sp.baseColor.r * brightness;
-      this.evoSparkColors[idx + 1] = sp.baseColor.g * brightness;
-      this.evoSparkColors[idx + 2] = sp.baseColor.b * brightness;
-    }
-    sparkPosAttr.needsUpdate = true;
-    sparkColAttr.needsUpdate = true;
-
-    // 3. Update 3 staggered expanding shockwave torus rings
-    for (let i = 0; i < this.evoRings.length; i++) {
-      const r = this.evoRings[i];
-      if (this.evoAge < r.delay) {
-        r.mesh.visible = false;
-        anyAlive = true;
-        continue;
-      }
-      r.age += dt;
-      if (r.age >= r.life) {
-        r.mesh.visible = false;
-        continue;
-      }
-      anyAlive = true;
-      r.mesh.visible = true;
-      const u = r.age / r.life;
-      const easeOut = 1 - Math.pow(1 - u, 2.4);
-      const radius = 0.55 + (r.maxRadius - 0.55) * easeOut;
-      r.mesh.position.set(this.evoOrigin.x, this.evoOrigin.y + 0.15 + r.age * r.riseSpeed, this.evoOrigin.z);
-      r.mesh.scale.set(radius, 1 + (1 - u) * 0.6, radius);
-      r.mat.opacity = Math.pow(1 - u, 1.6) * 0.92;
-    }
-
-    // 4. Update Ascension Sky Light Pillar
-    const pillarLife = 1.45;
-    if (this.evoAge < pillarLife) {
-      anyAlive = true;
-      const pu = this.evoAge / pillarLife;
-      const widthPulse = pu < 0.18 ? 0.4 + (pu / 0.18) * 1.35 : 1.75 * (1 - (pu - 0.18) / 0.82);
-      this.evoPillarMesh.visible = true;
-      this.evoPillarMesh.scale.set(Math.max(0.05, widthPulse), 1 + pu * 0.35, Math.max(0.05, widthPulse));
-      this.evoPillarMesh.rotation.y += dt * 1.8;
-      this.evoPillarMat.opacity = Math.pow(1 - pu, 1.45) * 0.52;
-    } else {
-      this.evoPillarMesh.visible = false;
-    }
-
-    // 5. Update Dynamic Local PointLight Flash
-    const flashLife = 1.15;
-    if (this.evoAge < flashLife) {
-      anyAlive = true;
-      const fu = this.evoAge / flashLife;
-      this.evoFlashLight.intensity = this.evoFlashPeak * Math.pow(1 - fu, 2.1);
-    } else {
-      this.evoFlashLight.intensity = 0;
-    }
-
-    if (!anyAlive || this.evoAge >= this.evoDuration) {
-      this.evoActive = false;
-      this.evoExplosionGroup.visible = false;
-      this.evoFlashLight.intensity = 0;
-    }
+    this.breakthroughParticles?.update(dt);
   }
 
   public triggerShake(amount: number): void {
-    this.shakeIntensity = Math.min(1.4, Math.max(this.shakeIntensity, amount));
+    this.cameraShake.triggerRaw(amount);
+  }
+
+  public triggerDamageShake(damageRatio = 0.35, pushX = 0, pushZ = 0): void {
+    this.cameraShake.triggerDamage(damageRatio, pushX, pushZ);
+  }
+
+  public triggerCultivationMoveShake(move: CultivationShakeMove, powerScale = 1.0): void {
+    this.cameraShake.triggerCultivationMove(move, powerScale);
   }
 
   /**
@@ -2585,6 +2172,13 @@ export class WorldEngine {
     this.climateParticles.frustumCulled = false;
     this.climateParticles.renderOrder = 4;
     this.weatherGroup.add(this.climateParticles);
+
+    // 4b. 12-Peak Elemental Weather Particle System (petals, snow, embers, wisps, storm sparks, celestial starlight)
+    this.peakElementalParticles = new PeakElementalParticleSystem(
+      this.isSoftwareGl ? 280 : 620,
+      this.renderer.getPixelRatio(),
+    );
+    this.weatherGroup.add(this.peakElementalParticles.points);
 
     // 5. Fullscreen Three.js ShaderMaterial Atmospheric Climate Overlay
     this.overlayScene = new THREE.Scene();
@@ -3316,13 +2910,26 @@ export class WorldEngine {
     const dampT = 1 - Math.exp(-2.2 * dt);
     const t = this.elapsed;
 
-    // 0. Storm Lightning Flash Oscillator & Climate Transition Sweep Pulse
+    // Sample spatial 12-Peak Elemental Weather around the player's live world position
+    const peakEnv = samplePeakElementalWeather(focusX, focusZ, this.peakWeatherScratch);
+    const isExtremeWeather =
+      this.weather === 'storm' || this.weather === 'blizzard' || this.weather === 'ashstorm';
+    // Blend peak elemental atmosphere harmoniously with difficulty weather presets
+    const peakBlend = peakEnv.influence * (isExtremeWeather ? 0.52 : 0.76);
+
+    // 0. Storm & Peak Tempest Lightning Flash Oscillator & Climate Transition Sweep Pulse
     if (this.weather === 'storm') {
       this.lightningTimer -= dt;
       if (this.lightningTimer <= 0) {
         this.lightningFlash = 0.78 + Math.random() * 0.35;
         this.pendingLightningStrike = this.lightningFlash;
         this.lightningTimer = 3.2 + Math.random() * 5.2;
+      }
+    } else if (peakEnv.ambientLightningRate > 0.05) {
+      this.peakLightningTimer -= dt * (0.6 + peakEnv.ambientLightningRate * 2.2);
+      if (this.peakLightningTimer <= 0) {
+        this.lightningFlash = Math.max(this.lightningFlash, 0.35 + Math.random() * 0.28);
+        this.peakLightningTimer = 4.0 + Math.random() * 5.5;
       }
     }
     this.lightningFlash = THREE.MathUtils.damp(this.lightningFlash, 0, 7.5, dt);
@@ -3336,13 +2943,16 @@ export class WorldEngine {
       }
     }
 
-    // 1. Smoothly blend Weather Preset + Cultivation Level Environment (sky, fog, sun, hemi, rim, motes)
+    // 1. Smoothly blend Weather Preset + Cultivation Level Environment + 12-Peak Elemental Theme
     const lightningSkyBoost = this.lightningFlash * 0.38;
     if (!this.xrActive) {
       if (!(this.scene.background instanceof THREE.Color)) {
         this.scene.background = new THREE.Color(preset.skyHex);
       }
-      _targetSkyColor.setHex(preset.skyHex).lerp(_levelTintColor.setHex(lvlEnv.skyHex), wBlend * 0.58);
+      _targetSkyColor.setHex(preset.skyHex).lerp(_levelTintColor.setHex(lvlEnv.skyHex), wBlend * 0.45);
+      if (peakBlend > 0.005) {
+        _targetSkyColor.lerp(_peakTintColor.setHex(peakEnv.skyHex), peakBlend);
+      }
       if (lightningSkyBoost > 0.01) {
         _targetSkyColor.lerp(_color.setHex(0xd8ecff), lightningSkyBoost);
       }
@@ -3350,32 +2960,42 @@ export class WorldEngine {
     }
 
     if (this.scene.fog instanceof THREE.FogExp2) {
-      _targetFogColor.setHex(preset.fogHex).lerp(_levelTintColor.setHex(lvlEnv.fogHex), wBlend * 0.58);
+      _targetFogColor.setHex(preset.fogHex).lerp(_levelTintColor.setHex(lvlEnv.fogHex), wBlend * 0.45);
+      if (peakBlend > 0.005) {
+        _targetFogColor.lerp(_peakTintColor.setHex(peakEnv.fogHex), peakBlend);
+      }
       if (lightningSkyBoost > 0.01) {
         _targetFogColor.lerp(_color.setHex(0xd8ecff), lightningSkyBoost * 0.75);
       }
       this.scene.fog.color.lerp(_targetFogColor, dampT);
-      const targetDensity = preset.fogDensity + lvlEnv.fogDensityBoost;
+      const targetDensity = Math.max(
+        0.0022,
+        preset.fogDensity + lvlEnv.fogDensityBoost + peakEnv.fogDensityOffset * peakEnv.influence,
+      );
       this.scene.fog.density = THREE.MathUtils.damp(this.scene.fog.density, targetDensity, 2.2, dt);
     }
 
     this.renderer.toneMappingExposure = THREE.MathUtils.damp(
       this.renderer.toneMappingExposure,
-      preset.exposure + this.lightningFlash * 0.24,
+      preset.exposure + peakEnv.exposureOffset * peakEnv.influence + this.lightningFlash * 0.24,
       2.4,
       dt,
     );
 
+    const peakSunScale = THREE.MathUtils.lerp(1.0, peakEnv.sunScale, peakBlend);
     const curSun = this.csm
       ? this.csm.lightIntensity
       : (this.fallbackSunLight?.intensity ?? this.baseSunIntensity);
     const nextSun = THREE.MathUtils.damp(
       curSun,
-      this.baseSunIntensity * (preset.sunScale + this.lightningFlash * 1.15),
+      this.baseSunIntensity * (preset.sunScale * peakSunScale + this.lightningFlash * 1.15),
       2.4,
       dt,
     );
-    _targetSunColor.setHex(0xffffff).lerp(_levelTintColor.setHex(lvlEnv.sunHex), Math.min(0.85, wBlend + 0.15));
+    _targetSunColor.setHex(0xffffff).lerp(_levelTintColor.setHex(lvlEnv.sunHex), Math.min(0.7, wBlend + 0.12));
+    if (peakBlend > 0.005) {
+      _targetSunColor.lerp(_peakTintColor.setHex(peakEnv.sunHex), peakBlend);
+    }
     if (this.csm) {
       this.csm.lightIntensity = nextSun;
       for (const light of this.csm.lights) {
@@ -3387,42 +3007,58 @@ export class WorldEngine {
       this.fallbackSunLight.color.lerp(_targetSunColor, dampT);
     }
 
+    const peakHemiScale = THREE.MathUtils.lerp(1.0, peakEnv.hemiScale, peakBlend);
     this.hemiLight.intensity = THREE.MathUtils.damp(
       this.hemiLight.intensity,
-      this.baseHemiIntensity * (preset.hemiScale + this.lightningFlash * 0.55),
+      this.baseHemiIntensity * (preset.hemiScale * peakHemiScale + this.lightningFlash * 0.55),
       2.4,
       dt,
     );
     _targetHemiSkyColor.setHex(lvlEnv.hemiSkyHex);
     _targetHemiGroundColor.setHex(lvlEnv.hemiGroundHex);
+    if (peakBlend > 0.005) {
+      _targetHemiSkyColor.lerp(_peakTintColor.setHex(peakEnv.hemiSkyHex), peakBlend);
+      _targetHemiGroundColor.lerp(_peakTintColor.setHex(peakEnv.hemiGroundHex), peakBlend);
+    }
     this.hemiLight.color.lerp(_targetHemiSkyColor, dampT);
     this.hemiLight.groundColor.lerp(_targetHemiGroundColor, dampT);
 
+    const peakRimScale = THREE.MathUtils.lerp(1.0, peakEnv.rimScale, peakBlend);
     this.rimLight.intensity = THREE.MathUtils.damp(
       this.rimLight.intensity,
-      this.baseRimIntensity * (preset.rimScale + (this.activeEvolutionLevel >= 5 ? 0.35 : 0)),
+      this.baseRimIntensity * (preset.rimScale * peakRimScale + (this.activeEvolutionLevel >= 5 ? 0.35 : 0)),
       2.4,
       dt,
     );
     _targetRimColor.setHex(lvlEnv.rimHex);
+    if (peakBlend > 0.005) {
+      _targetRimColor.lerp(_peakTintColor.setHex(peakEnv.rimHex), peakBlend);
+    }
     this.rimLight.color.lerp(_targetRimColor, dampT);
 
     if (this.ambientMotes) {
       const moteMat = this.ambientMotes.material as THREE.PointsMaterial;
       _levelTintColor.setHex(lvlEnv.moteHex);
+      if (peakBlend > 0.005) {
+        _levelTintColor.lerp(_peakTintColor.setHex(peakEnv.particleColorAHex), peakBlend * 0.8);
+      }
       moteMat.color.lerp(_levelTintColor, dampT);
     }
 
     // 2. Drifting 3D Valley Mist, Blizzard Squalls & Volcanic Smoke Puffs
     const envMistBoost = this.activeEvolutionLevel >= 5 ? 0.08 : 0;
+    const peakMistBoost = Math.max(0, peakEnv.fogDensityOffset * 18) * peakEnv.influence;
     this.mistMat.opacity = THREE.MathUtils.damp(
       this.mistMat.opacity,
-      Math.min(0.68, preset.mistOpacity + envMistBoost),
+      Math.min(0.68, preset.mistOpacity + envMistBoost + peakMistBoost),
       2.6,
       dt,
     );
     this.mistMat.size = THREE.MathUtils.damp(this.mistMat.size, preset.mistSize, 2.6, dt);
-    _targetMistColor.setHex(preset.mistTint).lerp(_levelTintColor.setHex(lvlEnv.fogHex), wBlend * 0.35);
+    _targetMistColor.setHex(preset.mistTint).lerp(_levelTintColor.setHex(lvlEnv.fogHex), wBlend * 0.25);
+    if (peakBlend > 0.005) {
+      _targetMistColor.lerp(_peakTintColor.setHex(peakEnv.mistTintHex), peakBlend * 0.85);
+    }
     this.mistMat.color.lerp(_targetMistColor, 1 - Math.exp(-2.6 * dt));
 
     const mistVisible = this.mistMat.opacity > 0.008;
@@ -3573,6 +3209,18 @@ export class WorldEngine {
     pUniforms.uPixelRatio.value = this.renderer.getPixelRatio();
     this.climateParticles.visible = (pUniforms.uOpacity.value as number) > 0.02;
 
+    // 5b. Update 12-Peak Elemental Weather Particle System (falling petals, snowflakes, embers, sparks, starlight)
+    this.peakElementalParticles.update(
+      dt,
+      t,
+      focusX,
+      focusY,
+      focusZ,
+      peakEnv,
+      this.renderer.getPixelRatio(),
+      isExtremeWeather ? 0.72 : 1.0,
+    );
+
     // 6. Update Fullscreen Atmospheric Climate Shader Overlay uniforms
     const oUniforms = this.weatherOverlayMat.uniforms;
     oUniforms.uTime.value = t;
@@ -3614,7 +3262,11 @@ export class WorldEngine {
     );
     oUniforms.uLightning.value = this.lightningFlash;
     oUniforms.uShiftPulse.value = this.weatherShiftPulse;
-    (oUniforms.uTint.value as THREE.Color).lerp(_color.setHex(preset.overlayTint), dampT);
+    _color.setHex(preset.overlayTint);
+    if (peakBlend > 0.005) {
+      _color.lerp(_peakTintColor.setHex(peakEnv.fogHex), peakBlend * 0.65);
+    }
+    (oUniforms.uTint.value as THREE.Color).lerp(_color, dampT);
     oUniforms.uSoulPulse.value = this.soulSkillPulse;
     oUniforms.uSoulPhase.value = this.soulSkillPhase;
     oUniforms.uSoulPower.value = this.soulSkillPower;
@@ -4164,14 +3816,18 @@ export class WorldEngine {
         }
       } else if (prop.type === 'portalA' || prop.type === 'portalB') {
         const variant = prop.type === 'portalA' ? 'A' : 'B';
-        block = createPortalBlock(res, variant);
+        const peakLm = getPortalLandmark(prop.id);
+        block = createPortalBlock(res, variant, peakLm?.accentHex);
         block.scale.setScalar(4.2);
-        const halo = block.getObjectByName('portalHalo');
-        const innerWheel = block.getObjectByName('portalInnerWheel');
+        const halo = block.getObjectByName('portalHalo') as THREE.Mesh | undefined;
+        const innerWheel = block.getObjectByName('portalInnerWheel') as THREE.Mesh | undefined;
         const orbitGroup = block.getObjectByName('portalOrbitGroup');
         const skyBeam = block.getObjectByName('portalSkyBeam');
         const climateLight = block.getObjectByName('portalClimateLight') as THREE.PointLight | undefined;
         const climateCore = block.getObjectByName('portalClimateCore') as THREE.Mesh | undefined;
+        const vortexMesh = block.getObjectByName('portalVortexShader') as THREE.Mesh | undefined;
+        const particlePoints = block.getObjectByName('portalParticleVortex') as THREE.Points | undefined;
+        const shockwaveRing = block.getObjectByName('portalShockwaveRing') as THREE.Mesh | undefined;
         const s1 = block.getObjectByName('portalShard1');
         const s2 = block.getObjectByName('portalShard2');
         const screen = block.getObjectByName(
@@ -4187,6 +3843,7 @@ export class WorldEngine {
         }
         if (halo && s1 && s2) {
           this.animatedPortals.push({
+            portalId: prop.id,
             root: block,
             halo,
             innerWheel,
@@ -4194,10 +3851,27 @@ export class WorldEngine {
             skyBeam,
             climateLight,
             climateCore,
+            vortexMat:
+              vortexMesh && vortexMesh.material instanceof THREE.ShaderMaterial
+                ? vortexMesh.material
+                : null,
+            particleMat:
+              particlePoints && particlePoints.material instanceof THREE.ShaderMaterial
+                ? particlePoints.material
+                : null,
+            shockwaveRing: shockwaveRing ?? null,
+            ringMat: halo.material instanceof THREE.MeshStandardMaterial ? halo.material : null,
+            innerRingMat:
+              innerWheel && innerWheel.material instanceof THREE.MeshStandardMaterial
+                ? innerWheel.material
+                : null,
             s1,
             s2,
             screen,
             crest,
+            spinAngle: 0,
+            innerSpinAngle: 0,
+            orbitAngle: 0,
           });
         }
       } else if (prop.type === 'boost') {
@@ -4986,13 +4660,57 @@ export class WorldEngine {
       }
     }
 
+    const pixelRatio = this.renderer.getPixelRatio();
     for (let i = 0; i < this.animatedPortals.length; i++) {
       const pt = this.animatedPortals[i];
-      const sway = Math.sin(t * 0.9 + i) * 0.24;
+      const act =
+        this.portalActivations.get(pt.portalId) ??
+        computePortalActivationSnapshot(createInitialPortalActivation(pt.portalId), 1);
+
+      const sway = Math.sin(t * 0.9 + i) * 0.24 * (0.15 + act.vortexAperture * 0.85);
       const lightState = computePortalClimateLightState(this.weather, t, i, this.lightningFlash);
       _color.setHex(lightState.colorHex).lerp(_levelTintColor.setHex(lightState.pulseTintHex), lightState.wave01 * 0.45);
 
-      // Orient the portal archway smoothly toward the approaching serpent so the holographic screen faces the player
+      // Update custom GLSL Dimensional Vortex & Ancient Seal shader uniforms
+      if (pt.vortexMat) {
+        pt.vortexMat.uniforms.uTime.value = t + i * 1.37;
+        pt.vortexMat.uniforms.uOpenProgress.value = act.openProgress;
+        pt.vortexMat.uniforms.uVortexAperture.value = act.vortexAperture;
+        pt.vortexMat.uniforms.uShockwave.value = act.shockwaveFlash;
+        pt.vortexMat.uniforms.uUnlocked.value = act.unlocked ? 1.0 : 0.0;
+      }
+
+      // Update GPU 3D Particle Vortex shader uniforms
+      if (pt.particleMat) {
+        pt.particleMat.uniforms.uTime.value = t + i * 0.91;
+        pt.particleMat.uniforms.uOpenProgress.value = act.openProgress;
+        pt.particleMat.uniforms.uShockwave.value = act.shockwaveFlash;
+        pt.particleMat.uniforms.uPixelRatio.value = pixelRatio;
+      }
+
+      // Animate expanding 3D ignition shockwave ring
+      if (pt.shockwaveRing && pt.shockwaveRing.material instanceof THREE.MeshBasicMaterial) {
+        if (act.shockwaveFlash > 0.02) {
+          pt.shockwaveRing.visible = true;
+          const expandT = Math.max(0, Math.min(1, (act.openProgress - 0.38) / 0.58));
+          const ringScale = 0.28 + expandT * 2.35;
+          pt.shockwaveRing.scale.setScalar(ringScale);
+          pt.shockwaveRing.rotation.z = t * 2.6;
+          pt.shockwaveRing.material.opacity = act.shockwaveFlash * 0.86;
+        } else {
+          pt.shockwaveRing.visible = false;
+        }
+      }
+
+      // Modulate emissive rune brightness from dormant seal to blazing ignition
+      if (pt.ringMat) {
+        pt.ringMat.emissiveIntensity = act.emissiveIntensity;
+      }
+      if (pt.innerRingMat) {
+        pt.innerRingMat.emissiveIntensity = act.emissiveIntensity * 0.82;
+      }
+
+      // Orient the portal archway smoothly toward the approaching serpent
       if (pt.root) {
         const pdx = snake.head.x - pt.root.position.x;
         const pdz = snake.head.z - pt.root.position.z;
@@ -5007,8 +4725,9 @@ export class WorldEngine {
         if (nearestPortalIndices.has(i)) {
           pt.climateLight.visible = true;
           pt.climateLight.color.lerp(_color, portalLightLerp);
-          pt.climateLight.intensity = lightState.intensity;
-          pt.climateLight.distance = lightState.distance;
+          const activationLightMul = 0.14 + act.vortexAperture * 0.86 + act.shockwaveFlash * 0.85;
+          pt.climateLight.intensity = lightState.intensity * activationLightMul;
+          pt.climateLight.distance = lightState.distance * (0.55 + act.vortexAperture * 0.45);
           pt.climateLight.position.y = 1.18 + Math.sin(t * 2.2 + i) * 0.04;
         } else {
           pt.climateLight.intensity = 0;
@@ -5017,40 +4736,55 @@ export class WorldEngine {
       }
       if (pt.climateCore && pt.climateCore.material instanceof THREE.MeshBasicMaterial) {
         pt.climateCore.material.color.lerp(_color, portalLightLerp);
-        pt.climateCore.material.opacity = 0.26 + lightState.wave01 * 0.34;
+        pt.climateCore.material.opacity =
+          (0.06 + act.vortexAperture * 0.26 + act.shockwaveFlash * 0.45) +
+          lightState.wave01 * 0.24 * act.vortexAperture;
         pt.climateCore.rotation.y = sway * 0.85;
-        pt.climateCore.scale.setScalar(0.94 + lightState.wave01 * 0.14);
+        pt.climateCore.scale.setScalar(0.86 + act.vortexAperture * 0.14 + act.shockwaveFlash * 0.28);
       }
 
+      // Accumulate smooth spin so velocity surges seamlessly during awakening/ignition without phase pops
+      pt.spinAngle += dt * 0.65 * act.ringSpinSpeed;
+      pt.innerSpinAngle -= dt * 1.45 * act.ringSpinSpeed;
+      pt.orbitAngle += dt * 1.25 * Math.max(0.2, act.ringSpinSpeed);
+
       pt.halo.rotation.y = sway;
-      pt.halo.rotation.z = t * 0.65 + i;
+      pt.halo.rotation.z = pt.spinAngle + i;
       if (pt.innerWheel) {
         pt.innerWheel.rotation.y = sway;
-        pt.innerWheel.rotation.z = -t * 1.45 - i;
+        pt.innerWheel.rotation.z = pt.innerSpinAngle - i;
       }
       if (pt.orbitGroup) {
+        const orbitScale = Math.max(0.001, act.vortexAperture);
+        pt.orbitGroup.visible = act.vortexAperture > 0.04;
+        pt.orbitGroup.scale.setScalar(orbitScale);
         pt.orbitGroup.rotation.y = sway;
-        const spin = t * 1.25 + i * 0.8;
+        const spin = pt.orbitAngle + i * 0.8;
         pt.orbitGroup.rotation.z = spin;
         for (let c = 0; c < pt.orbitGroup.children.length; c++) {
           pt.orbitGroup.children[c].rotation.z = -spin;
         }
       }
       if (pt.skyBeam) {
-        const beamPulse = 0.88 + Math.sin(t * 2.8 + i) * 0.18;
-        pt.skyBeam.scale.set(beamPulse, 1, beamPulse);
+        const beamPulse = (0.52 + act.skyBeamFactor * 0.56) * (0.9 + Math.sin(t * 2.8 + i) * 0.12);
+        const beamHeightScale = Math.max(0.12, act.skyBeamFactor);
+        pt.skyBeam.scale.set(beamPulse, beamHeightScale, beamPulse);
         if (pt.skyBeam instanceof THREE.Mesh && pt.skyBeam.material instanceof THREE.MeshBasicMaterial) {
           pt.skyBeam.material.color.lerp(_color, portalLightLerp * 0.65);
-          pt.skyBeam.material.opacity = 0.22 + lightState.wave01 * 0.14;
+          pt.skyBeam.material.opacity = (0.04 + act.skyBeamFactor * 0.24) + lightState.wave01 * 0.1 * act.vortexAperture;
         }
       }
-      pt.s1.position.y = 1.98 + Math.sin(t * 3.2 + i) * 0.14;
-      pt.s2.position.y = 1.98 + Math.cos(t * 3.2 + i) * 0.14;
-      if (pt.screen) {
+      const shardLift = 0.22 * act.vortexAperture + act.shockwaveFlash * 0.28;
+      pt.s1.position.y = 1.98 + shardLift + Math.sin(t * 3.2 + i) * (0.04 + act.vortexAperture * 0.12);
+      pt.s2.position.y = 1.98 + shardLift + Math.cos(t * 3.2 + i) * (0.04 + act.vortexAperture * 0.12);
+      if (pt.screen && pt.screen instanceof THREE.Mesh && pt.screen.material instanceof THREE.MeshBasicMaterial) {
+        pt.screen.visible = act.screenOpacity > 0.02;
+        pt.screen.material.opacity = act.screenOpacity * 0.94;
         pt.screen.rotation.y = sway * 0.85;
         pt.screen.position.y = 1.18 + Math.sin(t * 2.2 + i) * 0.035;
       }
       if (pt.crest) {
+        pt.crest.visible = act.screenOpacity > 0.05;
         pt.crest.rotation.y = sway * 0.85;
         pt.crest.position.y = 1.74 + Math.sin(t * 2.2 + i) * 0.035;
       }
@@ -5162,6 +4896,9 @@ export class WorldEngine {
     gameMode: GameMode,
     cameraMode: CameraMode,
   ): void {
+    // Revert the previous frame's camera shake transform offset so damped tracking never drifts
+    this.cameraShake.revertFromCamera(this.camera);
+
     let targetFov = 54;
     let dampLambda = 5.2;
 
@@ -5346,14 +5083,10 @@ export class WorldEngine {
       this.gunCamKick = 0;
     }
 
-    if (this.shakeIntensity > 0.004 || kickY > 0) {
-      const sx = this.shakeIntensity > 0.004 ? (Math.random() - 0.5) * this.shakeIntensity : 0;
-      const sy = (this.shakeIntensity > 0.004 ? (Math.random() - 0.5) * this.shakeIntensity * 0.7 : 0) + kickY;
-      _vec3B.copy(this.currentLookAt).add(_vec3A.set(sx, sy, 0));
+    if (kickY > 0) {
+      _vec3B.copy(this.currentLookAt).add(_vec3A.set(0, kickY, 0));
       this.camera.lookAt(_vec3B);
-      this.shakeIntensity = THREE.MathUtils.damp(this.shakeIntensity, 0, 11, dt);
     } else {
-      this.shakeIntensity = 0;
       this.camera.lookAt(this.currentLookAt);
     }
 
@@ -5368,6 +5101,10 @@ export class WorldEngine {
       this.camera.projectionMatrix.elements[9] += this.gunScreenShakeY;
       this.camera.projectionMatrixInverse.copy(this.camera.projectionMatrix).invert();
     }
+
+    // Step and apply Three.js camera transformation offsets (position & quaternion rotation)
+    this.cameraShake.update(dt);
+    this.cameraShake.applyToCamera(this.camera);
   }
 
   /**
@@ -5415,7 +5152,7 @@ export class WorldEngine {
     this.lastTickPerf = performance.now();
 
     if (this.isSoftwareGl) {
-      this.tickSoftware();
+      this.afterDraw(this.tickSoftware);
     } else {
       this.renderer.setAnimationLoop(this.tickHardware);
     }
@@ -5501,7 +5238,7 @@ export class WorldEngine {
     }
 
     if (!reducedMotion) {
-      this.shakeIntensity = Math.max(this.shakeIntensity, 0.18 * this.portalRippleIntensity);
+      this.cameraShake.triggerRaw(0.18 * this.portalRippleIntensity);
     }
   }
 
@@ -5543,6 +5280,7 @@ export class WorldEngine {
 
     this.onFrameCallback?.(dt);
     this.updatePortalShiftRipple(dt);
+    this.combatText?.update(dt, this.camera.position);
     this.renderFrame();
   };
 
@@ -5579,6 +5317,7 @@ export class WorldEngine {
 
     this.onFrameCallback?.(dt);
     this.updatePortalShiftRipple(dt);
+    this.combatText?.update(dt, this.camera.position);
     this.renderFrame();
     this.afterDraw(this.tickSoftware);
   };
@@ -5589,7 +5328,9 @@ export class WorldEngine {
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(w, h);
-    this.renderer.setPixelRatio(this.isSoftwareGl ? 1 : Math.min(window.devicePixelRatio, 2));
+    const nextDpr = this.isSoftwareGl ? 1 : Math.min(window.devicePixelRatio, 2);
+    this.renderer.setPixelRatio(nextDpr);
+    this.breakthroughParticles?.setPixelRatio(nextDpr);
     if (this.weatherOverlayMat) {
       this.weatherOverlayMat.uniforms.uAspect.value = w / h;
     }
@@ -5726,16 +5467,7 @@ export class WorldEngine {
     }
     this.mistTexture?.dispose();
     this.sparkGlowMap?.dispose();
-    this.evoShardInstanced?.geometry.dispose();
-    (this.evoShardInstanced?.material as THREE.Material | undefined)?.dispose();
-    this.evoSparkPoints?.geometry.dispose();
-    this.evoSparkMat?.dispose();
-    if (this.evoRings.length > 0) {
-      this.evoRings[0].mesh.geometry.dispose();
-      for (const r of this.evoRings) r.mat.dispose();
-    }
-    this.evoPillarMesh?.geometry.dispose();
-    this.evoPillarMat?.dispose();
+    this.breakthroughParticles?.dispose();
     this.mistPoints?.geometry.dispose();
     this.mistMat?.dispose();
     this.rainLines?.geometry.dispose();
@@ -5744,6 +5476,7 @@ export class WorldEngine {
     this.splashMat?.dispose();
     this.climateParticles?.geometry.dispose();
     this.climateParticleMat?.dispose();
+    this.peakElementalParticles?.dispose();
     this.weatherOverlayMesh?.geometry.dispose();
     this.weatherOverlayMat?.dispose();
     this.frostOverlayMesh?.geometry.dispose();
@@ -5756,6 +5489,7 @@ export class WorldEngine {
     this.soulVortexRingMesh?.geometry.dispose();
     this.soulVortexRingMat?.dispose();
     this.globalRankingTex?.dispose();
+    this.combatText?.dispose();
     this.renderer.dispose();
   }
 
@@ -6023,6 +5757,13 @@ export class WorldEngine {
    * Synchronizes pooled 3D Soul Clan Sentry spirit ghosts, hovering animations, and
    * real-time spectral vision cones (Violet = Circular, Amber = Search, Crimson = Alert).
    */
+  public setPortalActivations(states: ReadonlyMap<string, PortalActivationSnapshot>): void {
+    this.portalActivations.clear();
+    states.forEach((snap, id) => {
+      this.portalActivations.set(id, snap);
+    });
+  }
+
   public syncSoulSentries(sentries: readonly SoulSentryEntity[], dt: number): void {
     while (this.soulSentryPool.length < sentries.length) {
       const rig = createSoulSentryRig(this.contactShadowMap);

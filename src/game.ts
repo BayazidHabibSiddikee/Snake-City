@@ -1,4 +1,6 @@
 import { SoundEngine } from './audio';
+import { HapticFeedbackEngine } from './game/engine/HapticFeedback';
+import type { CombatLogInput } from './combatLog';
 import {
   NewTabCultivationSnapshot,
   NewTabSuggestedPortal,
@@ -13,6 +15,13 @@ import type { SpatialPortalNode } from './game/portal-world/PortalClusters';
 import type { PortalProximityPrompt } from './game/portal-world/PortalInteraction';
 import type { PortalRegionId, PortalRegionMeta } from './ecosystem/memory/RetentionPolicy';
 import { PORTAL_REGIONS } from './ecosystem/memory/RetentionPolicy';
+import {
+  createInitialPortalActivation,
+  findNearestPeakPortalInRange,
+  getPortalRequiredRank,
+  stepPortalActivation,
+  type PortalActivationSnapshot,
+} from './portalActivation';
 import {
   ComplimentEventKind,
   ComplimentNotice,
@@ -55,9 +64,11 @@ import {
   PORTAL_NETWORK_TARGET_COUNT,
   PRESET_FORMATIONS,
   PortalShiftResult,
+  SAFE_RESPAWN_MIN_PORTAL_CLEARANCE,
   cloneFormation,
   decodeFormationCode,
   encodeFormationCode,
+  findSafeFreeRespawnSpot,
   generateRandomPortalNetwork,
   loadBestScore,
   loadSavedFormations,
@@ -433,6 +444,7 @@ const OBSTACLE_CELL = 12;
 export class SnakeGameController {
   public readonly world: WorldEngine;
   public readonly sound: SoundEngine;
+  public readonly haptics: HapticFeedbackEngine;
 
   private onHudUpdate: (snapshot: HudSnapshot) => void;
   private onMinimapUpdate: (snapshot: MinimapSnapshot) => void;
@@ -449,6 +461,7 @@ export class SnakeGameController {
   ) => void;
   private onGlobalRankingPortalOpen?: (ctx: { enteredViaPortal: boolean; wave: number }) => void;
   private onLoreUnlocked?: (notice: LoreUnlockNotice) => void;
+  private onCombatLog?: (event: CombatLogInput | null) => void;
   public readonly portalBrowser = new PortalChromiumManager();
   public readonly offlineCache = new PortalOfflineCacheController();
   public readonly portalWorld = new PortalWorld();
@@ -530,6 +543,8 @@ export class SnakeGameController {
   // Cooldowns & buffs
   private boostPadTimer = 0;
   private portalCooldown = 0;
+  private sealedPortalToastCd = 0;
+  private portalActivations = new Map<string, PortalActivationSnapshot>();
   private grazeCooldown = 0;
   private invulnTimer = 0;
 
@@ -551,10 +566,10 @@ export class SnakeGameController {
   private beastSpawnAccum = 0;
 
   // Player Vitality, Dou Qi, 4 Fighting Skills, Environment Drain & Soul Clan Heat
-  private hp = 100;
-  private maxHp = 100;
-  private qi = 100;
-  private maxQi = 100;
+  private hp = 240;
+  private maxHp = 240;
+  private qi = 140;
+  private maxQi = 140;
   private hpRegenDelay = 0;
   private hurtInvuln = 0;
   private recentHurtPulse = 0;
@@ -562,10 +577,10 @@ export class SnakeGameController {
   private shockwaveCd = 0;
   private dashCd = 0;
   private ultimateCd = 0;
-  private primarySpellMaxCd = 0.42;
-  private shockwaveMaxCd = 3.8;
-  private dashMaxCd = 4.8;
-  private ultimateMaxCd = 11.5;
+  private primarySpellMaxCd = 0.28;
+  private shockwaveMaxCd = 2.5;
+  private dashMaxCd = 3.0;
+  private ultimateMaxCd = 8.0;
   private dashActiveTimer = 0;
   private dashHitIds = new Set<number>();
   private dashSparkAccum = 0;
@@ -644,11 +659,9 @@ export class SnakeGameController {
     this.onLoreUnlocked = onLoreUnlocked;
 
     this.sound = new SoundEngine();
+    this.haptics = new HapticFeedbackEngine();
     this.world = new WorldEngine(container);
-    this.portalWorld.attachToScene(
-      this.world.scene,
-      this.world.renderer.capabilities.getMaxAnisotropy(),
-    );
+    // Keep 3D world portals strictly limited to the 12 Trial Peak portals (PortalWorld remains active for Portal Browser / Atlas UI without adding extra Sanctuary or history arches to the 3D scene)
     this.foundry.attachToScene(this.world.scene);
     this.foundry.bus.on('foundry.puzzle_solved', (ev) => {
       this.sound.playEat(3, true);
@@ -766,6 +779,10 @@ export class SnakeGameController {
     this.world.start((dt) => this.tick(dt));
   }
 
+  public setCombatLogListener(cb: ((event: CombatLogInput | null) => void) | null): void {
+    this.onCombatLog = cb ?? undefined;
+  }
+
   // ==================== PUBLIC ACCESSORS ====================
 
   public getFormation(): FormationData {
@@ -855,6 +872,11 @@ export class SnakeGameController {
   public setBiome(biome: BiomeId): void {
     if (this.formation.biome === biome) return;
     this.formation.biome = biome;
+    this.formation.props = generateRandomPortalNetwork(
+      this.formation.props,
+      this.formation.biome,
+      PORTAL_NETWORK_TARGET_COUNT,
+    );
     this.applyFormationToWorld(true);
     this.spawnInitialOrbs();
     this.spawnRollingBoulders();
@@ -1532,8 +1554,10 @@ export class SnakeGameController {
 
       this.world.triggerGunRecoil(recoil.visualStrength);
       this.sound.playGunshot(this.level);
+      this.haptics.trigger('cast_primary', 1.12);
     } else {
       this.sound.playCastSpell(this.level);
+      this.haptics.trigger('cast_primary', 0.92 + Math.min(0.2, this.level * 0.015));
       const castX = this.headX + Math.sin(this.heading) * 1.1;
       const castZ = this.headZ + Math.cos(this.heading) * 1.1;
       this.world.spawnBurst(castX, baseY, castZ, magic.manaColorHex, 8 + Math.min(8, this.level));
@@ -1633,7 +1657,8 @@ export class SnakeGameController {
     }
 
     this.sound.playShockwave(this.level);
-    this.world.triggerShake(0.24 + (this.level / 12) * 0.22);
+    this.haptics.trigger('cultivation_shockwave', 0.92 + (this.level / 12) * 0.25);
+    this.world.triggerCultivationMoveShake('shockwave', 0.8 + (this.level / 12) * 0.5);
     this.world.spawnBurst(
       this.headX,
       this.headY + 1.0,
@@ -1681,7 +1706,8 @@ export class SnakeGameController {
     if (this.shockwaves.length > 12) this.shockwaves.shift();
 
     this.sound.playDashStrike(this.level);
-    this.world.triggerShake(0.28);
+    this.haptics.trigger('cultivation_dash', 0.94 + (this.level / 12) * 0.22);
+    this.world.triggerCultivationMoveShake('dash', 0.85 + (this.level / 12) * 0.35);
     this.world.spawnBurst(
       this.headX,
       this.headY + 1.0,
@@ -1773,7 +1799,7 @@ export class SnakeGameController {
         b.vz = nz * push;
         b.state = 'recover';
         b.stateTimer = 1.25;
-        this.damageBeast(b, magic.ultimateDamage);
+        this.damageBeast(b, magic.ultimateDamage, { isCrit: true, critLabel: 'FLAME LOTUS' });
       }
     }
 
@@ -1816,7 +1842,8 @@ export class SnakeGameController {
     }
 
     this.sound.playUltimateLotus(this.level);
-    this.world.triggerShake(0.58);
+    this.haptics.trigger('cultivation_ultimate', 0.96 + (this.level / 12) * 0.24);
+    this.world.triggerCultivationMoveShake('ultimate', 0.9 + (this.level / 12) * 0.4);
     this.world.spawnBurst(this.headX, this.headY + 1.4, this.headZ, 0xff9f43, 44);
     this.world.spawnBurst(this.headX, this.headY + 1.8, this.headZ, magic.manaColorHex, 32);
     this.world.triggerSoulSkillEffect(this.headX, this.headY + 0.9, this.headZ, 1.0);
@@ -2182,32 +2209,46 @@ export class SnakeGameController {
   }
 
   private resetRunState(useCheckpoint: boolean): void {
-    let spawnX = 0;
-    let spawnZ = 4;
-    let spawnHeading = Math.PI; // North (-Z) toward Whispering Foothill
+    // Strictly 12 portals anchored beside the 12 Trial Peaks — build portals & obstacle grid
+    // FIRST so the safe free-area respawn solver guarantees clear open ground away from every portal.
+    this.formation.props = generateRandomPortalNetwork(
+      this.formation.props,
+      this.formation.biome,
+      PORTAL_NETWORK_TARGET_COUNT,
+    );
+    this.applyFormationToWorld(false);
+
+    let anchorX = 0;
+    let anchorZ = 6;
+    const nextLm = this.getNextTargetLandmark();
 
     if (useCheckpoint && this.lastCheckpointId) {
       const cp = WORLD_LANDMARKS.find((lm) => lm.id === this.lastCheckpointId);
       if (cp) {
-        const nextLm = this.getNextTargetLandmark();
+        // Start searching on the open valley-facing side well clear of the peak shrine & its portal
         const towardCenter = Math.atan2(-cp.x, -cp.z);
-        const offsetDist = cp.radius + 3.2;
-        const candX = cp.x + Math.sin(towardCenter) * offsetDist;
-        const candZ = cp.z + Math.cos(towardCenter) * offsetDist;
-        if (isInWorldBounds(candX, candZ) && !isDeepWater(candX, candZ, this.formation.biome)) {
-          spawnX = candX;
-          spawnZ = candZ;
-        } else {
-          spawnX = cp.x;
-          spawnZ = cp.z + 5;
-        }
-        if (nextLm) {
-          spawnHeading = Math.atan2(nextLm.x - spawnX, nextLm.z - spawnZ);
-        } else {
-          spawnHeading = towardCenter;
-        }
+        const offsetDist = cp.radius + 20;
+        anchorX = cp.x + Math.sin(towardCenter) * offsetDist;
+        anchorZ = cp.z + Math.cos(towardCenter) * offsetDist;
       }
     }
+
+    const safeSpot = findSafeFreeRespawnSpot(
+      anchorX,
+      anchorZ,
+      this.formation.props,
+      this.formation.biome,
+      {
+        minPortalClearance: SAFE_RESPAWN_MIN_PORTAL_CLEARANCE,
+        preferredTargetX: nextLm?.x,
+        preferredTargetZ: nextLm?.z,
+        hasObstacleNear: (x, z, pad) => this.hasObstacleNear(x, z, pad),
+      },
+    );
+
+    const spawnX = safeSpot.x;
+    const spawnZ = safeSpot.z;
+    const spawnHeading = safeSpot.heading;
 
     this.syncAutonomousDifficulty();
     const stage = getStageForLevel(this.level);
@@ -2258,13 +2299,14 @@ export class SnakeGameController {
       this.triggerCompliment('expedition_start', 'high');
     }
     this.clanHeatValue = Math.min(60, Math.max(0, (this.level - 1) * 7));
-    this.ghostAmbushTimer = 10.0;
+    this.ghostAmbushTimer = 28.0;
     this.ambushBannerTimer = 0;
 
     this.boostPadTimer = 0;
-    this.portalCooldown = 0;
+    // Generous post-spawn shield & portal grace so the serpent never dies or enters a portal on spawn
+    this.portalCooldown = 5.0;
     this.grazeCooldown = 0;
-    this.invulnTimer = 2.0;
+    this.invulnTimer = 5.0;
 
     // Reset periodic Sovereign Global Ranking Portal schedule for the new run
     this.globalRankingPortalActive = false;
@@ -2282,73 +2324,18 @@ export class SnakeGameController {
     this.xpLostOnCrash = 0;
     this.isNewBest = false;
 
-    this.formation.props = generateRandomPortalNetwork(
-      this.formation.props,
-      this.formation.biome,
-      PORTAL_NETWORK_TARGET_COUNT,
-    );
-    this.ensurePortalsNearSpawn(this.headX, this.headZ, this.heading, true);
+    this.world.clearCombatText();
+    this.haptics.cancel();
+    this.onCombatLog?.(null);
+    this.portalActivations.clear();
+    this.sealedPortalToastCd = 0;
+    this.updatePortalActivations(0);
+    this.updateCultivationPeakAtmosphereAudio();
     this.rebuildInitialPathHistory();
     this.world.snapCameraHeading(this.heading);
     this.spawnInitialOrbs();
     this.spawnRollingBoulders();
     this.spawnInitialBeasts();
-  }
-
-  /**
-   * Ensures a pair of colossal Browser Portals (Portal A & Portal B) stands directly
-   * in front of the player's current spawn position (including when resuming at a distant
-   * Trial Peak checkpoint) so the portals are immediately visible on every run.
-   */
-  private ensurePortalsNearSpawn(
-    spawnX: number,
-    spawnZ: number,
-    heading: number,
-    forceApply = false,
-  ): void {
-    const fwdX = Math.sin(heading);
-    const fwdZ = Math.cos(heading);
-    const lookX = spawnX + fwdX * 14;
-    const lookZ = spawnZ + fwdZ * 14;
-
-    const hasNearbyPortal = this.formation.props.some(
-      (p) => (p.type === 'portalA' || p.type === 'portalB') && Math.hypot(p.x - lookX, p.z - lookZ) < 16,
-    );
-    if (hasNearbyPortal) {
-      if (forceApply) {
-        this.applyFormationToWorld(false);
-      }
-      return;
-    }
-
-    this.formation.props = this.formation.props.filter(
-      (p) => p.id !== 'spawn-guard-portal-a' && p.id !== 'spawn-guard-portal-b',
-    );
-
-    const pAX = Math.round((spawnX + fwdX * 14) * 10) / 10;
-    const pAZ = Math.round((spawnZ + fwdZ * 14) * 10) / 10;
-    const rightX = Math.cos(heading);
-    const rightZ = -Math.sin(heading);
-    const pBX = Math.round((spawnX + fwdX * 24 + rightX * 10) * 10) / 10;
-    const pBZ = Math.round((spawnZ + fwdZ * 24 + rightZ * 10) * 10) / 10;
-
-    if (isInWorldBounds(pAX, pAZ) && !isDeepWater(pAX, pAZ, this.formation.biome)) {
-      this.formation.props.push({
-        id: 'spawn-guard-portal-a',
-        type: 'portalA',
-        x: pAX,
-        z: pAZ,
-      });
-    }
-    if (isInWorldBounds(pBX, pBZ) && !isDeepWater(pBX, pBZ, this.formation.biome)) {
-      this.formation.props.push({
-        id: 'spawn-guard-portal-b',
-        type: 'portalB',
-        x: pBX,
-        z: pBZ,
-      });
-    }
-    this.applyFormationToWorld(false);
   }
 
   public getActivePortalCount(): number {
@@ -2550,6 +2537,91 @@ export class SnakeGameController {
     this.sound.setPortalProximity(minDist, nearestVariant, stereoPan);
   }
 
+  /**
+   * Computes proximity to the active Cultivation Peak and updates SoundEngine's
+   * peak-and-tier environmental soundscape so every mountain peak carries a distinct
+   * acoustic signature shaped by the player's current cultivation tier.
+   */
+  private updateCultivationPeakAtmosphereAudio(): void {
+    let nearestPeak = WORLD_LANDMARKS[0];
+    let nearestDist = Infinity;
+    for (const lm of WORLD_LANDMARKS) {
+      const d = Math.hypot(this.headX - lm.x, this.headZ - lm.z);
+      if (d < nearestDist) {
+        nearestDist = d;
+        nearestPeak = lm;
+      }
+    }
+    if (!nearestPeak) {
+      this.sound.setCultivationPeakAtmosphere(null, 1, 0, this.level);
+      return;
+    }
+    const proximity01 = Math.max(
+      0,
+      Math.min(1, 1 - (nearestDist - nearestPeak.radius) / 72),
+    );
+    this.sound.setCultivationPeakAtmosphere(
+      nearestPeak.id,
+      nearestPeak.tier,
+      proximity01,
+      this.level,
+    );
+  }
+
+  /**
+   * Advances the rank-gated 3D visual opening sequence for all 12 Trial Peak portals.
+   * Portals remain sealed until the player attains the peak's required Cultivation Rank
+   * and approaches within awakening resonance range, preventing passive interaction.
+   */
+  private updatePortalActivations(dt: number): void {
+    if (this.sealedPortalToastCd > 0) {
+      this.sealedPortalToastCd = Math.max(0, this.sealedPortalToastCd - dt);
+    }
+
+    const activeIds = new Set<string>();
+    for (const prop of this.formation.props) {
+      if (prop.type !== 'portalA' && prop.type !== 'portalB') continue;
+      activeIds.add(prop.id);
+
+      const prev = this.portalActivations.get(prop.id) ?? createInitialPortalActivation(prop.id);
+      const dist = Math.hypot(this.headX - prop.x, this.headZ - prop.z);
+      const effectiveDist = this.mode === 'playing' && !this.modalFreeze ? dist : Infinity;
+      const step = stepPortalActivation(prev, this.level, effectiveDist, dt);
+      this.portalActivations.set(prop.id, step.snapshot);
+
+      if (step.justStartedOpening && this.mode === 'playing') {
+        const py = terrainHeightAt(prop.x, prop.z, this.formation.biome);
+        this.sound.playPortalOpeningSequence(step.snapshot.requiredRank);
+        this.haptics.trigger('portal_awakening');
+        this.world.spawnBurst(prop.x, py + 2.2, prop.z, step.snapshot.accentHex, 24);
+        this.onToast(
+          `✦ Rank ${step.snapshot.requiredRank} Resonance — Awakening ${step.snapshot.landmarkName} Portal…`,
+        );
+      } else if (step.justFinishedOpening && this.mode === 'playing') {
+        const py = terrainHeightAt(prop.x, prop.z, this.formation.biome);
+        this.sound.playPortal();
+        this.world.spawnBurst(prop.x, py + 2.8, prop.z, 0xffd55a, 34);
+        this.world.spawnBurst(prop.x, py + 2.4, prop.z, step.snapshot.accentHex, 28);
+        this.world.triggerPortalShiftRipple({
+          worldOrigin: { x: prop.x, y: py + 2.6, z: prop.z },
+          soulAwarded: false,
+          intensity: 0.72,
+          durationSec: 1.1,
+        });
+        this.onToast(`✦ ${step.snapshot.landmarkName} Portal Opened — Step through the rift!`);
+      }
+    }
+
+    // Prune any portals removed on formation/biome shift
+    for (const id of Array.from(this.portalActivations.keys())) {
+      if (!activeIds.has(id)) {
+        this.portalActivations.delete(id);
+      }
+    }
+
+    this.world.setPortalActivations(this.portalActivations);
+  }
+
   private rebuildInitialPathHistory(): void {
     this.pathHistory = [];
     this.totalTravelDist = 0;
@@ -2679,7 +2751,7 @@ export class SnakeGameController {
       }
 
       if (!isInWorldBounds(x, z)) continue;
-      if (Math.hypot(x - this.headX, z - this.headZ) < 30) continue;
+      if (Math.hypot(x - this.headX, z - this.headZ) < 48) continue;
       const y = terrainHeightAt(x, z, biome);
       if (y < 8) continue;
 
@@ -2776,7 +2848,8 @@ export class SnakeGameController {
 
     this.sound.playLevelUp(this.level, isHuman);
     this.sound.setEvolutionTier(this.level, true);
-    this.world.triggerShake(isHuman ? 0.65 : 0.38);
+    this.haptics.triggerBreakthrough(this.level, isHuman);
+    this.world.triggerCultivationMoveShake('breakthrough', isHuman ? 1.25 : 0.85 + (this.level / 12) * 0.25);
     const bodyTrail = this.sampleBodySegments().slice(0, 8);
     this.world.spawnEvolutionExplosion(
       this.headX,
@@ -2911,18 +2984,21 @@ export class SnakeGameController {
     this.sound.setAltitudeFactor(altNorm);
     this.sound.setRainIntensity(this.world.getLiveRainIntensity());
     this.updatePortalTemporalDroneAudio();
+    this.updateCultivationPeakAtmosphereAudio();
+    this.updatePortalActivations(dt);
     const lightningStrike = this.world.consumeLightningStrike();
     if (lightningStrike > 0) {
       this.sound.playLightningThunder(lightningStrike);
     }
 
     this.portalWorldElapsedSec += dt;
+    // Keep walk-in disabled on PortalWorld so only the 12 explicit Trial Peak portals trigger entry
     this.portalWorld.update(
       dt,
       this.portalWorldElapsedSec,
       this.headX,
       this.headZ,
-      this.mode === 'playing' && !this.modalFreeze,
+      false,
     );
 
     if (this.mode === 'playing' && !this.modalFreeze) {
@@ -3041,8 +3117,8 @@ export class SnakeGameController {
 
     if (this.isSheltered) {
       this.currentEnvDrainPerSec = 0;
-      this.hp = Math.min(this.maxHp, this.hp + 6.5 * dt);
-      this.qi = Math.min(this.maxQi, this.qi + 14.0 * dt);
+      this.hp = Math.min(this.maxHp, this.hp + 18.0 * dt);
+      this.qi = Math.min(this.maxQi, this.qi + 24.0 * dt);
     } else if (effectiveDrain > 0) {
       this.currentEnvDrainPerSec = Number(effectiveDrain.toFixed(2));
       if (this.invulnTimer <= 0) {
@@ -3062,7 +3138,7 @@ export class SnakeGameController {
         if (this.hpRegenDelay > 0) {
           this.hpRegenDelay = Math.max(0, this.hpRegenDelay - dt);
         } else {
-          this.hp = Math.min(this.maxHp, this.hp + 4.2 * dt);
+          this.hp = Math.min(this.maxHp, this.hp + 12.0 * dt);
         }
       }
     }
@@ -3236,11 +3312,19 @@ export class SnakeGameController {
       }
     }
 
-    // 6. Check Deep Water Hazard
+    // 6. Check Deep Water Hazard (deflects toward dry shore + deals chill damage instead of instant-killing)
     if (this.invulnTimer <= 0 && isDeepWater(this.headX, this.headZ, this.formation.biome)) {
-      const lakeName = this.formation.biome === 'jungle' ? 'Emerald Lagoon' : 'freezing Glacial Lake';
-      this.triggerGameOver(`Plunged into the ${lakeName}!`);
-      return;
+      const lakeName = this.formation.biome === 'jungle' ? 'Emerald Lagoon' : 'Glacial Lake';
+      const shoreAngle = Math.atan2(-this.headX, -this.headZ);
+      const pushX = Math.sin(shoreAngle);
+      const pushZ = Math.cos(shoreAngle);
+      this.heading = shoreAngle;
+      this.headX += pushX * 3.4;
+      this.headZ += pushZ * 3.4;
+      this.headY = terrainHeightAt(this.headX, this.headZ, this.formation.biome);
+      const waterDmg = Math.max(14, Math.round(this.maxHp * 0.14));
+      const fatal = this.applyPlayerDamage(waterDmg, lakeName, pushX, pushZ);
+      if (fatal) return;
     }
 
     // 7. Check Boost Pads & Twin Warp Portals
@@ -3254,7 +3338,7 @@ export class SnakeGameController {
     }
 
     // 9. Update & Check Dynamic Rolling Mountain Boulders
-    const boulderHit = this.updateRollingBoulders(dt, this.invulnTimer <= 0);
+    const boulderHit = this.updateRollingBoulders(dt, this.invulnTimer <= 0, boostActive);
     if (boulderHit) return;
 
     // 9b. Update Roaming Wild Beasts, Patrolling Soul Clan Sentries, Spell Projectiles & Expanding Shockwaves
@@ -3266,15 +3350,22 @@ export class SnakeGameController {
     const spellFatal = this.updateProjectilesAndShockwaves(dt);
     if (spellFatal || this.mode !== 'playing') return;
 
-    // 10. Check Self-Tail Collision (disabled at Lv 12 Ascended Human)
-    if (this.invulnTimer <= 0 && this.level < MAX_EVOLUTION_LEVEL && this.snakeLength > 11) {
+    // 10. Check Self-Tail Collision (light tangle damage + recoil instead of instant-kill)
+    if (this.invulnTimer <= 0 && this.level < MAX_EVOLUTION_LEVEL && this.snakeLength > 14) {
       const bodyPoses = this.sampleBodySegments();
-      for (let i = 9; i < bodyPoses.length; i++) {
+      for (let i = 11; i < bodyPoses.length; i++) {
         const seg = bodyPoses[i];
         const dist = Math.hypot(this.headX - seg.x, this.headZ - seg.z);
-        if (dist < 0.72 && Math.abs(this.headY - seg.y) < 1.2) {
-          this.triggerGameOver('Tangled in your own serpent tail!');
-          return;
+        if (dist < 0.65 && Math.abs(this.headY - seg.y) < 1.1) {
+          const tangleDmg = Math.max(10, Math.round(this.maxHp * 0.09));
+          const fatal = this.applyPlayerDamage(
+            tangleDmg,
+            'Serpent Tail Tangle',
+            this.headX - seg.x,
+            this.headZ - seg.z,
+          );
+          if (fatal) return;
+          break;
         }
       }
     }
@@ -3345,6 +3436,33 @@ export class SnakeGameController {
           this.world.spawnBurst(this.headX, this.headY + 0.6, this.headZ, 0xffe066, 16);
         }
       } else if ((prop.type === 'portalA' || prop.type === 'portalB') && d < 5.2 && this.portalCooldown <= 0) {
+        const activation = this.portalActivations.get(prop.id);
+        const requiredRank = activation?.requiredRank ?? getPortalRequiredRank(prop.id);
+        if (this.level < requiredRank || !activation?.unlocked) {
+          // Portal is sealed by cultivation rank — deflect serpent gently and display rank requirement
+          const pushDx = this.headX - prop.x;
+          const pushDz = this.headZ - prop.z;
+          const pushLen = Math.hypot(pushDx, pushDz) || 1;
+          this.headX = prop.x + (pushDx / pushLen) * 5.8;
+          this.headZ = prop.z + (pushDz / pushLen) * 5.8;
+          this.headY = terrainHeightAt(this.headX, this.headZ, this.formation.biome);
+          if (this.sealedPortalToastCd <= 0) {
+            this.sealedPortalToastCd = 2.6;
+            const reqStage = getStageForLevel(requiredRank);
+            this.sound.playPortalSealedChime();
+            this.haptics.trigger('portal_sealed');
+            this.world.spawnBurst(this.headX, this.headY + 1.2, this.headZ, 0xf2c14e, 14);
+            this.onToast(
+              `Sealed Gateway — Reach Cultivation Rank ${requiredRank} (${reqStage.title}) to open ${activation?.landmarkName ?? 'this peak'}'s portal!`,
+            );
+          }
+          continue;
+        }
+        if (!activation.canEnter) {
+          // Wait for the visual 3D particle & shader opening sequence to finish before allowing entry
+          continue;
+        }
+
         const guardingSentry = this.soulSentries.find(
           (s) => s.portalId === prop.id && s.patrolMode !== 'banished',
         );
@@ -3617,13 +3735,20 @@ export class SnakeGameController {
             const label =
               obs.kind === 'tree'
                 ? this.formation.biome === 'jungle'
-                  ? 'giant jungle tree'
-                  : 'towering alpine pine'
+                  ? 'Giant Jungle Tree'
+                  : 'Alpine Pine'
                 : obs.kind === 'totem'
-                  ? 'ancient mountain totem'
-                  : 'mountain boulder';
-            this.triggerGameOver(`Crashed head-on into a ${label}!`);
-            return true;
+                  ? 'Ancient Mountain Totem'
+                  : 'Mountain Boulder';
+            this.headX = obs.x + nx * (minDist + 0.45);
+            this.headZ = obs.z + nz * (minDist + 0.45);
+            this.headY = terrainHeightAt(this.headX, this.headZ, this.formation.biome);
+            const cross = dirX * nz - dirZ * nx;
+            this.heading += (cross >= 0 ? 1 : -1) * 0.58;
+            const crashDmg = Math.max(12, Math.round(this.maxHp * 0.12));
+            const fatal = this.applyPlayerDamage(crashDmg, label, nx, nz);
+            if (fatal) return true;
+            continue;
           }
 
           this.headX = obs.x + nx * (minDist + 0.06);
@@ -3645,10 +3770,11 @@ export class SnakeGameController {
     return false;
   }
 
-  private updateRollingBoulders(dt: number, checkCollision: boolean): boolean {
+  private updateRollingBoulders(dt: number, checkCollision: boolean, boostActive = false): boolean {
     const biome = this.formation.biome;
     const levelSpeedBonus = 1 + (this.level - 1) * 0.022;
     const maxSpd = (this.speedPreset === 'turbo' ? 11.8 : 9.4) * levelSpeedBonus;
+    const magic = getMagicTierForLevel(this.level);
 
     for (let i = 0; i < this.rollingBoulders.length; i++) {
       const b = this.rollingBoulders[i];
@@ -3689,8 +3815,26 @@ export class SnakeGameController {
 
       if (checkCollision) {
         if (distToPlayer < b.radius + 0.62 && Math.abs(this.headY - b.y) < b.radius + 1.0) {
-          this.triggerGameOver('Crushed by a rolling avalanche boulder!');
-          return true;
+          // A boosted or dashing powerful serpent shatters boulders cleanly for XP!
+          this.world.spawnBurst(b.x, b.y + 0.8, b.z, 0xd6d3d1, 22);
+          this.rollingBoulders[i] = this.createRollingBoulderInstance();
+          if (boostActive || this.dashActiveTimer > 0) {
+            this.sound.playShockwave(this.level);
+            this.world.triggerShake(0.2);
+            if (magic.breaksBoulders) {
+              this.awardXp(35);
+              this.onToast('Shattered avalanche boulder! +35 XP');
+            }
+            continue;
+          }
+          const boulderDmg = Math.max(16, Math.round(this.maxHp * 0.16));
+          const fatal = this.applyPlayerDamage(
+            boulderDmg,
+            'Rolling Avalanche Boulder',
+            this.headX - b.x,
+            this.headZ - b.z,
+          );
+          if (fatal) return true;
         }
       }
     }
@@ -3707,15 +3851,16 @@ export class SnakeGameController {
   private spawnInitialBeasts(): void {
     this.beasts = [];
     // Ensure Mythic Peak Guardians stand near the next unconquered higher-tier Trial Peak
+    // (only if well outside the player's safe spawn perimeter)
     const nextLm = this.getNextTargetLandmark();
-    if (nextLm && nextLm.tier >= 2) {
+    if (nextLm && nextLm.tier >= 2 && Math.hypot(nextLm.x + 8 - this.headX, nextLm.z + 6 - this.headZ) >= 42) {
       const g = this.createBeastInstance('guardian', nextLm.x + 8, nextLm.z + 6, nextLm.id);
       if (g) this.beasts.push(g);
     }
 
     const target = this.getTargetBeastCount();
     for (let i = this.beasts.length; i < target; i++) {
-      const b = this.spawnBeastNearPlayer(i < 3);
+      const b = this.spawnBeastNearPlayer(false);
       if (b) this.beasts.push(b);
     }
   }
@@ -3973,10 +4118,11 @@ export class SnakeGameController {
     const biome = this.formation.biome;
     for (let attempt = 0; attempt < 40; attempt++) {
       const ang = Math.random() * Math.PI * 2;
-      const dist = closer ? 24 + Math.random() * 28 : 34 + Math.random() * 68;
+      const dist = closer ? 44 + Math.random() * 28 : 48 + Math.random() * 72;
       const x = this.headX + Math.cos(ang) * dist;
       const z = this.headZ + Math.sin(ang) * dist;
-      if (!isInWorldBounds(x, z) || isNearSpawn(x, z, 15)) continue;
+      if (!isInWorldBounds(x, z) || isNearSpawn(x, z, 26)) continue;
+      if (Math.hypot(x - this.headX, z - this.headZ) < 42) continue;
       if (isDeepWater(x, z, biome)) continue;
       if (this.hasObstacleNear(x, z, 2.2)) continue;
       if (this.beasts.some((b) => Math.hypot(b.x - x, b.z - z) < 12)) continue;
@@ -4023,6 +4169,20 @@ export class SnakeGameController {
       this.hitstopTimer = Math.max(this.hitstopTimer, 0.075);
       this.hp = Math.min(this.maxHp, this.hp + 8);
       this.qi = Math.min(this.maxQi, this.qi + 18);
+      this.world.spawnCombatText({
+        x: this.headX,
+        y: this.headY + 1.9,
+        z: this.headZ,
+        kind: 'qi_absorbed',
+        value: 18,
+        subtext: 'COUNTER CLASH',
+      });
+      this.onCombatLog?.({
+        kind: 'parry',
+        amount: 18,
+        targetName: beast.name,
+        skillName: 'Counter Clash',
+      });
       this.world.triggerShake(0.32);
       this.world.spawnBurst(beast.x, beast.y + 1.35, beast.z, 0xfde047, 26);
       this.shockwaves.push({
@@ -4053,17 +4213,55 @@ export class SnakeGameController {
       beast.stateTimer = Math.max(beast.stateTimer, beast.isBoss ? 0.45 : 0.68);
     }
 
-    this.damageBeast(beast, res.damage);
+    this.damageBeast(beast, res.damage, {
+      isCrit: res.triggeredParry || res.triggeredStaggerBonus,
+      critLabel: res.triggeredParry
+        ? 'COUNTER CLASH'
+        : res.triggeredStaggerBonus
+          ? 'STAGGER'
+          : undefined,
+    });
   }
 
-  private damageBeast(beast: WildBeast, amount: number): void {
+  private damageBeast(
+    beast: WildBeast,
+    amount: number,
+    opts?: { isCrit?: boolean; critLabel?: string },
+  ): void {
     beast.hp -= amount;
     beast.hitFlash = 0.24;
     this.lastEngagedBeastId = beast.id;
     this.lastEngagedTimer = 5.5;
     this.recordBeastEncounter(beast.speciesId);
 
+    const isCritHit = Boolean(opts?.isCrit) || (beast.hp <= 0 && beast.isBoss);
+    this.world.spawnCombatText({
+      x: beast.x,
+      y: beast.y + beast.radius + 1.45,
+      z: beast.z,
+      kind: isCritHit ? 'crit' : 'damage',
+      value: amount,
+      subtext: opts?.critLabel,
+      scaleMultiplier: beast.isBoss ? 1.16 : 1.0,
+    });
+    this.onCombatLog?.({
+      kind: isCritHit ? 'crit' : 'dealt',
+      amount,
+      targetName: beast.name,
+      damageRatio: amount / Math.max(1, beast.maxHp),
+      skillName: opts?.critLabel
+        ? opts.critLabel
+            .toLowerCase()
+            .replace(/\b\w/g, (ch) => ch.toUpperCase())
+        : undefined,
+    });
+
     if (beast.hp <= 0) {
+      this.onCombatLog?.({
+        kind: 'defeat',
+        amount: beast.xpReward,
+        targetName: beast.name,
+      });
       const idx = this.beasts.indexOf(beast);
       if (idx >= 0) this.beasts.splice(idx, 1);
 
@@ -4078,11 +4276,20 @@ export class SnakeGameController {
       this.clanHeatValue = Math.min(100, this.clanHeatValue + heatGain);
 
       // Combat siphon: defeating enemies restores HP, Dou Qi & Stamina (crucial in harsh climates!)
-      const hpRestore = beast.isBoss ? 45 : 18;
-      const qiRestore = beast.isBoss ? 65 : 30;
+      const hpRestore = beast.isBoss ? 85 : 38;
+      const qiRestore = beast.isBoss ? 90 : 42;
       this.hp = Math.min(this.maxHp, this.hp + hpRestore);
       this.qi = Math.min(this.maxQi, this.qi + qiRestore);
-      this.stamina = Math.min(1, this.stamina + (beast.isBoss ? 0.65 : 0.34));
+      this.stamina = Math.min(1, this.stamina + (beast.isBoss ? 0.75 : 0.45));
+      this.world.spawnCombatText({
+        x: this.headX,
+        y: this.headY + 2.0,
+        z: this.headZ,
+        kind: 'qi_absorbed',
+        value: qiRestore,
+        subtext: beast.isBoss ? 'BOSS SIPHON' : undefined,
+        scaleMultiplier: beast.isBoss ? 1.18 : 1.0,
+      });
 
       const discovery = this.recordBeastDefeat(beast);
       const pts = beast.isBoss ? 520 : beast.faction === 'ghost_clan' ? 240 : 180;
@@ -4102,6 +4309,12 @@ export class SnakeGameController {
                   : 0xffc24d;
       this.world.spawnBurst(beast.x, beast.y + 1.4, beast.z, burstColor, beast.isBoss ? 48 : 28);
       this.sound.playBeastDefeat(beast.isBoss);
+      this.haptics.triggerCombatHit({
+        damageRatio: amount / Math.max(1, beast.maxHp),
+        isCrit: isCritHit,
+        isDefeat: true,
+        isBoss: beast.isBoss,
+      });
       this.world.triggerShake(beast.isBoss ? 0.38 : 0.18);
 
       // Record combat historical milestones
@@ -4153,6 +4366,12 @@ export class SnakeGameController {
       this.triggerCombatTaunt(beast, 'execute', 'high');
     } else {
       this.sound.playBeastHit();
+      this.haptics.triggerCombatHit({
+        damageRatio: amount / Math.max(1, beast.maxHp),
+        isCrit: isCritHit,
+        isDefeat: false,
+        isBoss: beast.isBoss,
+      });
       this.world.spawnBurst(beast.x, beast.y + 1.1, beast.z, 0xffe4b5, 10);
       if (beast.state === 'patrol') {
         beast.state = 'chase';
@@ -4167,9 +4386,9 @@ export class SnakeGameController {
     if (this.invulnTimer > 0 || this.hurtInvuln > 0) return false;
 
     this.hp = Math.max(0, this.hp - amount);
-    this.hurtInvuln = 0.82;
+    this.hurtInvuln = 1.15;
     this.recentHurtPulse = 1.0;
-    this.hpRegenDelay = 4.5;
+    this.hpRegenDelay = 2.2;
 
     // Gentle knockback impulse so player isn't trapped inside the attacker
     const pLen = Math.hypot(pushX, pushZ);
@@ -4186,8 +4405,25 @@ export class SnakeGameController {
     }
 
     this.sound.playPlayerHurt();
-    this.world.triggerShake(0.42);
+    this.haptics.triggerCombatHit({
+      damageRatio: amount / Math.max(1, this.maxHp),
+      isPlayerHit: true,
+    });
+    this.world.triggerDamageShake(amount / Math.max(1, this.maxHp), pushX, pushZ);
     this.world.spawnBurst(this.headX, this.headY + 1.0, this.headZ, 0xff5a45, 22);
+    this.world.spawnCombatText({
+      x: this.headX,
+      y: this.headY + 1.85,
+      z: this.headZ,
+      kind: 'player_damage',
+      value: amount,
+    });
+    this.onCombatLog?.({
+      kind: 'received',
+      amount,
+      targetName: sourceName,
+      damageRatio: amount / Math.max(1, this.maxHp),
+    });
 
     if (this.hp <= 0) {
       this.triggerGameOver(`Overwhelmed by ${sourceName}!`);
@@ -4774,7 +5010,14 @@ export class SnakeGameController {
             if (strike.triggeredStaggerBonus) {
               this.world.spawnBurst(b.x, b.y + 1.25, b.z, 0xfde047, 12);
             }
-            this.damageBeast(b, strike.damage);
+            this.damageBeast(b, strike.damage, {
+              isCrit: strike.triggeredStaggerBonus || p.style === 'lotus',
+              critLabel: strike.triggeredStaggerBonus
+                ? 'STAGGER'
+                : p.style === 'lotus'
+                  ? 'LOTUS'
+                  : undefined,
+            });
             this.projectiles.splice(i, 1);
             hit = true;
             break;
@@ -4789,16 +5032,46 @@ export class SnakeGameController {
               this.world.spawnBurst(p.x, p.y, p.z, 0xc084fc, 12);
               this.projectiles.splice(i, 1);
               hit = true;
+              const sy = terrainHeightAt(sentry.x, sentry.z, biome) + 2.4;
               if (sentry.hp <= 0) {
-                const sy = terrainHeightAt(sentry.x, sentry.z, biome) + 2.4;
                 banishSoulSentry(sentry, 18);
                 this.sound.playSentryBanish();
+                this.haptics.triggerCombatHit({ damageRatio: 0.5, isDefeat: true });
                 this.world.spawnBurst(sentry.x, sy, sentry.z, 0x3de095, 16);
+                this.world.spawnCombatText({
+                  x: sentry.x,
+                  y: sy + 1.0,
+                  z: sentry.z,
+                  kind: 'xp',
+                  value: 100,
+                  subtext: 'SENTRY BANISHED',
+                });
+                this.onCombatLog?.({
+                  kind: 'defeat',
+                  amount: 100,
+                  targetName: sentry.name,
+                });
                 this.addScore(120);
                 this.awardXp(100);
                 this.recordArchiveUnlock(sentry.archetype, 'banish', true);
                 this.recordArchiveUnlock('chronicle_ward_breaking', 'banish', true);
                 this.onToast(`${sentry.name} banished! Portal unsealed (+100 XP)`);
+              } else {
+                this.haptics.triggerCombatHit({ damageRatio: 0.34, isDefeat: false });
+                this.world.spawnCombatText({
+                  x: sentry.x,
+                  y: sy + 0.7,
+                  z: sentry.z,
+                  kind: 'damage',
+                  value: p.damage,
+                  subtext: 'WARD HIT',
+                });
+                this.onCombatLog?.({
+                  kind: 'dealt',
+                  amount: p.damage,
+                  targetName: sentry.name,
+                  skillName: 'Ward Strike',
+                });
               }
               break;
             }
@@ -4836,10 +5109,11 @@ export class SnakeGameController {
           );
         }
 
+        const qiGain = orb.golden ? 42 : 16;
         this.snakeLength = Math.min(MAX_LENGTH, this.snakeLength + (orb.golden ? 3 : 2));
         this.stamina = Math.min(1, this.stamina + (orb.golden ? 0.55 : 0.25));
         this.hp = Math.min(this.maxHp, this.hp + (orb.golden ? 22 : 7));
-        this.qi = Math.min(this.maxQi, this.qi + (orb.golden ? 42 : 16));
+        this.qi = Math.min(this.maxQi, this.qi + qiGain);
 
         this.combo = this.comboTimer > 0 ? Math.min(8, this.combo + 1) : 1;
         this.maxCombo = Math.max(this.maxCombo, this.combo);
@@ -4865,6 +5139,7 @@ export class SnakeGameController {
         const xpGain = Math.round(baseXp * (1 + (this.combo - 1) * 0.18) * altBonus);
 
         this.sound.playEat(this.combo, orb.golden);
+        this.haptics.trigger(orb.golden ? 'golden_crystal' : 'qi_absorb');
         this.world.spawnBurst(
           orb.x,
           orb.y + 0.8,
@@ -4872,6 +5147,15 @@ export class SnakeGameController {
           orb.golden ? 0xffd24d : 0x58e1ff,
           orb.golden ? 30 : 20,
         );
+        this.world.spawnCombatText({
+          x: orb.x,
+          y: orb.y + 1.35,
+          z: orb.z,
+          kind: 'qi_absorbed',
+          value: qiGain,
+          subtext: orb.golden ? 'GOLDEN CRYSTAL' : undefined,
+          scaleMultiplier: orb.golden ? 1.18 : 1.0,
+        });
 
         const prevLvl = this.level;
         this.awardXp(xpGain);
@@ -4910,6 +5194,15 @@ export class SnakeGameController {
         this.sound.playLandmark();
         const ly = terrainHeightAt(lm.x, lm.z, this.formation.biome);
         this.world.spawnBurst(lm.x, ly + 2.8, lm.z, lm.accentHex, 44);
+        this.world.spawnCombatText({
+          x: lm.x,
+          y: ly + 3.4,
+          z: lm.z,
+          kind: 'xp',
+          value: lm.xpReward,
+          subtext: lm.name.toUpperCase(),
+          scaleMultiplier: 1.22,
+        });
         this.world.triggerShake(0.24);
 
         const prevLvl = this.level;
@@ -4959,7 +5252,7 @@ export class SnakeGameController {
     this.persistJourney();
 
     this.sound.playCrash();
-    this.world.triggerShake(0.9);
+    this.world.triggerDamageShake(1.0);
     this.world.spawnBurst(this.headX, this.headY + 0.8, this.headZ, 0xff5a36, 36);
     this.emitHud();
   }
@@ -5227,6 +5520,16 @@ export class SnakeGameController {
       cultivationBuffRemainingSec: Math.ceil(this.portalLoot.getActiveBuff()?.remainingSec ?? 0),
       permanentResonancePct: this.portalLoot.getPermanentResonancePct(),
       rareMaterialCount: this.portalLoot.getTotalMaterialCount(),
+      nearestPeakPortal:
+        this.mode === 'builder'
+          ? null
+          : findNearestPeakPortalInRange(
+              this.formation.props,
+              this.headX,
+              this.headZ,
+              this.level,
+              this.portalActivations,
+            ),
     });
   }
 
@@ -5298,13 +5601,7 @@ export class SnakeGameController {
         fromPlayer: p.fromPlayer,
       })),
       portals,
-      portalMemoryBlips: this.portalWorld.getMinimapBlips().map((b) => ({
-        x: b.x,
-        z: b.z,
-        visualState: b.visualState,
-        isSanctuary: b.isSanctuary,
-        count: b.count,
-      })),
+      portalMemoryBlips: [],
       sentries: this.soulSentries
         .filter((s) => s.patrolMode !== 'banished')
         .map(

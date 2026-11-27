@@ -1,5 +1,11 @@
 import * as THREE from 'three';
 import { BeastKind, BiomeId } from './types';
+import {
+  PORTAL_PARTICLE_FRAGMENT_SHADER,
+  PORTAL_PARTICLE_VERTEX_SHADER,
+  PORTAL_VORTEX_FRAGMENT_SHADER,
+  PORTAL_VORTEX_VERTEX_SHADER,
+} from './portalActivation';
 
 export interface ModelResources {
   scaleMap: THREE.Texture;
@@ -345,11 +351,16 @@ export function createTotemBlock(res: ModelResources): THREE.Group {
 /**
  * Composite 12-part Colossal Dimensional Portal Archway with 3D Rolling Tab Satellites & Skyward Beacon.
  */
-export function createPortalBlock(res: ModelResources, variant: 'A' | 'B'): THREE.Group {
+export function createPortalBlock(
+  res: ModelResources,
+  variant: 'A' | 'B',
+  peakAccentHex?: number,
+): THREE.Group {
   const group = new THREE.Group();
   const accentHex = variant === 'A' ? 0x2de3ff : 0xff6be0;
   const secondaryHex = variant === 'A' ? 0x38bdf8 : 0xc084fc;
   const emissiveHex = variant === 'A' ? 0x0ea5e9 : 0xd946ef;
+  const peakHex = peakAccentHex ?? accentHex;
 
   const stoneMat = new THREE.MeshStandardMaterial({
     color: 0x2c3545,
@@ -429,19 +440,114 @@ export function createPortalBlock(res: ModelResources, variant: 'A' | 'B'): THRE
   });
   const voidDisc = new THREE.Mesh(new THREE.CircleGeometry(0.82, 32), voidMat);
   voidDisc.position.set(0, 1.18, -0.03);
+  voidDisc.name = 'portalVoidDisc';
   group.add(voidDisc);
 
-  // 4d. Inner 3D Holographic Chromium Pocket-World Screen inside the Portal Ring
+  // 4d. Inner 3D Holographic Chromium Pocket-World Screen (hidden until portal opening completes)
   const screenMat = new THREE.MeshBasicMaterial({
     color: 0xffffff,
     transparent: true,
-    opacity: 0.96,
+    opacity: 0.0,
     side: THREE.DoubleSide,
   });
   const screenMesh = new THREE.Mesh(new THREE.PlaneGeometry(1.18, 0.98), screenMat);
   screenMesh.position.set(0, 1.18, 0);
+  screenMesh.visible = false;
   screenMesh.name = variant === 'A' ? 'portalBrowserScreenA' : 'portalBrowserScreenB';
   group.add(screenMesh);
+
+  // 4d-ii. Custom GLSL Dimensional Vortex & Ancient Rank Seal Shader Disc
+  const vortexMat = new THREE.ShaderMaterial({
+    uniforms: {
+      uTime: { value: 0 },
+      uOpenProgress: { value: 0 },
+      uVortexAperture: { value: 0 },
+      uShockwave: { value: 0 },
+      uUnlocked: { value: 0 },
+      uPrimaryColor: { value: new THREE.Color(accentHex) },
+      uSecondaryColor: { value: new THREE.Color(secondaryHex) },
+      uPeakAccent: { value: new THREE.Color(peakHex) },
+    },
+    vertexShader: PORTAL_VORTEX_VERTEX_SHADER,
+    fragmentShader: PORTAL_VORTEX_FRAGMENT_SHADER,
+    transparent: true,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  });
+  const vortexMesh = new THREE.Mesh(new THREE.CircleGeometry(0.86, 48), vortexMat);
+  vortexMesh.position.set(0, 1.18, 0.025);
+  vortexMesh.renderOrder = 3;
+  vortexMesh.name = 'portalVortexShader';
+  group.add(vortexMesh);
+
+  // 4d-iii. Expanding 3D Ignition Shockwave Ring triggered during the opening surge
+  const shockwaveMat = new THREE.MeshBasicMaterial({
+    color: peakHex,
+    transparent: true,
+    opacity: 0,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    side: THREE.DoubleSide,
+  });
+  const shockwaveRing = new THREE.Mesh(new THREE.RingGeometry(0.45, 0.92, 40), shockwaveMat);
+  shockwaveRing.position.set(0, 1.18, 0.04);
+  shockwaveRing.visible = false;
+  shockwaveRing.renderOrder = 4;
+  shockwaveRing.name = 'portalShockwaveRing';
+  group.add(shockwaveRing);
+
+  // 4d-iv. GPU-Driven 3D Particle Vortex (140 swirling particles in custom GLSL shader)
+  const particleCount = 140;
+  const positions = new Float32Array(particleCount * 3);
+  const angles = new Float32Array(particleCount);
+  const radii = new Float32Array(particleCount);
+  const heights = new Float32Array(particleCount);
+  const speeds = new Float32Array(particleCount);
+  const seeds = new Float32Array(particleCount);
+  const sizes = new Float32Array(particleCount);
+  for (let p = 0; p < particleCount; p++) {
+    const f = p / particleCount;
+    const pseudoA = Math.abs(Math.sin((p + 1) * 12.9898) * 43758.5453) % 1;
+    const pseudoB = Math.abs(Math.sin((p + 1) * 78.233) * 19341.231) % 1;
+    angles[p] = f * Math.PI * 2 + pseudoA * 0.65;
+    radii[p] = 0.56 + pseudoB * 0.62;
+    heights[p] = pseudoA;
+    speeds[p] = 0.55 + pseudoB * 1.15;
+    seeds[p] = (pseudoA + pseudoB) * 0.5;
+    sizes[p] = 10 + pseudoB * 16;
+    positions[p * 3] = Math.cos(angles[p]) * radii[p];
+    positions[p * 3 + 1] = 0.4 + heights[p] * 1.6;
+    positions[p * 3 + 2] = Math.sin(angles[p]) * radii[p] * 0.5;
+  }
+  const particleGeo = new THREE.BufferGeometry();
+  particleGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  particleGeo.setAttribute('aAngle', new THREE.BufferAttribute(angles, 1));
+  particleGeo.setAttribute('aRadius', new THREE.BufferAttribute(radii, 1));
+  particleGeo.setAttribute('aHeight', new THREE.BufferAttribute(heights, 1));
+  particleGeo.setAttribute('aSpeed', new THREE.BufferAttribute(speeds, 1));
+  particleGeo.setAttribute('aSeed', new THREE.BufferAttribute(seeds, 1));
+  particleGeo.setAttribute('aSize', new THREE.BufferAttribute(sizes, 1));
+
+  const particleMat = new THREE.ShaderMaterial({
+    uniforms: {
+      uTime: { value: 0 },
+      uOpenProgress: { value: 0 },
+      uShockwave: { value: 0 },
+      uPixelRatio: { value: 1 },
+      uPrimaryColor: { value: new THREE.Color(accentHex) },
+      uPeakAccent: { value: new THREE.Color(peakHex) },
+    },
+    vertexShader: PORTAL_PARTICLE_VERTEX_SHADER,
+    fragmentShader: PORTAL_PARTICLE_FRAGMENT_SHADER,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  });
+  const particlePoints = new THREE.Points(particleGeo, particleMat);
+  particlePoints.frustumCulled = false;
+  particlePoints.renderOrder = 5;
+  particlePoints.name = 'portalParticleVortex';
+  group.add(particlePoints);
 
   // 4e. 3D Orbiting / Rolling Tab Cards spinning around the portal's pocket dimension!
   const orbitGroup = new THREE.Group();
@@ -532,6 +638,10 @@ export function createPortalBlock(res: ModelResources, variant: 'A' | 'B'): THRE
   voidDisc.castShadow = false;
   screenMesh.castShadow = false;
   screenMesh.receiveShadow = false;
+  vortexMesh.castShadow = false;
+  vortexMesh.receiveShadow = false;
+  shockwaveRing.castShadow = false;
+  shockwaveRing.receiveShadow = false;
   skyBeam.castShadow = false;
   skyBeam.receiveShadow = false;
   climateCore.castShadow = false;

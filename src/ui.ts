@@ -28,6 +28,11 @@ import {
   groupHistoryByTimeBucket,
 } from './browser';
 import { ComplimentNotice, FloatingTauntNotice } from './compliments';
+import {
+  CombatLogTracker,
+  formatCombatLogEntry,
+  type CombatLogInput,
+} from './combatLog';
 import { PRESET_FORMATIONS, PortalShiftResult } from './formations';
 import { ClimateLogNotice, SnakeGameController } from './game';
 import {
@@ -36,6 +41,12 @@ import {
   resolveActiveSynergy,
   type SoulDisciplineId,
 } from './game/foundry/FoundrySimulation';
+import {
+  MobileVirtualCursorController,
+  loadSavedMobileControlMode,
+  type MobileControlMode,
+} from './game/controller/mobile';
+import { classifyLeaderboardError } from './components/globalLeaderboardHelpers';
 import { renderHumanityGrowthChart } from './humanityChart';
 import {
   LOOT_RARITY_META,
@@ -190,6 +201,14 @@ export class GameUI {
   private toastEl!: HTMLElement;
   private climateLogStackEl!: HTMLElement;
   private climateLogTimers = new Set<number>();
+  private combatLogPanelEl!: HTMLElement;
+  private combatLogListEl!: HTMLOListElement;
+  private combatLogSummaryEl!: HTMLElement;
+  private combatLogStatusEl!: HTMLElement;
+  private readonly combatLogTracker = new CombatLogTracker();
+  private combatLogHideTimer = 0;
+  private combatLogHasHostile = false;
+  private combatLogPlaying = false;
   private complimentBannerEl!: HTMLElement;
   private complimentLabelEl!: HTMLElement;
   private complimentTextEl!: HTMLElement;
@@ -234,10 +253,10 @@ export class GameUI {
   private lastLoadedIframeKey = '';
   private portalBrowserPip = false;
   private portalBrowserStandalone = false;
-  private portalWorldOrbitMode = true;
+  private portalWorldOrbitMode = false;
   private portalMissionViewMode = false;
   private portalBrowserSettingsMode = false;
-  private portalBrowserSettingsTab: 'general' | 'privacy' | 'bookmarks' | 'history' = 'general';
+  private portalBrowserSettingsTab: 'general' | 'privacy' | 'bookmarks' | 'history' | 'audio' = 'general';
   private portalHistorySearchQuery = '';
   private portalHistoryFilter: 'all' | 'session' | 'A' | 'B' = 'all';
   private activePortalKey = 'spawn-guard-portal-a';
@@ -308,6 +327,8 @@ export class GameUI {
   private mobileVirtualCursorEl!: HTMLElement;
   private mobileCursorPadEl!: HTMLElement;
   private mobileCursorPuckEl!: HTMLElement;
+  private mobileCursorModeBtn!: HTMLButtonElement;
+  private mobileController: MobileVirtualCursorController | null = null;
   private mobileSkill1Btn!: HTMLButtonElement;
   private mobileSkill1LabelEl!: HTMLElement;
   private mobileSkill1CdEl!: HTMLElement;
@@ -343,6 +364,11 @@ export class GameUI {
   private zoneBadgeEl!: HTMLElement;
   private envHazardEl!: HTMLElement;
   private clanHeatSkulls!: HTMLElement[];
+  private portalDistEl!: HTMLElement;
+  private portalDistPeakEl!: HTMLElement;
+  private portalDistMetersEl!: HTMLElement;
+  private portalDistStatusEl!: HTMLElement;
+  private portalDistFillEl!: HTMLElement;
   private soulInfluenceFloatEl!: HTMLElement;
   private soulInfluenceArcEl!: SVGCircleElement;
   private soulInfluenceValEl!: HTMLElement;
@@ -662,6 +688,25 @@ export class GameUI {
               `).join('')}
             </div>
           </div>
+          <div
+            class="portal-dist-indicator hidden"
+            id="hudPortalDist"
+            role="status"
+            aria-live="polite"
+            title="Nearest Trial Peak Portal within proximity range"
+          >
+            <div class="portal-dist-row">
+              <span class="portal-dist-beacon" aria-hidden="true"></span>
+              <span class="portal-dist-kicker">PORTAL</span>
+              <span class="portal-dist-peak" id="hudPortalDistPeak">Whispering Foothill</span>
+              <span class="portal-dist-sep" aria-hidden="true">·</span>
+              <span class="portal-dist-meters" id="hudPortalDistMeters">48m</span>
+              <span class="portal-dist-status" id="hudPortalDistStatus">RANK 1</span>
+            </div>
+            <div class="portal-dist-track" aria-hidden="true">
+              <div class="portal-dist-fill" id="hudPortalDistFill"></div>
+            </div>
+          </div>
         </div>
 
         <div class="hud-controls-cluster">
@@ -689,6 +734,25 @@ export class GameUI {
         aria-relevant="additions text"
         aria-label="Climate updates"
       ></div>
+
+      <!-- SIDE COMBAT LOG PANEL (SURFACES AUTOMATICALLY WHEN IN COMBAT) -->
+      <aside
+        class="combat-log-panel is-idle"
+        id="combatLogPanel"
+        role="log"
+        aria-live="polite"
+        aria-relevant="additions text"
+        aria-label="Combat log"
+      >
+        <div class="combat-log-head">
+          <div class="combat-log-title-wrap">
+            <span class="combat-log-title">Combat Log</span>
+            <span class="combat-log-status state-idle" id="combatLogStatus">Standby</span>
+          </div>
+          <span class="combat-log-summary" id="combatLogSummary">Dealt 0 · Taken 0</span>
+        </div>
+        <ol class="combat-log-list" id="combatLogList"></ol>
+      </aside>
 
       <!-- NON-BLOCKING SOUL CLAN AMBUSH ALERT STRIP -->
       <div class="ambush-alert-banner hidden" id="ambushAlertBanner" role="status" aria-live="polite">
@@ -1348,6 +1412,7 @@ export class GameUI {
               <div class="settings-row">
                 <button type="button" class="secondary-cta compact" id="toggleMobileControlsBtn">Toggle Touch Pad &amp; Cursor</button>
                 <button type="button" class="secondary-cta compact" id="lockLandscapeSettingsBtn">Lock Landscape</button>
+                <button type="button" class="secondary-cta compact" id="toggleHapticsBtn" aria-pressed="true">Haptics: On</button>
               </div>
             </div>
           </div>
@@ -1441,77 +1506,90 @@ export class GameUI {
         </div>
       </div>
 
-      <!-- PORTAL CHROMIUM MULTI-TAB BROWSER MODAL (OPENS WHEN ENTERING 3D PORTALS OR PRESSING [G]) -->
-      <div class="chromium-portal-backdrop hidden" id="portalBrowserModal" role="dialog" aria-modal="true" aria-label="Portal Chromium Browser">
+      <!-- BUILT-IN DESKTOP BROWSER MODAL (OPENS VIA LAUNCH BROWSER, PORTALS, OR [G]) -->
+      <div class="chromium-portal-backdrop hidden" id="portalBrowserModal" role="dialog" aria-modal="true" aria-label="Web Browser">
         <div class="chromium-window">
-          <!-- CHROMIUM TOP TAB STRIP -->
+          <!-- BROWSER TOP TAB STRIP -->
           <div class="chromium-tabstrip-row">
             <div class="chromium-window-controls" aria-hidden="true">
               <span class="c-dot close"></span>
               <span class="c-dot min"></span>
               <span class="c-dot max"></span>
             </div>
-            <div class="chromium-portal-channel-group" role="group" aria-label="Portal Channel">
-              <button type="button" class="chromium-channel-btn active-a" id="chromiumPortalABtn" title="View Portal A Dimension">● Portal A</button>
-              <button type="button" class="chromium-channel-btn" id="chromiumPortalBBtn" title="View Portal B Dimension">● Portal B</button>
-            </div>
-            <button type="button" class="chromium-mission-mode-btn" id="chromiumMissionToggleBtn" title="Play this Portal's Soul Trial / Quiz / 29-Card Duel">⚔️ Portal Mission</button>
-            <button type="button" class="chromium-orbit-mode-btn is-active" id="chromiumOrbitToggleBtn" title="Return to the 3D Mirror-House Tab Rotunda">🪞 Mirror-House World</button>
             <div class="chromium-tabs-scroll" id="chromiumTabList" role="tablist"></div>
-            <button type="button" class="chromium-newtab-btn" id="chromiumNewTabBtn" title="Spawn New Mirror Tab World" aria-label="New Tab">+</button>
+            <button type="button" class="chromium-newtab-btn" id="chromiumNewTabBtn" title="New Tab" aria-label="New Tab">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 3.25v9.5M3.25 8h9.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+            </button>
             <div class="chromium-window-actions">
-              <div class="chromium-soul-clock-badge" id="chromiumSoulClockBadge" title="Collected Soul Fragments & 40-Hour Coma Countdown">👻 0/14 · ⏱ 40:00:00</div>
-              <button type="button" class="chromium-profile-btn" id="chromiumProfileBtn" title="Switch Chromium Browser Profile & Saved Mirror-House Tabs">
-                <span class="cprof-avatar" id="chromiumProfileAvatar">🐉</span>
+              <button type="button" class="chromium-profile-btn" id="chromiumProfileBtn" title="Switch Browser Profile">
+                <span class="cprof-avatar" id="chromiumProfileAvatar">S</span>
                 <span class="cprof-name" id="chromiumProfileName">Serpent Sovereign</span>
                 <span class="cprof-caret" aria-hidden="true">▾</span>
               </button>
-              <button type="button" class="chromium-win-btn" id="chromiumStandaloneBtn" title="Toggle Fullscreen Standalone Browser Mode">⛶ Fullscreen</button>
-              <button type="button" class="chromium-win-btn" id="chromiumPipBtn" title="Dock Picture-in-Picture while playing">⧉ PiP</button>
-              <button type="button" class="chromium-win-btn close" id="chromiumCloseBtn" title="Return to 3D Mountain Game (Esc)">Play Game</button>
+              <button type="button" class="chromium-win-btn" id="chromiumStandaloneBtn" title="Toggle Fullscreen">Fullscreen</button>
+              <button type="button" class="chromium-win-btn" id="chromiumPipBtn" title="Picture-in-Picture">PiP</button>
+              <button type="button" class="chromium-win-btn close" id="chromiumCloseBtn" title="Close Browser and Return to Game (Esc)">Close</button>
             </div>
           </div>
 
-          <!-- CHROMIUM BROWSER PROFILE SWITCHER & CREATOR POPOVER -->
-          <div class="chromium-profile-popover hidden" id="chromiumProfilePopover" role="dialog" aria-label="Chromium Browser Profiles"></div>
+          <!-- BROWSER PROFILE SWITCHER POPOVER -->
+          <div class="chromium-profile-popover hidden" id="chromiumProfilePopover" role="dialog" aria-label="Browser Profiles"></div>
 
-          <!-- CHROMIUM PORTAL URL BOOKMARK POPOVER -->
-          <div class="chromium-bookmark-popover hidden" id="chromiumBookmarkPopover" role="dialog" aria-label="Save Portal Bookmark"></div>
+          <!-- BOOKMARK POPOVER -->
+          <div class="chromium-bookmark-popover hidden" id="chromiumBookmarkPopover" role="dialog" aria-label="Save Bookmark"></div>
 
-          <!-- CHROMIUM NAVIGATION & OMNIBOX BAR -->
+          <!-- NAVIGATION & ADDRESS BAR -->
           <div class="chromium-toolbar-row">
             <div class="chromium-nav-btns">
-              <button type="button" class="chromium-nav-btn" id="chromiumBackBtn" title="Back" aria-label="Back">←</button>
-              <button type="button" class="chromium-nav-btn" id="chromiumFwdBtn" title="Forward" aria-label="Forward">→</button>
-              <button type="button" class="chromium-nav-btn" id="chromiumReloadBtn" title="Reload Tab" aria-label="Reload">↻</button>
-              <button type="button" class="chromium-nav-btn" id="chromiumHomeBtn" title="Go to Homepage" aria-label="Home">⌂</button>
+              <button type="button" class="chromium-nav-btn" id="chromiumBackBtn" title="Back" aria-label="Back">
+                <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M10.25 3.5L5.75 8l4.5 4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </button>
+              <button type="button" class="chromium-nav-btn" id="chromiumFwdBtn" title="Forward" aria-label="Forward">
+                <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M5.75 3.5L10.25 8l-4.5 4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </button>
+              <button type="button" class="chromium-nav-btn" id="chromiumReloadBtn" title="Reload" aria-label="Reload">
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M13 8a5 5 0 1 1-1.35-3.42M13 3.25v2.6h-2.6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </button>
+              <button type="button" class="chromium-nav-btn" id="chromiumHomeBtn" title="Home" aria-label="Home">
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2.75 7.25L8 3l5.25 4.25V13a.75.75 0 0 1-.75.75H9.75V9.75h-3.5v4H3.5a.75.75 0 0 1-.75-.75V7.25z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>
+              </button>
             </div>
             <form class="chromium-omnibox-form" id="chromiumOmniboxForm">
-              <span class="chromium-omnibox-lock" aria-hidden="true">🔒</span>
+              <span class="chromium-omnibox-lock" aria-hidden="true">
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><rect x="3.25" y="7.25" width="9.5" height="6.5" rx="1.5" stroke="currentColor" stroke-width="1.4"/><path d="M5.25 7.25V5.5a2.75 2.75 0 1 1 5.5 0v1.75" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+              </span>
               <input
                 type="text"
                 class="chromium-omnibox-input"
                 id="chromiumOmniboxInput"
-                placeholder="Search the web or enter a URL (chrome://settings, wikipedia.org)..."
+                placeholder="Search or enter website name"
                 autocomplete="off"
                 spellcheck="false"
               />
-              <button type="button" class="chromium-bookmark-star" id="chromiumBookmarkBtn" title="Save or edit portal bookmark" aria-label="Save or edit portal bookmark">☆</button>
+              <button type="button" class="chromium-bookmark-star" id="chromiumBookmarkBtn" title="Bookmark this tab" aria-label="Bookmark this tab">☆</button>
               <button type="submit" class="chromium-omnibox-go">Go</button>
               <div class="chromium-omnibox-suggestions hidden" id="chromiumOmniboxSuggestions" role="listbox" aria-label="Search history and bookmarks"></div>
             </form>
             <div class="chromium-toolbar-right">
               <span class="chromium-offline-tag hidden" id="chromiumOfflineTag" title="Offline Mode — Using cached bookmarks and local history">Offline</span>
-              <button type="button" class="chromium-proxy-btn is-on" id="chromiumProxyBtn" title="Toggle Server-Side Chromium Proxy vs Direct Iframe">Proxy: ON</button>
-              <button type="button" class="chromium-settings-btn" id="chromiumSettingsBtn" title="Browser Settings &amp; History (chrome://settings)" aria-label="Browser Settings">⚙ Settings</button>
-              <button type="button" class="chromium-warp-btn" id="chromiumWarpBtn" title="Physically teleport your serpent to the next Dimensional Portal across the mountain">Warp Portal</button>
+              <div class="chromium-portal-channel-group" role="group" aria-label="Portal Channel">
+                <button type="button" class="chromium-channel-btn active-a" id="chromiumPortalABtn" title="Portal A">A</button>
+                <button type="button" class="chromium-channel-btn" id="chromiumPortalBBtn" title="Portal B">B</button>
+              </div>
+              <button type="button" class="chromium-mission-mode-btn" id="chromiumMissionToggleBtn" title="Open Portal Trial">Trial</button>
+              <button type="button" class="chromium-orbit-mode-btn" id="chromiumOrbitToggleBtn" title="Toggle 3D Tab Overview">Tabs</button>
+              <button type="button" class="chromium-proxy-btn is-on" id="chromiumProxyBtn" title="Toggle Web Proxy">Proxy</button>
+              <button type="button" class="chromium-warp-btn" id="chromiumWarpBtn" title="Warp to next Portal">Warp</button>
+              <button type="button" class="chromium-settings-btn" id="chromiumSettingsBtn" title="Settings &amp; History (chrome://settings)" aria-label="Browser Settings">
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="8" cy="8" r="2.2" stroke="currentColor" stroke-width="1.4"/><path d="M8 2.2v1.3M8 12.5v1.3M2.2 8h1.3M12.5 8h1.3M3.9 3.9l.95.95M11.15 11.15l.95.95M12.1 3.9l-.95.95M4.85 11.15l-.95.95" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+              </button>
             </div>
           </div>
 
-          <!-- CHROMIUM BOOKMARKS BAR -->
+          <!-- BOOKMARKS BAR -->
           <div class="chromium-bookmarks-bar" id="chromiumBookmarksBar"></div>
 
-          <!-- CHROMIUM POCKET DIMENSION VIEWPORT: PORTAL MISSION CHAMBER + BROWSER SETTINGS + 3D MIRROR-HOUSE ROTUNDA + LIVE WEB IFRAME -->
+          <!-- BROWSER VIEWPORT -->
           <div class="chromium-viewport-wrap">
             <div class="chromium-loading-bar hidden" id="chromiumLoadingBar" aria-hidden="true"></div>
 
@@ -1571,8 +1649,11 @@ export class GameUI {
 
           <!-- BROWSER FOOTER STATUS BAR -->
           <div class="chromium-statusbar">
-            <span class="chromium-status-left" id="chromiumStatusText">Portal Browser · Isolated Web Proxy &amp; Saved Offline Pages</span>
-            <span class="chromium-status-right" id="chromiumPortalCountText">Synced to 3D Mountain Portals · Press [G] or [Esc] to return</span>
+            <span class="chromium-status-left" id="chromiumStatusText">Ready</span>
+            <div class="chromium-status-meta">
+              <span class="chromium-soul-clock-badge" id="chromiumSoulClockBadge" title="Collected Soul Fragments &amp; Countdown">Souls 0/14 · 40:00:00</span>
+              <span class="chromium-status-right" id="chromiumPortalCountText">Press Esc to return</span>
+            </div>
           </div>
         </div>
       </div>
@@ -1636,9 +1717,10 @@ export class GameUI {
           <button type="button" class="mobile-util-pill" id="mobileLandscapeBtn" title="Fullscreen & Lock Landscape">⟳ Landscape</button>
           <button type="button" class="mobile-util-pill portal" id="mobilePortalBtn" title="Open Portal Chromium Browser">🌐 Portal Tabs</button>
           <button type="button" class="mobile-util-pill click" id="mobileCursorClickBtn" title="Click or Fire at Virtual Cursor">🎯 Click</button>
+          <button type="button" class="mobile-util-pill mode is-joystick" id="mobileCursorModeBtn" title="Toggle Relative Joystick or Absolute Cursor Mode">🕹️ Joystick</button>
         </div>
-        <div class="mobile-cursor-pad" id="mobileCursorPad" aria-label="Virtual Cursor and Steering Trackpad">
-          <span class="mobile-pad-label">CURSOR &amp; STEER</span>
+        <div class="mobile-cursor-pad" id="mobileCursorPad" data-control-mode="joystick" aria-label="Virtual Relative Joystick and Steering Stick">
+          <span class="mobile-pad-label" id="mobilePadLabel">JOYSTICK</span>
           <div class="mobile-cursor-puck" id="mobileCursorPuck"></div>
         </div>
       </div>
@@ -1759,6 +1841,10 @@ export class GameUI {
     this.bestiaryModal = uiLayer.querySelector('#bestiaryModal')!;
     this.toastEl = uiLayer.querySelector('#toastEl')!;
     this.climateLogStackEl = uiLayer.querySelector('#climateLogStack')!;
+    this.combatLogPanelEl = uiLayer.querySelector('#combatLogPanel')!;
+    this.combatLogListEl = uiLayer.querySelector('#combatLogList')!;
+    this.combatLogSummaryEl = uiLayer.querySelector('#combatLogSummary')!;
+    this.combatLogStatusEl = uiLayer.querySelector('#combatLogStatus')!;
     this.complimentBannerEl = uiLayer.querySelector('#complimentWhisper')!;
     this.complimentLabelEl = uiLayer.querySelector('#complimentLabel')!;
     this.complimentTextEl = uiLayer.querySelector('#complimentText')!;
@@ -1820,6 +1906,7 @@ export class GameUI {
     this.mobileVirtualCursorEl = uiLayer.querySelector('#mobileVirtualCursor')!;
     this.mobileCursorPadEl = uiLayer.querySelector('#mobileCursorPad')!;
     this.mobileCursorPuckEl = uiLayer.querySelector('#mobileCursorPuck')!;
+    this.mobileCursorModeBtn = uiLayer.querySelector('#mobileCursorModeBtn')!;
     this.mobileSkill1Btn = uiLayer.querySelector('#mobileSkill1Btn')!;
     this.mobileSkill1LabelEl = uiLayer.querySelector('#mobileSkill1Label')!;
     this.mobileSkill1CdEl = uiLayer.querySelector('#mobileSkill1Cd')!;
@@ -1857,6 +1944,11 @@ export class GameUI {
     this.zoneBadgeEl = uiLayer.querySelector('#hudZoneName')!;
     this.envHazardEl = uiLayer.querySelector('#hudEnvHazard')!;
     this.clanHeatSkulls = Array.from(uiLayer.querySelectorAll<HTMLElement>('#hudClanHeatSkulls .heat-skull'));
+    this.portalDistEl = uiLayer.querySelector('#hudPortalDist')!;
+    this.portalDistPeakEl = uiLayer.querySelector('#hudPortalDistPeak')!;
+    this.portalDistMetersEl = uiLayer.querySelector('#hudPortalDistMeters')!;
+    this.portalDistStatusEl = uiLayer.querySelector('#hudPortalDistStatus')!;
+    this.portalDistFillEl = uiLayer.querySelector('#hudPortalDistFill')!;
     this.soulInfluenceFloatEl = uiLayer.querySelector('#soulInfluenceFloat')!;
     this.soulInfluenceArcEl = uiLayer.querySelector('#soulInfluenceArc')!;
     this.soulInfluenceValEl = uiLayer.querySelector('#soulInfluenceVal')!;
@@ -2029,6 +2121,13 @@ export class GameUI {
   }
 
   private bindEvents(): void {
+    this.game.setCombatLogListener((event) => {
+      if (event === null) {
+        this.clearCombatLog();
+      } else {
+        this.pushCombatLogEntry(event);
+      }
+    });
     this.startPlayBtn.addEventListener('click', () => {
       this.game.startGame();
     });
@@ -3415,6 +3514,23 @@ export class GameUI {
     if (proxyChk) proxyChk.checked = s.defaultProxyMode;
     const bmChk = this.root.querySelector<HTMLInputElement>('#settingsBookmarksBarChk');
     if (bmChk) bmChk.checked = s.showBookmarksBar;
+    this.syncHapticsToggleUi();
+  }
+
+  private syncHapticsToggleUi(): void {
+    const btn = this.root.querySelector<HTMLButtonElement>('#toggleHapticsBtn');
+    if (!btn) return;
+    const enabled = this.game.haptics.isEnabled();
+    const supported = this.game.haptics.isSupported();
+    btn.textContent = !supported
+      ? 'Haptics: N/A'
+      : enabled
+        ? 'Haptics: On'
+        : 'Haptics: Off';
+    btn.setAttribute('aria-pressed', enabled && supported ? 'true' : 'false');
+    btn.title = supported
+      ? 'Toggle subtle Vibration API haptics for cultivation moves and combat impacts'
+      : 'Vibration API is not supported by this browser/device';
   }
 
   private syncInstallButtonsVisibility(): void {
@@ -4346,6 +4462,123 @@ export class GameUI {
     }
   }
 
+  public pushCombatLogEntry(input: CombatLogInput): void {
+    if (!this.combatLogPanelEl || !this.combatLogListEl) return;
+    const nowMs = Date.now();
+    this.combatLogTracker.record(input, nowMs);
+    this.renderCombatLogPanel();
+    this.syncCombatLogVisibility(this.combatLogPlaying || this.game.getMode() === 'playing', this.combatLogHasHostile, nowMs);
+
+    window.clearTimeout(this.combatLogHideTimer);
+    this.combatLogHideTimer = window.setTimeout(() => {
+      this.syncCombatLogVisibility(this.combatLogPlaying, this.combatLogHasHostile, Date.now());
+    }, this.combatLogTracker.getIdleTimeoutMs() + 120);
+  }
+
+  private renderCombatLogPanel(): void {
+    const entries = this.combatLogTracker.getEntries();
+    const summary = this.combatLogTracker.getSummary();
+    const sessionState = this.combatLogTracker.getSessionState();
+
+    if (this.combatLogSummaryEl) {
+      this.combatLogSummaryEl.textContent = `Dealt ${summary.totalDealt} · Taken ${summary.totalReceived}`;
+    }
+    if (this.combatLogStatusEl) {
+      this.combatLogStatusEl.className = `combat-log-status state-${sessionState}`;
+      this.combatLogStatusEl.textContent =
+        sessionState === 'active'
+          ? 'Combat Start'
+          : sessionState === 'ended'
+            ? 'Combat End'
+            : 'Standby';
+    }
+    if (this.combatLogPanelEl) {
+      this.combatLogPanelEl.classList.toggle('session-active', sessionState === 'active');
+      this.combatLogPanelEl.classList.toggle('session-ended', sessionState === 'ended');
+    }
+
+    const frag = document.createDocumentFragment();
+    for (let i = 0; i < entries.length; i++) {
+      const formatted = formatCombatLogEntry(entries[i]);
+      const li = document.createElement('li');
+      const highClass = formatted.isHighDamage ? ' is-high-damage' : '';
+      const markerClass = formatted.isSessionMarker ? ' is-session-marker' : '';
+      li.className = `combat-log-row kind-${formatted.kind}${highClass}${markerClass}${i === 0 ? ' is-latest' : ''}`;
+
+      const tag = document.createElement('span');
+      tag.className = 'combat-log-dir';
+      tag.textContent = formatted.directionLabel;
+
+      const desc = document.createElement('span');
+      desc.className = 'combat-log-desc';
+      desc.textContent = formatted.description;
+
+      const deltaWrap = document.createElement('span');
+      deltaWrap.className = 'combat-log-delta-wrap';
+
+      if (formatted.isHighDamage) {
+        const badge = document.createElement('span');
+        badge.className = 'combat-log-high-badge';
+        badge.textContent = formatted.kind === 'received' ? 'HEAVY' : 'HIGH';
+        deltaWrap.appendChild(badge);
+      }
+
+      const delta = document.createElement('span');
+      delta.className = 'combat-log-delta';
+      delta.textContent = formatted.deltaText;
+      deltaWrap.appendChild(delta);
+
+      li.append(tag, desc, deltaWrap);
+      frag.appendChild(li);
+    }
+
+    this.combatLogListEl.replaceChildren(frag);
+  }
+
+  private syncCombatLogVisibility(
+    isPlaying: boolean,
+    hasEngagedHostile: boolean,
+    nowMs = Date.now(),
+  ): void {
+    this.combatLogPlaying = isPlaying;
+    this.combatLogHasHostile = hasEngagedHostile;
+    if (!this.combatLogPanelEl) return;
+
+    const sync = this.combatLogTracker.syncSession(nowMs, isPlaying, hasEngagedHostile);
+    if (sync.stateChanged) {
+      this.renderCombatLogPanel();
+      if (sync.state === 'ended') {
+        window.clearTimeout(this.combatLogHideTimer);
+        this.combatLogHideTimer = window.setTimeout(() => {
+          this.syncCombatLogVisibility(this.combatLogPlaying, this.combatLogHasHostile, Date.now());
+        }, this.combatLogTracker.getEndHoldMs() + 100);
+      }
+    }
+
+    const visible = this.combatLogTracker.isVisible(nowMs, isPlaying, hasEngagedHostile);
+    this.combatLogPanelEl.classList.toggle('is-visible', visible);
+    this.combatLogPanelEl.classList.toggle('is-idle', !visible);
+  }
+
+  public clearCombatLog(): void {
+    window.clearTimeout(this.combatLogHideTimer);
+    this.combatLogTracker.clear();
+    if (this.combatLogListEl) {
+      this.combatLogListEl.replaceChildren();
+    }
+    if (this.combatLogSummaryEl) {
+      this.combatLogSummaryEl.textContent = 'Dealt 0 · Taken 0';
+    }
+    if (this.combatLogStatusEl) {
+      this.combatLogStatusEl.className = 'combat-log-status state-idle';
+      this.combatLogStatusEl.textContent = 'Standby';
+    }
+    if (this.combatLogPanelEl) {
+      this.combatLogPanelEl.classList.remove('is-visible', 'session-active', 'session-ended');
+      this.combatLogPanelEl.classList.add('is-idle');
+    }
+  }
+
   public showCompliment(notice: ComplimentNotice): void {
     if (!this.complimentBannerEl) return;
     window.clearTimeout(this.complimentTimer);
@@ -4542,6 +4775,35 @@ export class GameUI {
       skull.classList.toggle('extreme', snap.clanHeat >= 4 && idx < snap.clanHeat);
     });
 
+    // Dynamic Top-HUD 'Portal Distance' indicator for the 12 Trial Peak portals
+    const portal = snap.mode === 'builder' ? null : snap.nearestPeakPortal;
+    this.portalDistEl.classList.toggle('hidden', !portal);
+    if (portal) {
+      const accentHex = `#${portal.accentHex.toString(16).padStart(6, '0')}`;
+      this.portalDistEl.style.setProperty('--portal-accent', accentHex);
+      this.portalDistEl.classList.toggle('is-open', portal.phase === 'open');
+      this.portalDistEl.classList.toggle(
+        'is-awakening',
+        portal.phase === 'awakening' || portal.phase === 'igniting',
+      );
+      this.portalDistEl.classList.toggle('is-unlocked', portal.unlocked && portal.phase === 'sealed');
+      this.portalDistEl.classList.toggle('is-sealed', !portal.unlocked);
+      this.portalDistEl.classList.toggle('is-near', portal.distanceMeters <= 28);
+
+      this.portalDistPeakEl.textContent = portal.peakName;
+      this.portalDistMetersEl.textContent =
+        portal.distanceMeters <= 4 ? 'AT RIFT' : `${portal.distanceMeters}m`;
+      this.portalDistStatusEl.textContent =
+        portal.phase === 'open'
+          ? 'OPEN'
+          : portal.phase === 'awakening' || portal.phase === 'igniting'
+            ? 'OPENING'
+            : portal.unlocked
+              ? `P${portal.peakTier}`
+              : `RANK ${portal.requiredRank}`;
+      this.portalDistFillEl.style.width = `${Math.round(portal.proximityFrac * 100)}%`;
+    }
+
     // Floating Soul Clan Influence Counter (intensity gauge + imminent presence pulse)
     const showSoulFloat = snap.mode === 'playing' || snap.mode === 'paused';
     this.soulInfluenceFloatEl.classList.toggle('hidden', !showSoulFloat);
@@ -4605,7 +4867,7 @@ export class GameUI {
     const showHostile = snap.mode === 'playing' && snap.nearbyHostileName !== null;
     this.hostileBarWrap.classList.toggle('hidden', !showHostile);
 
-    // Keep upper-center climate log & lower-center compliment whisper clean outside gameplay
+    // Keep upper-center climate log, side combat log, & compliment whisper clean outside gameplay
     const allowClimateLog = snap.mode === 'playing' || snap.mode === 'paused';
     if (!allowClimateLog) {
       if (this.climateLogStackEl.childElementCount > 0) {
@@ -4614,11 +4876,17 @@ export class GameUI {
       if (!this.complimentBannerEl.classList.contains('hidden')) {
         this.clearCompliment();
       }
+      if (this.combatLogTracker.getEntries().length > 0) {
+        this.clearCombatLog();
+      } else {
+        this.syncCombatLogVisibility(false, false);
+      }
     } else {
       const isBossOverlay = showHostile && (snap.nearbyHostileIsHighTier || snap.nearbyHostileBoss);
       this.climateLogStackEl.classList.toggle('has-ambush', showAmbush && !showHostile);
       this.climateLogStackEl.classList.toggle('has-hostile', showHostile && !isBossOverlay);
       this.climateLogStackEl.classList.toggle('has-boss', isBossOverlay);
+      this.syncCombatLogVisibility(snap.mode === 'playing', showHostile);
     }
 
     if (showHostile && snap.nearbyHostileName) {
@@ -4700,9 +4968,16 @@ export class GameUI {
     // Bottom-left speedometer, Vitality (HP), Dou Qi, Climb Boost & Peak Compass
     this.speedValEl.textContent = String(snap.speedKmh);
     const hpPct = Math.max(0, Math.min(100, (snap.hp / Math.max(1, snap.maxHp)) * 100));
+    const isLowHp = hpPct <= 30;
+    const isCriticalHp = hpPct < 20;
     this.hpTextEl.textContent = `${Math.max(0, Math.ceil(snap.hp))} / ${snap.maxHp} HP`;
+    this.hpTextEl.classList.toggle('low', isLowHp);
+    this.hpTextEl.classList.toggle('critical', isCriticalHp);
     this.hpFillEl.style.width = `${hpPct.toFixed(1)}%`;
-    this.hpFillEl.classList.toggle('low', hpPct <= 30);
+    this.hpFillEl.classList.toggle('low', isLowHp);
+    this.hpFillEl.classList.toggle('critical', isCriticalHp);
+    this.hpFillEl.parentElement?.classList.toggle('low', isLowHp);
+    this.hpFillEl.parentElement?.classList.toggle('critical', isCriticalHp);
     this.hpFillEl.classList.toggle('draining', !snap.isSheltered && snap.envHpDrainPerSec > 0);
 
     if (snap.isSheltered) {
@@ -4716,8 +4991,16 @@ export class GameUI {
     }
 
     const qiPct = Math.max(0, Math.min(100, (snap.qi / Math.max(1, snap.maxQi)) * 100));
+    const isLowQi = qiPct <= 30;
+    const isCriticalQi = qiPct < 20;
     this.qiTextEl.textContent = `${Math.floor(snap.qi)} / ${snap.maxQi} QI`;
+    this.qiTextEl.classList.toggle('low', isLowQi);
+    this.qiTextEl.classList.toggle('critical', isCriticalQi);
     this.qiFillEl.style.width = `${qiPct.toFixed(1)}%`;
+    this.qiFillEl.classList.toggle('low', isLowQi);
+    this.qiFillEl.classList.toggle('critical', isCriticalQi);
+    this.qiFillEl.parentElement?.classList.toggle('low', isLowQi);
+    this.qiFillEl.parentElement?.classList.toggle('critical', isCriticalQi);
 
     this.staminaFillEl.style.width = `${Math.round(snap.stamina * 100)}%`;
     this.staminaFillEl.classList.toggle('boosting', snap.boostTimer > 0);
@@ -5311,10 +5594,33 @@ export class GameUI {
     this.mobileVirtualCursorEl.classList.toggle('hidden', !enabled);
     this.mobileVirtualCursorEl.setAttribute('aria-hidden', enabled ? 'false' : 'true');
     if (enabled) {
-      this.virtualCursorX = Math.max(40, Math.min(window.innerWidth - 40, this.virtualCursorX));
-      this.virtualCursorY = Math.max(40, Math.min(window.innerHeight - 40, this.virtualCursorY));
-      this.updateVirtualCursorPosition();
+      if (this.mobileController) {
+        this.mobileController.syncToViewport();
+      } else {
+        this.virtualCursorX = Math.max(40, Math.min(window.innerWidth - 40, this.virtualCursorX));
+        this.virtualCursorY = Math.max(40, Math.min(window.innerHeight - 40, this.virtualCursorY));
+        this.updateVirtualCursorPosition();
+      }
+    } else {
+      this.mobileController?.reset();
     }
+  }
+
+  public getMobileControlMode(): MobileControlMode {
+    return this.mobileController?.getMode() ?? loadSavedMobileControlMode('joystick');
+  }
+
+  public setMobileControlMode(mode: MobileControlMode): void {
+    this.mobileController?.setMode(mode, true);
+    this.syncMobileCursorModePill(mode);
+  }
+
+  private syncMobileCursorModePill(mode: MobileControlMode): void {
+    const isJoystick = mode === 'joystick';
+    this.mobileCursorModeBtn.textContent = isJoystick ? '🕹️ Joystick' : '📍 Absolute';
+    this.mobileCursorModeBtn.classList.toggle('is-joystick', isJoystick);
+    this.mobileCursorModeBtn.classList.toggle('is-absolute', !isJoystick);
+    this.mobileCursorModeBtn.setAttribute('aria-pressed', isJoystick ? 'true' : 'false');
   }
 
   private updateVirtualCursorPosition(): void {
@@ -5385,6 +5691,24 @@ export class GameUI {
       );
     });
 
+    const hapticsBtn = this.root.querySelector<HTMLButtonElement>('#toggleHapticsBtn');
+    hapticsBtn?.addEventListener('click', () => {
+      const next = !this.game.haptics.isEnabled();
+      this.game.haptics.setEnabled(next);
+      this.syncHapticsToggleUi();
+      if (next) {
+        this.game.haptics.trigger('cultivation_dash');
+      }
+      this.showToast(
+        !this.game.haptics.isSupported()
+          ? 'Vibration API haptics are not supported on this device.'
+          : next
+            ? 'Mobile haptic feedback enabled.'
+            : 'Mobile haptic feedback muted.',
+      );
+    });
+    this.syncHapticsToggleUi();
+
     const lockBtns = [
       this.root.querySelector<HTMLButtonElement>('#mobileLandscapeBtn'),
       this.root.querySelector<HTMLButtonElement>('#lockLandscapeSettingsBtn'),
@@ -5411,78 +5735,48 @@ export class GameUI {
       this.triggerVirtualCursorAction();
     });
 
-    // Virtual Cursor & Steer Trackpad
-    let padActive = false;
-    let padPointerId = -1;
-    let padStartX = 0;
-    let padStartY = 0;
-    let padMovedDist = 0;
+    // Virtual Cursor & Steer Controller ('joystick' relative stick default, toggleable to 'absolute')
+    const initialMode = loadSavedMobileControlMode('joystick');
+    const padLabelEl = this.root.querySelector<HTMLElement>('#mobilePadLabel');
+    this.mobileController?.destroy();
+    this.mobileController = new MobileVirtualCursorController(
+      {
+        padEl: this.mobileCursorPadEl,
+        puckEl: this.mobileCursorPuckEl,
+        cursorEl: this.mobileVirtualCursorEl,
+        labelEl: padLabelEl,
+      },
+      {
+        onSteerAxis: (axis) => {
+          this.game.setTouchSteerAxis(axis);
+        },
+        onCursorMove: ({ x, y }) => {
+          this.virtualCursorX = x;
+          this.virtualCursorY = y;
+          this.updateVirtualCursorPosition();
+        },
+        onTapAction: () => {
+          this.triggerVirtualCursorAction();
+        },
+        onModeChange: (mode) => {
+          this.syncMobileCursorModePill(mode);
+        },
+      },
+      { mode: initialMode },
+      { x: this.virtualCursorX, y: this.virtualCursorY },
+    );
+    this.syncMobileCursorModePill(initialMode);
 
-    const updatePadFromPointer = (clientX: number, clientY: number) => {
-      const rect = this.mobileCursorPadEl.getBoundingClientRect();
-      const cx = rect.left + rect.width / 2;
-      const cy = rect.top + rect.height / 2;
-      const maxR = Math.max(24, rect.width * 0.38);
-      const dx = clientX - cx;
-      const dy = clientY - cy;
-      const dist = Math.hypot(dx, dy);
-      const clampedR = Math.min(maxR, dist);
-      const ang = Math.atan2(dy, dx);
-      const px = Math.cos(ang) * clampedR;
-      const py = Math.sin(ang) * clampedR;
-
-      this.mobileCursorPuckEl.style.transform = `translate3d(${px.toFixed(1)}px, ${py.toFixed(1)}px, 0)`;
-
-      const normX = px / maxR; // -1..+1
-      const normY = py / maxR; // -1..+1
-
-      // Steer serpent in 3D when playing
-      this.game.setTouchSteerAxis(-normX);
-
-      // Glide on-screen virtual cursor smoothly across viewport
-      this.virtualCursorX = Math.max(
-        18,
-        Math.min(window.innerWidth - 18, this.virtualCursorX + normX * 13.5),
-      );
-      this.virtualCursorY = Math.max(
-        18,
-        Math.min(window.innerHeight - 18, this.virtualCursorY + normY * 13.5),
-      );
-      this.updateVirtualCursorPosition();
-    };
-
-    this.mobileCursorPadEl.addEventListener('pointerdown', (e) => {
+    this.mobileCursorModeBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      padActive = true;
-      padPointerId = e.pointerId;
-      padStartX = e.clientX;
-      padStartY = e.clientY;
-      padMovedDist = 0;
-      this.mobileCursorPadEl.setPointerCapture(e.pointerId);
-      updatePadFromPointer(e.clientX, e.clientY);
+      const next = this.mobileController?.toggleMode(true) ?? 'joystick';
+      this.syncMobileCursorModePill(next);
+      this.showToast(
+        next === 'joystick'
+          ? 'Mobile Stick: Relative Joystick Mode (smooth analog glide)'
+          : 'Mobile Stick: Absolute Positioning Mode',
+      );
     });
-
-    this.mobileCursorPadEl.addEventListener('pointermove', (e) => {
-      if (!padActive || e.pointerId !== padPointerId) return;
-      e.stopPropagation();
-      padMovedDist += Math.hypot(e.clientX - padStartX, e.clientY - padStartY);
-      padStartX = e.clientX;
-      padStartY = e.clientY;
-      updatePadFromPointer(e.clientX, e.clientY);
-    });
-
-    const endPad = (e: PointerEvent) => {
-      if (!padActive || e.pointerId !== padPointerId) return;
-      padActive = false;
-      padPointerId = -1;
-      this.mobileCursorPuckEl.style.transform = 'translate3d(0px, 0px, 0)';
-      this.game.setTouchSteerAxis(0);
-      if (padMovedDist < 10) {
-        this.triggerVirtualCursorAction();
-      }
-    };
-    this.mobileCursorPadEl.addEventListener('pointerup', endPad);
-    this.mobileCursorPadEl.addEventListener('pointercancel', endPad);
   }
 
   // ==================== PORTAL CHROMIUM MULTI-TAB BROWSER & 3D ROLLING TAB OTHERWORLD ====================
@@ -5512,10 +5806,10 @@ export class GameUI {
   private syncSoulClockBadge(): void {
     const souls = this.game.portalMissions.getCollectedSouls();
     const clock = this.game.portalMissions.getFormattedClock();
-    this.chromiumSoulClockBadgeEl.textContent = `👻 ${souls}/${SOUL_TARGET_COUNT} · ⏱ ${clock}`;
+    this.chromiumSoulClockBadgeEl.textContent = `Souls ${souls}/${SOUL_TARGET_COUNT} · ${clock}`;
     const portalCountEl = this.root.querySelector('#chromiumPortalCountText');
     if (portalCountEl) {
-      portalCountEl.textContent = `Synced to ${this.game.getActivePortalCount()} Random 3D Mountain Portals · Press [G] or [Esc] to return`;
+      portalCountEl.textContent = `${this.game.getActivePortalCount()} portals synced · Esc to close`;
     }
   }
 
@@ -5808,9 +6102,13 @@ export class GameUI {
           | 'general'
           | 'privacy'
           | 'bookmarks'
-          | 'history';
+          | 'history'
+          | 'audio';
         this.game.sound.playClick();
-        if (this.portalBrowserSettingsTab === 'privacy' || this.portalBrowserSettingsTab === 'bookmarks') {
+        if (
+          this.portalBrowserSettingsTab === 'privacy' ||
+          this.portalBrowserSettingsTab === 'bookmarks'
+        ) {
           void this.game.offlineCache.refreshStorageUsage();
         }
         this.renderPortalChromiumBrowser(false);
@@ -6041,6 +6339,13 @@ export class GameUI {
         } else {
           this.renderBrowserSettingsPanel();
         }
+        return;
+      }
+      if (target.closest('#inbAudioToggleMuteBtn')) {
+        this.game.sound.toggleMute();
+        this.game.sound.playClick();
+        this.renderBrowserSettingsPanel();
+        return;
       }
     });
 
@@ -6088,6 +6393,26 @@ export class GameUI {
         if (lbl) lbl.textContent = `${z}%`;
         this.applyBrowserViewportZoom();
         this.syncUnifiedSettingsUi();
+      } else if (target.id === 'inbMasterVolSlider') {
+        const v = Number((target as HTMLInputElement).value) / 100;
+        this.game.sound.setMasterVolume(v);
+        const lbl = this.chromiumSettingsPanelEl.querySelector('#inbMasterVolVal');
+        if (lbl) lbl.textContent = `${Math.round(v * 100)}%`;
+      } else if (target.id === 'inbMusicVolSlider') {
+        const v = Number((target as HTMLInputElement).value) / 100;
+        this.game.sound.setMusicVolume(v);
+        const lbl = this.chromiumSettingsPanelEl.querySelector('#inbMusicVolVal');
+        if (lbl) lbl.textContent = `${Math.round(v * 100)}%`;
+      } else if (target.id === 'inbAmbientVolSlider') {
+        const v = Number((target as HTMLInputElement).value) / 100;
+        this.game.sound.setAmbientVolume(v);
+        const lbl = this.chromiumSettingsPanelEl.querySelector('#inbAmbientVolVal');
+        if (lbl) lbl.textContent = `${Math.round(v * 100)}%`;
+      } else if (target.id === 'inbSfxVolSlider') {
+        const v = Number((target as HTMLInputElement).value) / 100;
+        this.game.sound.setSfxVolume(v);
+        const lbl = this.chromiumSettingsPanelEl.querySelector('#inbSfxVolVal');
+        if (lbl) lbl.textContent = `${Math.round(v * 100)}%`;
       } else if (target.id === 'inbHistorySearchInput') {
         this.portalHistorySearchQuery = (target as HTMLInputElement).value;
         this.updateBrowserHistoryListInPlace();
@@ -6427,7 +6752,7 @@ export class GameUI {
         this.portalMissionViewMode = false;
       }
       this.portalBrowserModal.classList.toggle('is-pip', this.portalBrowserPip);
-      this.chromiumPipBtn.textContent = this.portalBrowserPip ? '⤢ Expand' : '⧉ PiP Dock';
+      this.chromiumPipBtn.textContent = this.portalBrowserPip ? 'Expand' : 'PiP';
       this.renderPortalChromiumBrowser(false);
       this.syncModalFreeze();
     });
@@ -7642,6 +7967,50 @@ export class GameUI {
           </div>
         </div>
       `;
+    } else if (tab === 'audio') {
+      const sound = this.game.sound;
+      const masterVol = Math.round(sound.getMasterVolume() * 100);
+      const musicVol = Math.round(sound.getMusicVolume() * 100);
+      const ambientVol = Math.round(sound.getAmbientVolume() * 100);
+      const sfxVol = Math.round(sound.getSfxVolume() * 100);
+      const isMuted = sound.isMuted();
+
+      bodyHtml = `
+        <div class="bset-grid">
+          <div class="bset-group">
+            <label class="bset-label">Web Audio Soundscape &amp; Volume Control</label>
+            <p class="bset-hint">Customize procedural ambient wind, evolving musical tier beds, and combat sound effects powered by Web Audio API.</p>
+            <div class="bset-inline-row mb-4">
+              <button type="button" class="primary-cta compact" id="inbAudioToggleMuteBtn">
+                ${isMuted ? '🔇 Unmute All Audio' : '🔊 Mute All Audio'}
+              </button>
+            </div>
+          </div>
+
+          <div class="bset-group">
+            <label class="bset-label" for="inbMasterVolSlider">Master Volume · <strong id="inbMasterVolVal">${masterVol}%</strong></label>
+            <input type="range" class="settings-slider" id="inbMasterVolSlider" min="0" max="100" step="1" value="${masterVol}" />
+          </div>
+
+          <div class="bset-group">
+            <label class="bset-label" for="inbMusicVolSlider">Music &amp; Harmonic Bed Volume · <strong id="inbMusicVolVal">${musicVol}%</strong></label>
+            <p class="bset-hint">12-tier shifting harmonic drone and crystal soundscape.</p>
+            <input type="range" class="settings-slider" id="inbMusicVolSlider" min="0" max="100" step="1" value="${musicVol}" />
+          </div>
+
+          <div class="bset-group">
+            <label class="bset-label" for="inbAmbientVolSlider">Ambient Wind &amp; Environment Volume · <strong id="inbAmbientVolVal">${ambientVol}%</strong></label>
+            <p class="bset-hint">Mountain gales, rustling leaves, rain storms, and wildlife acoustics.</p>
+            <input type="range" class="settings-slider" id="inbAmbientVolSlider" min="0" max="100" step="1" value="${ambientVol}" />
+          </div>
+
+          <div class="bset-group">
+            <label class="bset-label" for="inbSfxVolSlider">Sound Effects (SFX) Volume · <strong id="inbSfxVolVal">${sfxVol}%</strong></label>
+            <p class="bset-hint">Clicks, combat parries, spell casts, and portal interactions.</p>
+            <input type="range" class="settings-slider" id="inbSfxVolSlider" min="0" max="100" step="1" value="${sfxVol}" />
+          </div>
+        </div>
+      `;
     } else if (tab === 'bookmarks') {
       const bmRows =
         customBms.length > 0
@@ -7760,6 +8129,7 @@ export class GameUI {
               <button type="button" class="bset-tab ${tab === 'general' ? 'active' : ''}" data-bset-tab="general" role="tab" aria-selected="${tab === 'general'}">General &amp; Search</button>
               <button type="button" class="bset-tab ${tab === 'privacy' ? 'active' : ''}" data-bset-tab="privacy" role="tab" aria-selected="${tab === 'privacy'}">Privacy &amp; Offline</button>
               <button type="button" class="bset-tab ${tab === 'bookmarks' ? 'active' : ''}" data-bset-tab="bookmarks" role="tab" aria-selected="${tab === 'bookmarks'}">Bookmarks</button>
+              <button type="button" class="bset-tab ${tab === 'audio' ? 'active' : ''}" data-bset-tab="audio" role="tab" aria-selected="${tab === 'audio'}">🔊 Audio Settings</button>
               <button type="button" class="bset-tab ${tab === 'history' ? 'active' : ''}" data-bset-tab="history" role="tab" aria-selected="${tab === 'history'}">${historyTabLabel}</button>
             </div>
             <button type="button" class="ghost-btn compact" id="inbCloseSettingsBtn">Back to Web</button>
@@ -7982,9 +8352,8 @@ export class GameUI {
     this.game.portalBrowser.setActivePortalContext(contextLabel, variant);
     this.resetMissionSession(mission);
 
-    // Stepping physically into an uncompleted 3D portal opens its unique Mission Trial first
-    // (with 1-click access to the 360° Mirror-House & Chromium Web Browser right beside it!).
-    // Pressing [G] or entering a cleared portal opens into the 360° Mirror-House Tab World.
+    // Stepping physically into an uncompleted 3D portal opens its Mission Trial first.
+    // Launching the browser via button, [G], or a cleared portal opens cleanly into the normal web view.
     const shouldOpenMission =
       isFreshPortalEntry &&
       !nextPortalKey.startsWith('portal-hotkey-') &&
@@ -7992,7 +8361,7 @@ export class GameUI {
 
     this.portalMissionViewMode = shouldOpenMission;
     this.portalBrowserSettingsMode = false;
-    this.portalWorldOrbitMode = !shouldOpenMission;
+    this.portalWorldOrbitMode = false;
     this.portalProfilePopoverOpen = false;
     this.chromiumProfilePopoverEl.classList.add('hidden');
     this.portalBrowserStandalone = this.game.portalBrowser.getSettings().standaloneFullscreen;
@@ -8020,7 +8389,7 @@ export class GameUI {
     }
     this.portalBrowserPip = false;
     this.portalBrowserModal.classList.remove('is-pip');
-    this.chromiumPipBtn.textContent = '⧉ PiP';
+    this.chromiumPipBtn.textContent = 'PiP';
     this.syncModalFreeze();
     if (this.pendingReemergenceShift) {
       const reemerge = this.pendingReemergenceShift;
@@ -8055,15 +8424,15 @@ export class GameUI {
     // Update top-right Browser Profile button
     const avatarEl = this.chromiumProfileBtn.querySelector('#chromiumProfileAvatar');
     const nameEl = this.chromiumProfileBtn.querySelector('#chromiumProfileName');
-    if (avatarEl) avatarEl.textContent = activeProfile.avatarEmoji;
+    if (avatarEl) avatarEl.textContent = activeProfile.name.slice(0, 1).toUpperCase();
     if (nameEl) nameEl.textContent = activeProfile.name;
-    this.chromiumProfileBtn.style.borderColor = activeProfile.accentHex;
+    this.chromiumProfileBtn.style.borderColor = '';
 
     if (this.portalProfilePopoverOpen) {
       this.renderProfilePopover();
     }
 
-    // Update quick profile switcher strip inside the Mirror-House Otherworld
+    // Update quick profile switcher strip inside the Tab Overview
     this.chromiumOtherworldProfileStripEl.innerHTML = allProfiles
       .map((p) => {
         const isAct = p.id === activeProfile.id;
@@ -8073,11 +8442,10 @@ export class GameUI {
             class="otherworld-profile-chip ${isAct ? 'is-active' : ''}"
             data-switch-profile="${p.id}"
             style="--prof-accent:${p.accentHex}"
-            title="Switch to ${p.name} (${p.realmBadge})"
+            title="Switch to ${p.name}"
           >
-            <span>${p.avatarEmoji}</span>
             <span>${p.name}</span>
-            ${isAct ? `<span class="ow-prof-count">${allTabs.length} Mirrors</span>` : ''}
+            ${isAct ? `<span class="ow-prof-count">${allTabs.length} tabs</span>` : ''}
           </button>
         `;
       })
@@ -8087,20 +8455,17 @@ export class GameUI {
     this.chromiumPortalBBtn.classList.toggle('active-b', activeVariant === 'B');
     this.chromiumMissionToggleBtn.classList.toggle('is-active', this.portalMissionViewMode);
     this.chromiumMissionToggleBtn.textContent = this.game.portalMissions.isPortalCompleted(this.activePortalKey)
-      ? `✓ Floor ${mission.floorNumber} Trial`
-      : `⚔️ Floor ${mission.floorNumber} Mission`;
+      ? `Trial ${mission.floorNumber} Done`
+      : `Trial ${mission.floorNumber}`;
 
     this.chromiumOrbitToggleBtn.classList.toggle(
       'is-active',
       this.portalWorldOrbitMode && !this.portalMissionViewMode && !this.portalBrowserSettingsMode,
     );
-    this.chromiumOrbitToggleBtn.textContent =
-      this.portalWorldOrbitMode && !this.portalMissionViewMode && !this.portalBrowserSettingsMode
-        ? `🪞 Mirror House (${allTabs.length} Tabs)`
-        : `🪞 Mirror-House World (${allTabs.length})`;
+    this.chromiumOrbitToggleBtn.textContent = `Tabs (${allTabs.length})`;
 
     this.chromiumSettingsBtn.classList.toggle('is-active', this.portalBrowserSettingsMode);
-    this.chromiumStandaloneBtn.textContent = this.portalBrowserStandalone ? '⤡ Windowed' : '⛶ Fullscreen';
+    this.chromiumStandaloneBtn.textContent = this.portalBrowserStandalone ? 'Windowed' : 'Fullscreen';
 
     this.chromiumMissionPanelEl.classList.toggle('hidden', !this.portalMissionViewMode);
     this.chromiumSettingsPanelEl.classList.toggle('hidden', !this.portalBrowserSettingsMode);
@@ -8127,7 +8492,7 @@ export class GameUI {
         const safeTitle = t.title.replace(/[<>&"]/g, '');
         return `
           <div class="chromium-tab ${isAct ? 'active' : ''} ${vClass}" data-tabid="${t.id}" role="tab" aria-selected="${isAct}">
-            <span class="ctab-portal-dot" title="Portal ${t.portalVariant}">${t.portalVariant}</span>
+            <span class="ctab-portal-dot" aria-hidden="true"></span>
             <span class="ctab-title">${safeTitle}</span>
             <button type="button" class="chromium-tab-close" data-closeid="${t.id}" aria-label="Close tab">×</button>
           </div>
@@ -8198,21 +8563,21 @@ export class GameUI {
     this.chromiumBackBtn.disabled = !mgr.canGoBack();
     this.chromiumFwdBtn.disabled = !mgr.canGoForward();
 
-    this.chromiumProxyBtn.textContent = activeTab.proxyMode ? 'Proxy: ON' : 'Direct';
+    this.chromiumProxyBtn.textContent = activeTab.proxyMode ? 'Proxy' : 'Direct';
     this.chromiumProxyBtn.classList.toggle('is-on', activeTab.proxyMode);
 
     const engineName = SEARCH_ENGINE_CATALOG[settings.searchEngine]?.name ?? 'DuckDuckGo Lite';
-    const shieldTag = settings.trackerShield ? 'Shield On' : 'Shield Off';
+    const shieldTag = settings.trackerShield ? 'Privacy Shield On' : 'Privacy Shield Off';
     const historyStats = mgr.getHistoryStats();
     this.chromiumStatusTextEl.textContent = this.portalBrowserSettingsMode
       ? this.portalBrowserSettingsTab === 'history'
-        ? `Portal Browser History · ${historyStats.totalEntries} visits (${historyStats.sessionEntries} this session) · ${historyStats.uniqueHosts} sites`
-        : `Portal Chromium Settings · Search: ${engineName} · ${shieldTag} · Zoom ${settings.zoomPercent}%`
+        ? `History · ${historyStats.totalEntries} visits · ${historyStats.uniqueHosts} sites`
+        : `Settings · ${engineName} · ${shieldTag} · ${settings.zoomPercent}%`
       : this.portalMissionViewMode
-        ? `${mission.floorLabel}: ${mission.title} · Souls ${this.game.portalMissions.getCollectedSouls()}/${SOUL_TARGET_COUNT} · Clock ${this.game.portalMissions.getFormattedClock()}`
+        ? `${mission.floorLabel}: ${mission.title}`
         : this.portalWorldOrbitMode
-          ? `${activeProfile.name} · ${allTabs.length} Mirror-House Tabs · Search: ${engineName} · ${shieldTag}`
-          : `${activeProfile.name} · ${engineName} · ${shieldTag} · Zoom ${settings.zoomPercent}% · ${activeTab.title}`;
+          ? `Tab Overview · ${allTabs.length} open tabs`
+          : `${activeTab.title} · ${engineName} · ${settings.zoomPercent}%`;
 
     const newTabCtx =
       activeTab.url === 'chrome://newtab' ? this.game.getNewTabCultivationSnapshot() : undefined;
@@ -8391,9 +8756,7 @@ export class GameUI {
       },
       (errMsg) => {
         this.rankingLoading = false;
-        this.rankingErrorMsg = errMsg.includes('Quota exceeded')
-          ? 'Daily Firestore free-tier quota reached; leaderboard will reset tomorrow.'
-          : 'Unable to sync Global Rankings right now. Try refreshing in a moment.';
+        this.rankingErrorMsg = classifyLeaderboardError(errMsg).message;
         if (!this.globalRankingModal.classList.contains('hidden')) {
           this.renderGlobalRankingModal();
         }
@@ -8409,8 +8772,8 @@ export class GameUI {
     this.renderGlobalRankingModal();
     try {
       this.rankingEntries = await fetchGlobalRankings(50);
-    } catch {
-      this.rankingErrorMsg = 'Could not refresh Global Rankings right now.';
+    } catch (err) {
+      this.rankingErrorMsg = classifyLeaderboardError(err).message;
     } finally {
       this.rankingLoading = false;
       this.renderGlobalRankingModal();
@@ -8485,10 +8848,7 @@ export class GameUI {
         this.rankingEntries = [...this.rankingEntries, saved];
       }
     } catch (err) {
-      const raw = err instanceof Error ? err.message : String(err);
-      this.rankingStatusMsg = raw.includes('Quota exceeded')
-        ? 'Firestore free-tier daily quota exceeded. Please try again tomorrow.'
-        : 'Could not inscribe record. Ensure your Google account is signed in and verified.';
+      this.rankingStatusMsg = classifyLeaderboardError(err).message;
       this.rankingStatusTone = 'error';
     } finally {
       this.rankingSubmitting = false;
